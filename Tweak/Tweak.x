@@ -1628,6 +1628,7 @@ static void save_trigger_config() {
 
 // Forward declaration
 static NSString *handle_command(NSString *cmd);
+static void RC_PressPowerAfterRelease(void);
 
 static BOOL rc_is_if_action_item(id item) {
     if (![item isKindOfClass:[NSDictionary class]]) return NO;
@@ -6502,7 +6503,7 @@ static NSString *handle_command(NSString *cmd) {
         NSString *btn = [[cleanCmd substringFromIndex:7] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         
         if ([btn isEqualToString:@"power"] || [btn isEqualToString:@"lock"]) {
-            inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_Power, 0, 0);
+            RC_PressPowerAfterRelease();
         } else if ([btn isEqualToString:@"home"]) {
             simulate_home_press();
         } else if ([btn isEqualToString:@"volup"]) {
@@ -6743,11 +6744,11 @@ static NSString *handle_command(NSString *cmd) {
                      SRLog(@"[SmartLock] Device already locked. Skipping power button.");
                  } else {
                      SRLog(@"[SmartLock] Device unlocked. Sending power button event...");
-                     inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_Power, 0, 0);
+                     RC_PressPowerAfterRelease();
                  }
             } else {
                 SRLog(@"[SmartLock] ERROR: manager is nil or does not respond to isUILocked. Forcing lock.");
-                 inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_Power, 0, 0);
+                 RC_PressPowerAfterRelease();
             }
         });
         return @"Lock command sent\n";
@@ -9971,6 +9972,33 @@ static void RC_ReplayPowerPress(void) {
             g_powerIsReplaying = NO;
             g_replayDownAwaitingUp = NO;
         });
+    });
+}
+
+// A power press requested by an action (Lock Device, "button power"). Injected as a
+// replay so our own button hooks pass it through - a plain injection fired from a
+// Power + Volume combo landed while that combo's press was still being suppressed
+// and was swallowed with it. Waits for the physical power button to be released
+// first, so the synthetic press never overlaps a real one.
+static void RC_PressPowerAfterRelease(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        __block int polls = 0;
+        __block void (^waitForRelease)(void);
+        void (^block)(void) = ^{
+            if (g_powerIsDown && ++polls < 60) { // up to 3s
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), waitForRelease);
+                return;
+            }
+            waitForRelease = nil;
+            // Wait out iOS's double-press window, as the multi-click replay does (0.4s after
+            // the last release) - at 0.15s SpringBoard took the real press and this one
+            // together as a double-press (Wallet), and nothing locked
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                RC_ReplayPowerPress();
+            });
+        };
+        waitForRelease = block;
+        block();
     });
 }
 
