@@ -5741,6 +5741,10 @@ static NSString *rc_open_camera_unified(NSInteger mode, NSInteger device, double
             CFPreferencesSetAppValue(CFSTR("CAMUserPreferencesTorchModeKey"), (CFPropertyListRef)@(1), appID);
             CFPreferencesSetAppValue(CFSTR("UserPreferencesFlashMode"), (CFPropertyListRef)@(1), appID);
             CFPreferencesSetAppValue(CFSTR("CAMUserPreferencesFlashModeKey"), (CFPropertyListRef)@(1), appID);
+        } else if (!keepZoom && (mode == 1 || mode == 2 || mode == 7)) {
+            // The torch setting persists in video modes; turn it off when flash wasn't asked for
+            CFPreferencesSetAppValue(CFSTR("UserPreferencesTorchMode"), (CFPropertyListRef)@(0), appID);
+            CFPreferencesSetAppValue(CFSTR("CAMUserPreferencesTorchModeKey"), (CFPropertyListRef)@(0), appID);
         }
         CFPreferencesAppSynchronize(appID);
     } @catch (NSException *e) {
@@ -12415,6 +12419,17 @@ static void rc_apply_camera_intent_to_viewfinder(id viewfinder) {
                 } else if (tb && [tb respondsToSelector:@selector(setTorchMode:)]) {
                     ((void (*)(id, SEL, NSInteger))objc_msgSend)(tb, @selector(setTorchMode:), 1);
                 }
+            }
+        });
+    }
+    
+    // 4b. Torch persists in video modes; turn it off when flash wasn't asked for
+    if (targetFlash == 0 && !alreadyInMode && (targetMode == 1 || targetMode == 2 || targetMode == 7)) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.20 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if ([viewfinder respondsToSelector:@selector(_setDesiredTorchMode:animated:)]) {
+                ((void (*)(id, SEL, NSInteger, BOOL))objc_msgSend)(viewfinder, @selector(_setDesiredTorchMode:animated:), 0, NO);
+            } else if ([viewfinder respondsToSelector:@selector(setTorchMode:)]) {
+                ((void (*)(id, SEL, NSInteger))objc_msgSend)(viewfinder, @selector(setTorchMode:), 0);
             }
         });
     }
