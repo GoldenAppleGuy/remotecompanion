@@ -5683,6 +5683,7 @@ static void rc_execute_shortcut(NSString *shortcutName, NSString *inputArg) {
 }
 
 static NSString *rc_open_camera_unified(NSInteger mode, NSInteger device, double zoomFactor, NSInteger flashMode, BOOL autoShutter) {
+    BOOL keepZoom = (zoomFactor <= 0); // leave the camera's current zoom (and mode, if it already matches)
     if (zoomFactor <= 0) zoomFactor = (mode == 1 && device == 0) ? 2.0 : 1.0;
     
     NSString *modeName = @"Photo";
@@ -5708,6 +5709,7 @@ static NSString *rc_open_camera_unified(NSInteger mode, NSInteger device, double
             @"zoom": @(zoomFactor),
             @"flash": @(flashMode),
             @"autoShutter": @(autoShutter),
+            @"keepZoom": @(keepZoom),
             @"timestamp": @([[NSDate date] timeIntervalSince1970])
         };
         [intent writeToFile:@"/tmp/rc_camera_intent.plist" atomically:YES];
@@ -5726,9 +5728,11 @@ static NSString *rc_open_camera_unified(NSInteger mode, NSInteger device, double
         CFPreferencesSetAppValue(CFSTR("CAMUserPreferencesPreserveCaptureModeKey"), (CFPropertyListRef)@YES, appID);
         CFPreferencesSetAppValue(CFSTR("CAMUserPreferencesCameraDeviceKey"), (CFPropertyListRef)@(device), appID);
         CFPreferencesSetAppValue(CFSTR("UserPreferencesCameraDeviceKey"), (CFPropertyListRef)@(device), appID);
-        CFPreferencesSetAppValue(CFSTR("UserPreferencesZoomFactor"), (CFPropertyListRef)@(zoomFactor), appID);
-        CFPreferencesSetAppValue(CFSTR("CAMUserPreferencesZoomFactor"), (CFPropertyListRef)@(zoomFactor), appID);
-        if (mode == 1) {
+        if (!keepZoom) {
+            CFPreferencesSetAppValue(CFSTR("UserPreferencesZoomFactor"), (CFPropertyListRef)@(zoomFactor), appID);
+            CFPreferencesSetAppValue(CFSTR("CAMUserPreferencesZoomFactor"), (CFPropertyListRef)@(zoomFactor), appID);
+        }
+        if (mode == 1 && !keepZoom) {
             CFPreferencesSetAppValue(CFSTR("UserPreferencesVideoZoomFactor"), (CFPropertyListRef)@(zoomFactor), appID);
             CFPreferencesSetAppValue(CFSTR("CAMUserPreferencesBackCameraVideoZoomFactor"), (CFPropertyListRef)@(zoomFactor), appID);
         }
@@ -5789,7 +5793,7 @@ static NSString *rc_open_camera_unified(NSInteger mode, NSInteger device, double
     });
     
     // 4. Automated Touch Assistance Fallback for Zoom
-    if (device == 0) {
+    if (device == 0 && !keepZoom) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.65 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             rc_load_touch_symbols();
             __block CGSize s = CGSizeZero;
@@ -5819,7 +5823,7 @@ static NSString *rc_open_camera_unified(NSInteger mode, NSInteger device, double
     
     NSMutableArray *details = [NSMutableArray array];
     if (device == 1) [details addObject:@"Front"];
-    if (zoomFactor != 1.0 || (mode == 1 && device == 0)) [details addObject:zoomLabel];
+    if (!keepZoom && (zoomFactor != 1.0 || (mode == 1 && device == 0))) [details addObject:zoomLabel];
     if (flashMode == 1) [details addObject:@"Flash ON"];
     if (autoShutter) [details addObject:(mode == 1 || mode == 2) ? @"Recording" : @"Snapped"];
     
@@ -7524,7 +7528,8 @@ static NSString *handle_command(NSString *cmd) {
             }
         }
         
-        if (zoom <= 0) {
+        // With auto-shutter (e.g. "camera record") and no zoom given, keep the current zoom
+        if (zoom <= 0 && !autoShutter) {
             zoom = (mode == 1 && device == 0) ? 2.0 : 1.0;
         }
         
@@ -12192,7 +12197,57 @@ static void rc_trigger_camera_shutter(id viewfinder) {
     s_last_shutter_time = now;
     SRLog(@"[CameraHook] rc_trigger_camera_shutter executing on %@", viewfinder);
     
-    // Method 1: CameraUI Master Shutter Handler
+    // Method 0: Camera Remote (Apple Watch) entry points. Stills use takePhotoWithCountdown:
+    // (remoteShutterStartCapture: in Photo mode starts a QuickTake video); recording modes
+    // use start/stop capture.
+    if ([viewfinder respondsToSelector:@selector(remoteShutterStartCapture:)] &&
+        [viewfinder respondsToSelector:@selector(remoteShutterStopCapture:)] &&
+        [viewfinder respondsToSelector:@selector(remoteShutter:takePhotoWithCountdown:)] &&
+        [viewfinder respondsToSelector:@selector(_isCapturing)] &&
+        [viewfinder respondsToSelector:@selector(_currentMode)]) {
+        id remote = [viewfinder respondsToSelector:@selector(_remoteShutterController)]
+            ? [viewfinder performSelector:@selector(_remoteShutterController)] : nil;
+        BOOL capturing = ((BOOL (*)(id, SEL))objc_msgSend)(viewfinder, @selector(_isCapturing));
+        long mode = ((long (*)(id, SEL))objc_msgSend)(viewfinder, @selector(_currentMode));
+        BOOL stillMode = (mode == 0 || mode == 4 || mode == 6); // Photo, Square, Portrait
+
+        if (!capturing && stillMode) {
+            SRLog(@"[CameraHook] remoteShutter:takePhotoWithCountdown:0 (mode %ld)", mode);
+            ((void (*)(id, SEL, id, unsigned long))objc_msgSend)(viewfinder, @selector(remoteShutter:takePhotoWithCountdown:), remote, 0);
+            return;
+        }
+        SEL remoteSel = capturing ? @selector(remoteShutterStopCapture:) : @selector(remoteShutterStartCapture:);
+        BOOL handled = ((BOOL (*)(id, SEL, id))objc_msgSend)(viewfinder, remoteSel, remote);
+        SRLog(@"[CameraHook] %@ -> %d (mode %ld)", NSStringFromSelector(remoteSel), handled, mode);
+        if (handled) return;
+    }
+
+    // Method 1: iOS 14+ dynamic shutter - the same path as a real tap on the shutter
+    if ([viewfinder respondsToSelector:@selector(_dynamicShutterControl)] &&
+        [viewfinder respondsToSelector:@selector(dynamicShutterControlDidShortPress:)]) {
+        id dsc = [viewfinder performSelector:@selector(_dynamicShutterControl)];
+        if (dsc) {
+            SRLog(@"[CameraHook] Calling dynamicShutterControlDidShortPress:");
+            ((void (*)(id, SEL, id))objc_msgSend)(viewfinder, @selector(dynamicShutterControlDidShortPress:), dsc);
+            return;
+        }
+    }
+
+    // Method 1b: classic shutter button press + release
+    if ([viewfinder respondsToSelector:@selector(_shutterButton)] &&
+        [viewfinder respondsToSelector:@selector(_handleShutterButtonPressed:)] &&
+        [viewfinder respondsToSelector:@selector(_handleShutterButtonReleased:)]) {
+        id sb = [viewfinder performSelector:@selector(_shutterButton)];
+        if (sb) {
+            SRLog(@"[CameraHook] Calling _handleShutterButtonPressed:/Released:");
+            ((void (*)(id, SEL, id))objc_msgSend)(viewfinder, @selector(_handleShutterButtonPressed:), sb);
+            ((void (*)(id, SEL, id))objc_msgSend)(viewfinder, @selector(_handleShutterButtonReleased:), sb);
+            return;
+        }
+    }
+
+    // Method 1c: older CameraUI shutter handler. On iOS 17 its argument is an internal
+    // trigger-description object and passing a string aborts the Camera app.
     if ([viewfinder respondsToSelector:@selector(_handleShutterButtonActionWithEventTriggerDescription:)]) {
         SRLog(@"[CameraHook] Calling _handleShutterButtonActionWithEventTriggerDescription:");
         ((void (*)(id, SEL, id))objc_msgSend)(viewfinder, @selector(_handleShutterButtonActionWithEventTriggerDescription:), @"RemoteCompanion");
@@ -12296,6 +12351,9 @@ static void rc_apply_camera_intent_to_viewfinder(id viewfinder) {
     if (targetZoom <= 0) targetZoom = (targetMode == 1 && targetDevice == 0) ? 2.0 : 1.0;
     NSInteger targetFlash = [intent[@"flash"] integerValue]; // 1 = Flash / Torch ON
     BOOL autoShutter = [intent[@"autoShutter"] boolValue];
+    BOOL keepZoom = [intent[@"keepZoom"] boolValue];
+    BOOL alreadyInMode = keepZoom && [viewfinder respondsToSelector:@selector(_currentMode)] &&
+        ((long (*)(id, SEL))objc_msgSend)(viewfinder, @selector(_currentMode)) == targetMode;
     // Photo, Video, Portrait and Cinematic zoom relative to the ultra-wide;
     // Slo-Mo, Pano and Time-Lapse zoom relative to the wide (1.0 = "1x")
     BOOL ultraWideRelative = (targetMode == 0 || targetMode == 1 || targetMode == 6 || targetMode == 7);
@@ -12305,7 +12363,9 @@ static void rc_apply_camera_intent_to_viewfinder(id viewfinder) {
           uuid, (long)targetMode, (long)targetDevice, targetZoom, (long)targetFlash, autoShutter, viewfinder);
     
     // 1. Primary Mode & Device Switch
-    if ([viewfinder respondsToSelector:@selector(_handleUserChangedToMode:device:zoomFactor:)]) {
+    if (alreadyInMode) {
+        SRLog(@"[CameraHook] Already in mode %ld, keeping current zoom", (long)targetMode);
+    } else if ([viewfinder respondsToSelector:@selector(_handleUserChangedToMode:device:zoomFactor:)]) {
         SRLog(@"[CameraHook] Invoking _handleUserChangedToMode:%ld device:%ld zoomFactor:%.1f", (long)targetMode, (long)targetDevice, targetZoom);
         ((void (*)(id, SEL, NSInteger, NSInteger, double))objc_msgSend)(viewfinder, @selector(_handleUserChangedToMode:device:zoomFactor:), targetMode, targetDevice, targetZoom);
     } else if ([viewfinder respondsToSelector:@selector(changeToCaptureMode:device:animated:)]) {
@@ -12313,7 +12373,7 @@ static void rc_apply_camera_intent_to_viewfinder(id viewfinder) {
     }
     
     // 2. Zoom Control Notification
-    if (targetDevice == 0 && [viewfinder respondsToSelector:@selector(zoomControl:didChangeZoomFactor:interactionType:)]) {
+    if (!alreadyInMode && targetDevice == 0 && [viewfinder respondsToSelector:@selector(zoomControl:didChangeZoomFactor:interactionType:)]) {
         id zc = nil;
         if ([viewfinder respondsToSelector:@selector(zoomControl)]) {
             zc = [viewfinder performSelector:@selector(zoomControl)];
@@ -12322,7 +12382,7 @@ static void rc_apply_camera_intent_to_viewfinder(id viewfinder) {
     }
     
     // 3. Mode Dial fallback
-    if ([viewfinder respondsToSelector:@selector(modeDial)]) {
+    if (!alreadyInMode && [viewfinder respondsToSelector:@selector(modeDial)]) {
         id dial = [viewfinder performSelector:@selector(modeDial)];
         if (dial && [dial respondsToSelector:@selector(setSelectedMode:animated:)]) {
             [dial performSelector:@selector(setSelectedMode:animated:) withObject:@(targetMode) withObject:@(NO)];
