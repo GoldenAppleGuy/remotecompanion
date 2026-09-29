@@ -7470,7 +7470,7 @@ static NSString *handle_command(NSString *cmd) {
             mode = 2;
         }
         if ([lowCmd containsString:@"timelapse"] || [lowCmd containsString:@"time-lapse"] || [lowCmd containsString:@"lapse"]) {
-            mode = 4;
+            mode = 5; // 4 is the legacy Square photo mode
         }
         if ([lowCmd containsString:@"pano"] || [lowCmd containsString:@"panorama"]) {
             mode = 3;
@@ -12258,6 +12258,23 @@ static void rc_camera_shutter_notification_callback(CFNotificationCenterRef cent
     }
 }
 
+// On back cameras with an ultra-wide lens, CameraUI's zoom factor is relative to the
+// ultra-wide (1.0 = "0.5x", 2.0 = "1x"). Returns the internal factor that equals "1x".
+static double rc_back_camera_zoom_scale(void) {
+    static double scale = 1.0;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        AVCaptureDeviceDiscoverySession *session = [AVCaptureDeviceDiscoverySession
+            discoverySessionWithDeviceTypes:@[AVCaptureDeviceTypeBuiltInTripleCamera, AVCaptureDeviceTypeBuiltInDualWideCamera]
+                                  mediaType:AVMediaTypeVideo
+                                   position:AVCaptureDevicePositionBack];
+        NSNumber *wideSwitchOver = session.devices.firstObject.virtualDeviceSwitchOverVideoZoomFactors.firstObject;
+        if (wideSwitchOver.doubleValue > 1.0) scale = wideSwitchOver.doubleValue;
+        SRLog(@"[CameraHook] Back camera zoom scale: %.2f", scale);
+    });
+    return scale;
+}
+
 static void rc_apply_camera_intent_to_viewfinder(id viewfinder) {
     if (!viewfinder) return;
     NSDictionary *intent = [NSDictionary dictionaryWithContentsOfFile:@"/tmp/rc_camera_intent.plist"];
@@ -12279,6 +12296,10 @@ static void rc_apply_camera_intent_to_viewfinder(id viewfinder) {
     if (targetZoom <= 0) targetZoom = (targetMode == 1 && targetDevice == 0) ? 2.0 : 1.0;
     NSInteger targetFlash = [intent[@"flash"] integerValue]; // 1 = Flash / Torch ON
     BOOL autoShutter = [intent[@"autoShutter"] boolValue];
+    // Photo, Video, Portrait and Cinematic zoom relative to the ultra-wide;
+    // Slo-Mo, Pano and Time-Lapse zoom relative to the wide (1.0 = "1x")
+    BOOL ultraWideRelative = (targetMode == 0 || targetMode == 1 || targetMode == 6 || targetMode == 7);
+    if (targetDevice == 0 && ultraWideRelative) targetZoom *= rc_back_camera_zoom_scale();
     
     SRLog(@"[CameraHook] Executing intent (UUID=%@): targetMode=%ld, targetDevice=%ld, targetZoom=%.1f, targetFlash=%ld, autoShutter=%d on %@", 
           uuid, (long)targetMode, (long)targetDevice, targetZoom, (long)targetFlash, autoShutter, viewfinder);
