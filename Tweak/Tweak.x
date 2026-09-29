@@ -7618,6 +7618,20 @@ static NSString *handle_command(NSString *cmd) {
             }
         }
         return @"Error: BluetoothManager not found\n";
+    } else if ([cleanCmd isEqualToString:@"bluetooth-toggle"] || [cleanCmd isEqualToString:@"bt-toggle"] || [cleanCmd isEqualToString:@"bluetooth toggle"] || [cleanCmd isEqualToString:@"bt toggle"]) {
+        void *btHandle = dlopen("/System/Library/PrivateFrameworks/BluetoothManager.framework/BluetoothManager", RTLD_NOW);
+        if (btHandle) {
+            Class BluetoothManagerClass = objc_getClass("BluetoothManager");
+            if (BluetoothManagerClass) {
+                BluetoothManager *btManager = [BluetoothManagerClass sharedInstance];
+                BOOL current = [btManager powered];
+                [btManager setEnabled:!current];
+                [btManager setPowered:!current];
+                SRLog(@"Bluetooth toggled: %d -> %d", current, !current);
+                return [NSString stringWithFormat:@"Bluetooth Toggled: %@\n", !current ? @"ON" : @"OFF"];
+            }
+        }
+        return @"Error: BluetoothManager not found\n";
     } else if ([cleanCmd isEqualToString:@"bluetooth list"] || [cleanCmd isEqualToString:@"bt list"]) {
         NSMutableString *output = [NSMutableString string];
         void *btHandle = dlopen("/System/Library/PrivateFrameworks/BluetoothManager.framework/BluetoothManager", RTLD_NOW);
@@ -7723,6 +7737,15 @@ static NSString *handle_command(NSString *cmd) {
             [manager setWiFiEnabled:NO];
             SRLog(@"WiFi disabled");
             return @"WiFi Disabled\n";
+        }
+        return @"Error: SBWiFiManager not found\n";
+    } else if ([cleanCmd isEqualToString:@"wifi-toggle"] || [cleanCmd isEqualToString:@"wi-toggle"] || [cleanCmd isEqualToString:@"wifi toggle"]) {
+        SBWiFiManager *manager = [objc_getClass("SBWiFiManager") sharedInstance];
+        if (manager) {
+            BOOL current = [manager wiFiEnabled];
+            [manager setWiFiEnabled:!current];
+            SRLog(@"WiFi toggled: %d -> %d", current, !current);
+            return [NSString stringWithFormat:@"WiFi Toggled: %@\n", !current ? @"ON" : @"OFF"];
         }
         return @"Error: SBWiFiManager not found\n";
     } else if ([cleanCmd isEqualToString:@"cellular-on"] || [cleanCmd isEqualToString:@"cell-on"] || [cleanCmd isEqualToString:@"cellular on"] || [cleanCmd isEqualToString:@"cell on"]) {
