@@ -11179,7 +11179,15 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
                 }
             }
             
-            if (g_volUpIsDown && g_volDownIsDown) {
+            // Volume Both Press - FALLBACK ONLY, like the power combo above. The volume
+            // hooks detect it on the main thread and reset g_volComboTriggered on release.
+            // Detecting it here too fired it twice: this background callback runs ahead
+            // of the hooks, so it could fire and then clear the flag (both buttons up)
+            // before a busy main thread even delivered the presses to the hooks, which
+            // then fired it again - e.g. a toggle action ran twice and undid itself.
+            if (g_volHookAlive) {
+                // hooks handle both-press detection and the flag reset
+            } else if (g_volUpIsDown && g_volDownIsDown) {
                 if (!g_volComboTriggered) {
                     if (RC_TriggerIsActionable(@"volume_both_press")) {
                         g_volComboTriggered = YES;
