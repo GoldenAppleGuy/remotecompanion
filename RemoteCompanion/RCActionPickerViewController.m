@@ -269,6 +269,16 @@
     ];
 }
 
+- (NSArray<NSArray<NSDictionary *> *> *)catalogSections {
+    [self rebuildSections];
+    return _sections;
+}
+
+- (NSArray<NSString *> *)catalogSectionTitles {
+    [self rebuildSections];
+    return _sectionTitles;
+}
+
 - (void)cancel {
     [self dismissViewControllerAnimated:YES completion:nil];
 }

@@ -6,6 +6,8 @@
 @property (nonatomic, assign) BOOL masterEnabled;
 @property (nonatomic, assign) BOOL tcpEnabled;
 @property (nonatomic, assign) BOOL webUIEnabled;
+// Settings > Banners: actions that show a banner when a trigger runs them (built by RCBannersViewController)
+@property (nonatomic, copy) NSArray<NSDictionary *> *bannerActions;
 @property (nonatomic, assign) BOOL nfcEnabled;
 @property (nonatomic, assign) BOOL rootEnabled;
 @property (nonatomic, assign) BOOL haEnabled;

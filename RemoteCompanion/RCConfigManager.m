@@ -242,6 +242,16 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     [self saveConfig];
 }
 
+- (NSArray<NSDictionary *> *)bannerActions {
+    id list = _config[@"bannerActions"];
+    return [list isKindOfClass:[NSArray class]] ? list : @[];
+}
+
+- (void)setBannerActions:(NSArray<NSDictionary *> *)bannerActions {
+    _config[@"bannerActions"] = bannerActions ?: @[];
+    [self saveConfig];
+}
+
 - (void)setNfcEnabled:(BOOL)nfcEnabled {
     _config[@"nfcEnabled"] = @(nfcEnabled);
     if (!nfcEnabled) {

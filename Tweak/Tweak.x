@@ -1867,6 +1867,152 @@ static BOOL rc_is_action_item_disabled(id item) {
     return NO;
 }
 
+// ---------------------------------------------------------------------------
+// Action banners (Settings > Banners). Config "bannerActions" lists the actions
+// picked there, each { title, icon, toggle, match: [...], exclude: [...] }, built
+// by the app / web UI from their action catalog. A pattern ending in " ", ":" or
+// "-" is a prefix; anything else must equal the (lowercased) command. "exclude"
+// holds other catalog actions' longer patterns, so e.g. Open Camera ("camera ")
+// doesn't also catch Camera Shutter ("camera shutter").
+// A picked toggle shows its new state; any other action shows its name.
+// ---------------------------------------------------------------------------
+static BOOL rc_banner_pattern_matches(id pattern, NSString *cmd) {
+    if (![pattern isKindOfClass:[NSString class]] || [(NSString *)pattern length] == 0) return NO;
+    NSString *p = [(NSString *)pattern lowercaseString];
+    unichar last = [p characterAtIndex:p.length - 1];
+    if (last == ' ' || last == ':' || last == '-') return [cmd hasPrefix:p];
+    return [cmd isEqualToString:p];
+}
+
+static NSDictionary *rc_banner_entry_for_command(NSString *cmd) {
+    NSArray *entries = g_triggerConfig[@"bannerActions"];
+    if (![entries isKindOfClass:[NSArray class]]) return nil;
+    for (NSDictionary *entry in entries) {
+        if (![entry isKindOfClass:[NSDictionary class]]) continue;
+        BOOL hit = NO, excluded = NO;
+        for (id m in entry[@"match"]) { if (rc_banner_pattern_matches(m, cmd)) { hit = YES; break; } }
+        if (!hit) continue;
+        for (id x in entry[@"exclude"]) { if (rc_banner_pattern_matches(x, cmd)) { excluded = YES; break; } }
+        if (!excluded) return entry;
+    }
+    return nil;
+}
+
+// Reads a toggle's state back after it has changed. Only uses status commands that
+// are handled explicitly - "flashlight status", for one, is caught by the
+// "flashlight <level>" handler first, which reads it as level 0 and turns the torch off.
+static NSString *rc_banner_read_state(NSString *key, NSString *statusCmd, NSString *condKey) {
+    if ([key isEqualToString:@"lpm"]) {
+        return [[NSProcessInfo processInfo] isLowPowerModeEnabled] ? @"On" : @"Off";
+    }
+    if ([key isEqualToString:@"flashlight"]) {
+        AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
+        return (device.torchMode == AVCaptureTorchModeOn) ? @"On" : @"Off";
+    }
+    if ([key isEqualToString:@"appearance"]) {
+        __block BOOL dark = NO;
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            dark = ([UIScreen mainScreen].traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+        });
+        return dark ? @"Dark" : @"Light";
+    }
+    if ([key isEqualToString:@"rotate"]) {
+        __block BOOL locked = NO;
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            locked = [[objc_getClass("SBOrientationLockManager") sharedInstance] isUserLocked];
+        });
+        return locked ? @"Locked" : @"Unlocked";
+    }
+    if (statusCmd.length == 0) return @"Toggled";
+    NSString *output = handle_command(statusCmd);
+    if ([key isEqualToString:@"autolock"]) {
+        NSString *raw = [output stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        return raw.length ? raw : @"Changed";
+    }
+    NSString *value = rc_canonical_status_value_for_condition_key(condKey ?: @"banner", output);
+    NSDictionary *labels = @{ @"ON": @"On", @"OFF": @"Off", @"ACTIVE": @"Recording", @"INACTIVE": @"Not Recording" };
+    return labels[value] ?: @"Toggled";
+}
+
+// Banner for a picked toggle: the state it switched to. Commands that aren't a
+// state change (e.g. "bt connect ...", "flashlight status") get no banner.
+static void rc_banner_show_toggle_state(NSString *cmd, NSString *title, NSString *icon) {
+    static NSArray *defs;
+    static NSDictionary *words;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        // Longer prefixes first where one contains another
+        defs = @[
+            @{ @"key": @"wifi", @"prefixes": @[@"wifi ", @"wi-fi "], @"status": @"wifi status" },
+            @{ @"key": @"bluetooth", @"prefixes": @[@"bluetooth ", @"bt "], @"status": @"bluetooth status" },
+            @{ @"key": @"cellular", @"prefixes": @[@"cellular ", @"cell "], @"status": @"cell status" },
+            @{ @"key": @"airplane", @"prefixes": @[@"airplane "], @"status": @"airplane status" },
+            @{ @"key": @"lpm", @"prefixes": @[@"low power mode ", @"low power ", @"lpm "] },
+            @{ @"key": @"dnd", @"prefixes": @[@"dnd "], @"status": @"dnd status" },
+            @{ @"key": @"location", @"prefixes": @[@"location services ", @"locationservices ", @"location ", @"gps "], @"status": @"location status" },
+            @{ @"key": @"rotate", @"prefixes": @[@"rotate "] },
+            @{ @"key": @"appearance", @"prefixes": @[@"appearance "] },
+            @{ @"key": @"flashlight", @"prefixes": @[@"flashlight ", @"flash "] },
+            @{ @"key": @"screenrecord", @"prefixes": @[@"screenrecord "], @"status": @"screenrecord status", @"cond": @"screenrecord" },
+            @{ @"key": @"silent_vibration", @"prefixes": @[@"vibration silent-"], @"status": @"vibration silent-status" },
+            @{ @"key": @"ring_vibration", @"prefixes": @[@"vibration ring-"], @"status": @"vibration ring-status" },
+            @{ @"key": @"autolock", @"prefixes": @[@"autolock ", @"auto-lock "], @"status": @"autolock status" }
+        ];
+        words = @{ @"on": @"On", @"off": @"Off", @"dark": @"Dark", @"light": @"Light", @"lock": @"Locked", @"unlock": @"Unlocked" };
+    });
+
+    for (NSDictionary *def in defs) {
+        for (NSString *prefix in def[@"prefixes"]) {
+            if (![cmd hasPrefix:prefix]) continue;
+            NSString *arg = [cmd substringFromIndex:prefix.length];
+            if ([arg isEqualToString:@"status"] || [arg hasPrefix:@"connect"] || [arg hasPrefix:@"disconnect"]) return;
+            if (words[arg]) {
+                rc_show_hud_toast(title, words[arg], icon);
+                return;
+            }
+            // "toggle", or a value (Auto-Lock "2m", a flashlight level): read the result
+            // back once the change has landed
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                rc_show_hud_toast(title, rc_banner_read_state(def[@"key"], def[@"status"], def[@"cond"]), icon);
+            });
+            return;
+        }
+    }
+    // A toggle the tweak can't read back (e.g. Mute): name only
+    rc_show_hud_toast(title, nil, icon);
+}
+
+static NSString *rc_banner_app_name(NSString *arg) {
+    NSString *bundleID = resolve_bundle_id([arg stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]);
+    Class proxyClass = objc_getClass("LSApplicationProxy");
+    id proxy = [proxyClass respondsToSelector:@selector(applicationProxyForIdentifier:)] ? [proxyClass performSelector:@selector(applicationProxyForIdentifier:) withObject:bundleID] : nil;
+    NSString *name = [proxy respondsToSelector:@selector(localizedName)] ? [proxy performSelector:@selector(localizedName)] : nil;
+    return name.length ? name : bundleID;
+}
+
+static void rc_maybe_show_action_banner(NSString *action) {
+    load_trigger_config();
+    NSString *cmd = [[action lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSDictionary *entry = rc_banner_entry_for_command(cmd);
+    if (!entry) return;
+
+    NSString *title = [entry[@"title"] isKindOfClass:[NSString class]] ? entry[@"title"] : action;
+    NSString *icon = [entry[@"icon"] isKindOfClass:[NSString class]] ? entry[@"icon"] : nil;
+
+    if ([entry[@"toggle"] boolValue]) {
+        rc_banner_show_toggle_state(cmd, title, icon);
+        return;
+    }
+
+    // Name the app / shortcut where the command carries one
+    NSString *subtitle = nil;
+    NSString *original = [action stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([cmd hasPrefix:@"uiopen "]) subtitle = rc_banner_app_name([original substringFromIndex:7]);
+    else if ([cmd hasPrefix:@"kill "]) subtitle = rc_banner_app_name([original substringFromIndex:5]);
+    else if ([cmd hasPrefix:@"shortcut:"]) subtitle = [[original substringFromIndex:9] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    rc_show_hud_toast(title, subtitle, icon);
+}
+
 static void rc_execute_action_sequence(NSArray *actions, NSString *triggerKey, BOOL simulationMode) {
     if (![actions isKindOfClass:[NSArray class]] || actions.count == 0) return;
     
@@ -1882,6 +2028,7 @@ static void rc_execute_action_sequence(NSArray *actions, NSString *triggerKey, B
             NSString *action = (NSString *)actionItem;
             SRLog(@"[%@] -> %@", triggerKey, action);
             handle_command(action);
+            rc_maybe_show_action_banner(action);
             usleep(simulationMode ? 50000 : 10000);
             continue;
         }
