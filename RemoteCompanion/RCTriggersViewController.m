@@ -10,12 +10,17 @@
 #import "RCNotificationTriggerViewController.h"
 #import "RCScheduledTriggerViewController.h"
 #import "RCMQTTTriggerViewController.h"
+#import "RCCategoryBar.h"
 
 #define kSimulateNotificationPrefix "com.pizzaman.rc.simulate."
 
 @interface RCTriggersViewController ()
 @property (nonatomic, strong) NSArray<NSArray<NSString *> *> *sections;
 @property (nonatomic, strong) NSArray<NSString *> *sectionTitles;
+// Category bar: the section shown on its own, or nil for all. Kept by title because
+// sections come and go (Favorites, NFC, Wi-Fi, ... only appear when they have triggers).
+@property (nonatomic, strong) RCCategoryBar *categoryBar;
+@property (nonatomic, copy) NSString *selectedCategoryTitle;
 @end
 
 @implementation RCTriggersViewController
@@ -88,12 +93,19 @@
     
     self.tableView.rowHeight = 64;
     if (@available(iOS 15.0, *)) {
-        self.tableView.sectionHeaderTopPadding = 15; // increased padding
+        // Spacing above headers is built into the header views instead (see
+        // heightForHeaderInSection:), so the first one can sit close to the category bar
+        self.tableView.sectionHeaderTopPadding = 0;
     }
     self.tableView.contentInset = UIEdgeInsetsMake(0, 0, 0, 0); // Reset inset since we have large titles handling spacing better now
     
-    self.tableView.tableHeaderView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, 0.1)];
-    self.tableView.tableHeaderView.clipsToBounds = YES;
+    self.categoryBar = [[RCCategoryBar alloc] initWithWidth:self.view.bounds.size.width];
+    __weak typeof(self) weakSelf = self;
+    self.categoryBar.onSelect = ^(NSInteger index) {
+        weakSelf.selectedCategoryTitle = (index >= 0 && index < (NSInteger)weakSelf.sectionTitles.count) ? weakSelf.sectionTitles[index] : nil;
+        [weakSelf.tableView reloadData];
+    };
+    self.tableView.tableHeaderView = self.categoryBar;
 
     // Pull-to-refresh
     self.refreshControl = [[UIRefreshControl alloc] init];
@@ -331,6 +343,16 @@
 
     self.sections = sections;
     self.sectionTitles = titles;
+
+    // Chips follow the sections; a selected section that has gone away falls back to All
+    NSMutableArray *chipTitles = [NSMutableArray array];
+    for (NSString *title in titles) {
+        [chipTitles addObject:[title hasSuffix:@" Triggers"] ? [title substringToIndex:title.length - 9] : title];
+    }
+    [self.categoryBar setChipTitles:chipTitles];
+    NSUInteger selected = self.selectedCategoryTitle ? [titles indexOfObject:self.selectedCategoryTitle] : NSNotFound;
+    if (selected == NSNotFound) self.selectedCategoryTitle = nil;
+    self.categoryBar.selectedIndex = (selected == NSNotFound) ? -1 : (NSInteger)selected;
 
     self.navigationItem.leftBarButtonItem = nil;
 
@@ -636,7 +658,7 @@
     
     if (!indexPath) return;
     
-    NSString *triggerKey = _sections[indexPath.section][indexPath.row];
+    NSString *triggerKey = [self triggerKeyAtIndexPath:indexPath];
     
     RCConfigManager *config = [RCConfigManager sharedManager];
     NSArray *actions = [config actionsForTrigger:triggerKey];
@@ -667,20 +689,39 @@
     });
 }
 
+#pragma mark - Display model
+
+// The sections the table shows: all of them, or just the selected category
+- (NSInteger)realSectionForDisplaySection:(NSInteger)section {
+    if (!self.selectedCategoryTitle) return section;
+    NSUInteger idx = [self.sectionTitles indexOfObject:self.selectedCategoryTitle];
+    return idx == NSNotFound ? section : (NSInteger)idx;
+}
+
+- (NSInteger)displaySectionCount {
+    return self.selectedCategoryTitle ? 1 : self.sections.count;
+}
+
+- (NSString *)triggerKeyAtIndexPath:(NSIndexPath *)indexPath {
+    return self.sections[[self realSectionForDisplaySection:indexPath.section]][indexPath.row];
+}
+
 #pragma mark - Table View Data Source
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return _sections.count;
+    return [self displaySectionCount];
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
-    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 40)];
-    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, 15, tableView.bounds.size.width - 40, 20)];
-    label.text = [_sectionTitles[section] uppercaseString];
+    NSString *title = _sectionTitles[[self realSectionForDisplaySection:section]];
+    CGFloat height = [self tableView:tableView heightForHeaderInSection:section];
+    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, height)];
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, height - 25, tableView.bounds.size.width - 40, 20)];
+    label.text = [title uppercaseString];
     label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
 
     // Yellow text for Favorites section
-    if ([_sectionTitles[section] isEqualToString:@"Favorites"]) {
+    if ([title isEqualToString:@"Favorites"]) {
         label.textColor = [UIColor colorWithRed:242/255.0 green:195/255.0 blue:80/255.0 alpha:1.0];
     } else {
         label.textColor = [UIColor secondaryLabelColor];
@@ -691,15 +732,20 @@
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    return 40.0f;
+    // The first section sits just below the category bar. The others keep their old
+    // spacing, including the 15pt sectionHeaderTopPadding they had on iOS 15+.
+    if (section == 0) return 29.0f;
+    CGFloat topPadding = 0;
+    if (@available(iOS 15.0, *)) topPadding = 15;
+    return 40.0f + topPadding;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return _sections[section].count;
+    return self.sections[[self realSectionForDisplaySection:section]].count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSString *triggerKey = _sections[indexPath.section][indexPath.row];
+    NSString *triggerKey = [self triggerKeyAtIndexPath:indexPath];
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"TriggerCell"];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"TriggerCell"];
@@ -753,14 +799,14 @@
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     
-    NSString *triggerKey = _sections[indexPath.section][indexPath.row];
+    NSString *triggerKey = [self triggerKeyAtIndexPath:indexPath];
     
     RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:triggerKey];
     [self.navigationController pushViewController:actionsVC animated:YES];
 }
 
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView leadingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSString *triggerKey = _sections[indexPath.section][indexPath.row];
+    NSString *triggerKey = [self triggerKeyAtIndexPath:indexPath];
 
     RCConfigManager *config = [RCConfigManager sharedManager];
     BOOL isFavorite = [config isTriggerFavorite:triggerKey];
@@ -787,7 +833,7 @@
 }
 
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSString *triggerKey = _sections[indexPath.section][indexPath.row];
+    NSString *triggerKey = [self triggerKeyAtIndexPath:indexPath];
 
     // Only allow delete for NFC, WiFi, BT, App, Notif, Sched, MQTT, Device State triggers
     if (![triggerKey hasPrefix:@"nfc_"] && ![triggerKey hasPrefix:@"wifi_"] && ![triggerKey hasPrefix:@"bt_"] && ![triggerKey hasPrefix:@"app_launch_"] && ![triggerKey hasPrefix:@"notif_"] && ![triggerKey hasPrefix:@"notify_"] && ![triggerKey hasPrefix:@"sched_"] && ![triggerKey hasPrefix:@"mqtt_"] && ![triggerKey hasPrefix:@"mqtt_sub_"] && ![triggerKey hasPrefix:@"trigger_device_"] && ![triggerKey hasPrefix:@"trigger_media_"]) {
@@ -816,7 +862,7 @@
 }
 
 - (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (_sectionTitles.count > 0 && [_sectionTitles[indexPath.section] isEqualToString:@"Favorites"]) {
+    if (_sectionTitles.count > 0 && [_sectionTitles[[self realSectionForDisplaySection:indexPath.section]] isEqualToString:@"Favorites"]) {
         return YES;
     }
     return NO;
@@ -824,7 +870,7 @@
 
 - (NSIndexPath *)tableView:(UITableView *)tableView targetIndexPathForMoveFromRowAtIndexPath:(NSIndexPath *)sourceIndexPath toProposedIndexPath:(NSIndexPath *)proposedDestinationIndexPath {
     if (sourceIndexPath.section != proposedDestinationIndexPath.section) {
-        NSInteger row = (proposedDestinationIndexPath.section < sourceIndexPath.section) ? 0 : [_sections[sourceIndexPath.section] count] - 1;
+        NSInteger row = (proposedDestinationIndexPath.section < sourceIndexPath.section) ? 0 : [self.sections[[self realSectionForDisplaySection:sourceIndexPath.section]] count] - 1;
         return [NSIndexPath indexPathForRow:row inSection:sourceIndexPath.section];
     }
     return proposedDestinationIndexPath;
@@ -837,12 +883,13 @@
     [favorites insertObject:movedItem atIndex:destinationIndexPath.row];
     [[RCConfigManager sharedManager] setOrderedFavorites:favorites];
 
-    NSMutableArray *sectionData = [_sections[sourceIndexPath.section] mutableCopy];
+    NSInteger realSection = [self realSectionForDisplaySection:sourceIndexPath.section];
+    NSMutableArray *sectionData = [_sections[realSection] mutableCopy];
     [sectionData removeObjectAtIndex:sourceIndexPath.row];
     [sectionData insertObject:movedItem atIndex:destinationIndexPath.row];
 
     NSMutableArray *mutableSections = [_sections mutableCopy];
-    mutableSections[sourceIndexPath.section] = sectionData;
+    mutableSections[realSection] = sectionData;
     _sections = mutableSections;
 }
 

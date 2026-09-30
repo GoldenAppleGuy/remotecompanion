@@ -3,6 +3,7 @@
 #import "RCConfigManager.h"
 #import "RCHAEntityPickerViewController.h"
 #import "RCKMMacroPickerViewController.h"
+#import "RCCategoryBar.h"
 
 @interface RCActionPickerViewController () <UISearchResultsUpdating>
 @property (nonatomic, strong) NSArray<NSString *> *sectionTitles;
@@ -11,12 +12,15 @@
 @property (nonatomic, strong) UISearchController *searchController;
 @property (nonatomic, strong) UIAlertController *activeAlert;
 @property (nonatomic, assign) BOOL isWaitingForTapRecord;
+// Category bar: -1 = All, otherwise an index into sections / sectionTitles
+@property (nonatomic, assign) NSInteger selectedCategory;
 @end
 
 @implementation RCActionPickerViewController
 
 - (instancetype)init {
     self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    if (self) _selectedCategory = -1;
     return self;
 }
 
@@ -41,10 +45,13 @@
     
     self.title = @"Select Action";
     
-    // Reduce gap above first section (below search bar)
-    self.tableView.tableHeaderView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, CGFLOAT_MIN)];
+    // Category bar below the search bar (also keeps the gap above the first section small)
+    [self rebuildSections];
+    self.tableView.tableHeaderView = [self categoryBar];
     if (@available(iOS 15.0, *)) {
-        self.tableView.sectionHeaderTopPadding = 15;
+        // Spacing above headers is built into the header views instead (see
+        // heightForHeaderInSection:), so the first one can sit close to the category bar
+        self.tableView.sectionHeaderTopPadding = 0;
     }
     
     // Use proper Cancel button style
@@ -293,25 +300,61 @@
     }
 }
 
+#pragma mark - Category bar
+
+// All + one chip per catalog section. Tapping one shows only that section;
+// search then filters within it.
+- (UIView *)categoryBar {
+    RCCategoryBar *bar = [[RCCategoryBar alloc] initWithWidth:self.view.bounds.size.width];
+    [bar setChipTitles:self.sectionTitles];
+    bar.selectedIndex = self.selectedCategory;
+    __weak typeof(self) weakSelf = self;
+    bar.onSelect = ^(NSInteger index) {
+        weakSelf.selectedCategory = index;
+        [weakSelf updateSearchResultsForSearchController:weakSelf.searchController];
+    };
+    return bar;
+}
+
+#pragma mark - Display model
+
+- (BOOL)isSearching {
+    return self.searchController.isActive && self.searchController.searchBar.text.length > 0;
+}
+
+- (BOOL)hasCategory {
+    return self.selectedCategory >= 0 && self.selectedCategory < (NSInteger)_sections.count;
+}
+
+// What the table shows: search results, the selected category, or everything
+- (NSArray<NSArray<NSDictionary *> *> *)displaySections {
+    if ([self isSearching]) return @[self.filteredActions ?: @[]];
+    if ([self hasCategory]) return @[_sections[self.selectedCategory]];
+    return _sections;
+}
+
+- (NSString *)displayTitleForSection:(NSInteger)section {
+    if ([self isSearching]) return [self hasCategory] ? [NSString stringWithFormat:@"%@ Results", _sectionTitles[self.selectedCategory]] : @"Search Results";
+    if ([self hasCategory]) return _sectionTitles[self.selectedCategory];
+    return _sectionTitles[section];
+}
+
+- (NSDictionary *)actionAtIndexPath:(NSIndexPath *)indexPath {
+    return [self displaySections][indexPath.section][indexPath.row];
+}
+
 #pragma mark - Table View Data Source
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    if (self.searchController.isActive && self.searchController.searchBar.text.length > 0) {
-        return 1;
-    }
-    return _sections.count;
+    return [self displaySections].count;
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
-    NSString *title = nil;
-    if (self.searchController.isActive && self.searchController.searchBar.text.length > 0) {
-        title = @"SEARCH RESULTS";
-    } else {
-        title = _sectionTitles[section];
-    }
+    NSString *title = [self displayTitleForSection:section];
+    CGFloat height = [self tableView:tableView heightForHeaderInSection:section];
     
-    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 40)];
-    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, 15, tableView.bounds.size.width - 40, 20)];
+    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, height)];
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, height - 25, tableView.bounds.size.width - 40, 20)];
     label.text = [title uppercaseString];
     label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
     label.textColor = [UIColor secondaryLabelColor];
@@ -320,26 +363,23 @@
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    return 40.0f;
+    // The first section sits just below the category bar. The others keep their old
+    // spacing, including the 15pt sectionHeaderTopPadding they had on iOS 15+.
+    if (section == 0) return 29.0f;
+    CGFloat topPadding = 0;
+    if (@available(iOS 15.0, *)) topPadding = 15;
+    return 40.0f + topPadding;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (self.searchController.isActive && self.searchController.searchBar.text.length > 0) {
-        return self.filteredActions.count;
-    }
-    return _sections[section].count;
+    return [self displaySections][section].count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ActionCell" forIndexPath:indexPath];
     RCConfigManager *cm = [RCConfigManager sharedManager];
     
-    NSDictionary *action;
-    if (self.searchController.isActive && self.searchController.searchBar.text.length > 0) {
-        action = self.filteredActions[indexPath.row];
-    } else {
-        action = _sections[indexPath.section][indexPath.row];
-    }
+    NSDictionary *action = [self actionAtIndexPath:indexPath];
     cell.textLabel.text = action[@"name"];
     cell.textLabel.font = [UIFont systemFontOfSize:17];
     
@@ -399,12 +439,7 @@
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     
-    NSDictionary *action;
-    if (self.searchController.isActive && self.searchController.searchBar.text.length > 0) {
-        action = self.filteredActions[indexPath.row];
-    } else {
-        action = _sections[indexPath.section][indexPath.row];
-    }
+    NSDictionary *action = [self actionAtIndexPath:indexPath];
     NSString *command = action[@"command"];
     
 
@@ -902,8 +937,12 @@
         self.filteredActions = @[];
     } else {
         NSMutableArray *allActions = [NSMutableArray array];
-        for (NSArray *section in self.sections) {
-            [allActions addObjectsFromArray:section];
+        if ([self hasCategory]) {
+            [allActions addObjectsFromArray:self.sections[self.selectedCategory]];
+        } else {
+            for (NSArray *section in self.sections) {
+                [allActions addObjectsFromArray:section];
+            }
         }
         
         NSPredicate *pred = [NSPredicate predicateWithFormat:@"name CONTAINS[cd] %@ OR command CONTAINS[cd] %@", text, text];
