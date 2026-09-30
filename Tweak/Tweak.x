@@ -6601,10 +6601,21 @@ static NSString *handle_command(NSString *cmd) {
         void (^switcherBlock)(void) = ^{
             Class SBClass = objc_getClass("SpringBoard");
             id sb = [SBClass sharedApplication];
-            
+
+            // Method 0: SBMainSwitcherControllerCoordinator (iOS 16+/17; SBMainSwitcherViewController is gone)
+            Class coordClass = objc_getClass("SBMainSwitcherControllerCoordinator");
+            SEL toggleSel = @selector(toggleMainSwitcherNoninteractivelyWithSource:animated:windowScene:);
+            id coordinator = [coordClass respondsToSelector:@selector(sharedInstance)] ? [coordClass performSelector:@selector(sharedInstance)] : nil;
+            if (coordinator && [coordinator respondsToSelector:toggleSel]) {
+                id wsm = [sb respondsToSelector:@selector(windowSceneManager)] ? [sb performSelector:@selector(windowSceneManager)] : nil;
+                id scene = [wsm respondsToSelector:@selector(embeddedDisplayWindowScene)] ? [wsm performSelector:@selector(embeddedDisplayWindowScene)] : nil;
+                success = ((BOOL (*)(id, SEL, long, BOOL, id))objc_msgSend)(coordinator, toggleSel, 1, YES, scene);
+                SRLog(@"Using Method 0: toggleMainSwitcherNoninteractivelyWithSource: -> %d", success);
+            }
+
             // Method 1: SBMainSwitcherViewController (iOS 15/16 discovered methods)
             Class viewCtrlClass = objc_getClass("SBMainSwitcherViewController");
-            if (viewCtrlClass) {
+            if (!success && viewCtrlClass) {
                 id switcher = nil;
                 if ([viewCtrlClass respondsToSelector:@selector(sharedInstance)]) {
                     switcher = [viewCtrlClass sharedInstance];
