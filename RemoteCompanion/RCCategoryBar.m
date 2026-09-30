@@ -2,6 +2,10 @@
 
 @interface RCCategoryBar ()
 @property (nonatomic, strong) NSMutableArray<UIButton *> *chips;
+// Floating: how much of the bar is showing (0 = hidden, barHeight = fully shown), and the
+// last scroll position, measured from the top of the content (0 = scrolled to the top)
+@property (nonatomic, assign) CGFloat revealed;
+@property (nonatomic, assign) CGFloat lastOffset;
 @end
 
 @implementation RCCategoryBar
@@ -63,6 +67,55 @@
         chip.backgroundColor = selected ? [UIColor labelColor] : [UIColor tertiarySystemFillColor];
         [chip setTitleColor:selected ? [UIColor systemBackgroundColor] : [UIColor labelColor] forState:UIControlStateNormal];
     }
+}
+
+#pragma mark - Floating
+
+- (void)attachToTableView:(UITableView *)tableView {
+    CGFloat height = [RCCategoryBar barHeight];
+    // Keeps the first section header's own spacing (no default table header gap)
+    tableView.tableHeaderView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, CGFLOAT_MIN)];
+    UIEdgeInsets inset = tableView.contentInset;
+    inset.top += height;
+    tableView.contentInset = inset;
+    if (@available(iOS 13.0, *)) {
+        UIEdgeInsets indicators = tableView.verticalScrollIndicatorInsets;
+        indicators.top += height;
+        tableView.verticalScrollIndicatorInsets = indicators;
+    }
+    self.revealed = height;
+    self.lastOffset = 0;
+    [tableView addSubview:self];
+    [self scrollViewDidScroll:tableView];
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    CGFloat height = [RCCategoryBar barHeight];
+    CGFloat navBottom = scrollView.adjustedContentInset.top - height; // top of the visible area, below the nav bar
+    CGFloat offset = scrollView.contentOffset.y + scrollView.adjustedContentInset.top; // 0 = scrolled to the top
+    CGFloat maxOffset = MAX(0, scrollView.contentSize.height + scrollView.adjustedContentInset.top + scrollView.adjustedContentInset.bottom - scrollView.bounds.size.height);
+    CGFloat delta = offset - self.lastOffset;
+    self.lastOffset = offset;
+
+    if (offset <= 0) {
+        self.revealed = height; // at the top (or pulling down): always shown
+    } else if (offset < maxOffset) {
+        // Slide with the scroll - down hides, up reveals. The rubber-band past the
+        // bottom is ignored, so bouncing off the end doesn't flicker the bar.
+        self.revealed = MIN(height, MAX(0, self.revealed - delta));
+    }
+
+    CGRect frame = self.frame;
+    frame.origin.x = 0;
+    frame.size.width = scrollView.bounds.size.width;
+    // Sits just below the nav bar; while pulling down it moves with the content,
+    // leaving room above it for the refresh control
+    frame.origin.y = scrollView.contentOffset.y + navBottom + MAX(0, -offset) - (height - self.revealed);
+    self.frame = frame;
+    self.alpha = self.revealed / height;
+    self.userInteractionEnabled = self.revealed > height / 2.0;
+    self.backgroundColor = scrollView.backgroundColor; // covers the rows scrolling underneath
+    [scrollView bringSubviewToFront:self];
 }
 
 - (void)chipTapped:(UIButton *)chip {

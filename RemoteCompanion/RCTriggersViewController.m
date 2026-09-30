@@ -105,7 +105,7 @@
         weakSelf.selectedCategoryTitle = (index >= 0 && index < (NSInteger)weakSelf.sectionTitles.count) ? weakSelf.sectionTitles[index] : nil;
         [weakSelf.tableView reloadData];
     };
-    self.tableView.tableHeaderView = self.categoryBar;
+    [self.categoryBar attachToTableView:self.tableView];
 
     // Pull-to-refresh
     self.refreshControl = [[UIRefreshControl alloc] init];
@@ -687,6 +687,10 @@
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         notify_post([notificationName UTF8String]);
     });
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    [self.categoryBar scrollViewDidScroll:scrollView];
 }
 
 #pragma mark - Display model

@@ -14,6 +14,7 @@
 @property (nonatomic, assign) BOOL isWaitingForTapRecord;
 // Category bar: -1 = All, otherwise an index into sections / sectionTitles
 @property (nonatomic, assign) NSInteger selectedCategory;
+@property (nonatomic, strong) RCCategoryBar *categoryBar;
 @end
 
 @implementation RCActionPickerViewController
@@ -45,9 +46,10 @@
     
     self.title = @"Select Action";
     
-    // Category bar below the search bar (also keeps the gap above the first section small)
+    // Category bar floating below the search bar
     [self rebuildSections];
-    self.tableView.tableHeaderView = [self categoryBar];
+    self.categoryBar = [self makeCategoryBar];
+    [self.categoryBar attachToTableView:self.tableView];
     if (@available(iOS 15.0, *)) {
         // Spacing above headers is built into the header views instead (see
         // heightForHeaderInSection:), so the first one can sit close to the category bar
@@ -304,7 +306,7 @@
 
 // All + one chip per catalog section. Tapping one shows only that section;
 // search then filters within it.
-- (UIView *)categoryBar {
+- (RCCategoryBar *)makeCategoryBar {
     RCCategoryBar *bar = [[RCCategoryBar alloc] initWithWidth:self.view.bounds.size.width];
     [bar setChipTitles:self.sectionTitles];
     bar.selectedIndex = self.selectedCategory;
@@ -314,6 +316,10 @@
         [weakSelf updateSearchResultsForSearchController:weakSelf.searchController];
     };
     return bar;
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    [self.categoryBar scrollViewDidScroll:scrollView];
 }
 
 #pragma mark - Display model
