@@ -941,6 +941,14 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"low power mode off": @"Low Power Mode Off",
         @"low power toggle": @"Low Power Mode Toggle",
         @"low power mode toggle": @"Low Power Mode Toggle",
+        @"autolock toggle": @"Auto-Lock Toggle",
+        @"autolock 30s": @"Auto-Lock 30 Seconds",
+        @"autolock 1m": @"Auto-Lock 1 Minute",
+        @"autolock 2m": @"Auto-Lock 2 Minutes",
+        @"autolock 3m": @"Auto-Lock 3 Minutes",
+        @"autolock 4m": @"Auto-Lock 4 Minutes",
+        @"autolock 5m": @"Auto-Lock 5 Minutes",
+        @"autolock never": @"Auto-Lock Never",
         @"mute toggle": @"Mute Toggle",
         @"mute on": @"Mute On",
         @"mute off": @"Mute Off",
@@ -1465,6 +1473,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         if ([cmd hasPrefix:@"exec "]) return @"chevron.right.square";
         if ([cmd hasPrefix:@"flashlight "] || [cmd hasPrefix:@"flash "]) return @"flashlight.on.fill";
         if ([cmd hasPrefix:@"low power "]) return @"battery.100.bolt";
+        if ([cmd hasPrefix:@"autolock "] || [cmd hasPrefix:@"auto-lock "]) return @"timer";
     }
     
     return result ?: @"circle.fill";
@@ -1500,6 +1509,14 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
             @"prefixes": @[@"low power ", @"lpm ", @"low power mode "],
             @"suffixes": @[@"on", @"off", @"toggle"],
             @"displaySuffixes": @[@"On", @"Off", @"Toggle"]
+        },
+        @{
+            @"key": @"autolock",
+            @"name": @"Auto-Lock",
+            @"icon": @"timer",
+            @"prefixes": @[@"autolock ", @"auto-lock "],
+            @"suffixes": @[@"toggle", @"30s", @"1m", @"2m", @"3m", @"4m", @"5m", @"never"],
+            @"displaySuffixes": @[@"Toggle (Never / Previous)", @"30 Seconds", @"1 Minute", @"2 Minutes", @"3 Minutes", @"4 Minutes", @"5 Minutes", @"Never"]
         },
         @{
             @"key": @"dnd",
