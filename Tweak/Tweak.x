@@ -1659,6 +1659,7 @@ static NSString *rc_status_command_for_condition_key(NSString *conditionKey) {
     if (![conditionKey isKindOfClass:[NSString class]]) return nil;
     NSDictionary *map = @{
         @"lock": @"lock status",
+        @"autolock": @"autolock status",
         @"player": @"player status",
         @"wifi": @"wifi status",
         @"cellular": @"cell status",
@@ -1684,6 +1685,14 @@ static NSString *rc_canonical_status_value_for_condition_key(NSString *condition
         if ([upper containsString:@"UNLOCKED"]) return @"UNLOCKED";
         if ([upper containsString:@"LOCKED"]) return @"LOCKED";
         return nil;
+    }
+    
+    if ([conditionKey isEqualToString:@"autolock"]) {
+        // "Never" / "30 Seconds" / "2 Minutes" -> NEVER / 30S / 2M
+        if ([upper containsString:@"NEVER"]) return @"NEVER";
+        NSInteger n = [upper integerValue];
+        if (n <= 0) return nil;
+        return [NSString stringWithFormat:@"%ld%@", (long)n, [upper containsString:@"MIN"] ? @"M" : @"S"];
     }
     
     if ([conditionKey isEqualToString:@"player"]) {
@@ -6084,7 +6093,6 @@ static NSString *rc_handle_autolock(NSString *arg) {
 
     [mc setValue:@(target) forSetting:@"maxInactivity"];
     SRLog(@"[AutoLock] %@ -> %@ (%@)", rc_autolock_label(current), rc_autolock_label(target), a);
-    rc_show_hud_toast(@"Auto-Lock", rc_autolock_label(target), @"timer");
     return [NSString stringWithFormat:@"Auto-Lock: %@\n", rc_autolock_label(target)];
 }
 
