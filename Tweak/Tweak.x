@@ -9742,6 +9742,11 @@ static BOOL g_volUpNativeSessionActive = NO; // set when the hold timer replays
 static NSTimer *g_volDownTimer = nil;
 static BOOL g_volDownTriggered = NO;
 static BOOL g_volDownNativeSessionActive = NO; // symmetric to g_volUpNativeSessionActive
+// The latest press of each button went straight to native (no hold/sequence trigger
+// needed it held back). A Volume Both Press then lets its second press through too,
+// so up +1 and down -1 cancel out.
+static BOOL g_volUpLastPassedThrough = NO;
+static BOOL g_volDownLastPassedThrough = NO;
 
 static BOOL g_volUpIsDown = NO;
 static BOOL g_volDownIsDown = NO;
@@ -10208,6 +10213,12 @@ static BOOL g_isSwappingVolume = NO;
         g_volIsReplaying = NO;
     }
 
+    // Only a hold or sequence trigger needs this press held back (to tell a tap
+    // from a hold). Otherwise hand it to native straight away, so taps and holds
+    // behave exactly like stock - replaying it after a 0.35s wait delayed the ramp
+    // and made the volume jerk. Volume Both Press is still detected below.
+    BOOL passthrough = !RC_TriggerIsActionable(@"volume_up_hold") && !RC_TriggerIsActionable(@"volume_up_then_down");
+
     // 4. Check for simultaneous Volume Up + Volume Down dual press
     BOOL isDualPress = g_volDownIsDown || (g_lastVolDownPressTime > 0 && (now - g_lastVolDownPressTime) < 0.20);
     if (isDualPress) {
@@ -10227,6 +10238,21 @@ static BOOL g_isSwappingVolume = NO;
         } else {
             g_volComboTriggered = YES;
         }
+        // The other button's press already reached native: let this one through
+        // too, so the two cancel out and the volume ends where it started.
+        g_volUpLastPassedThrough = passthrough && g_volDownLastPassedThrough;
+        if (g_volUpLastPassedThrough) {
+            g_volUpNativeSessionActive = YES;
+            %orig;
+        }
+        return;
+    }
+
+    g_volUpLastPassedThrough = passthrough;
+    if (passthrough) {
+        SRLog(@"[Vol] Up: no hold/sequence trigger - passing straight to native");
+        g_volUpNativeSessionActive = YES;
+        %orig;
         return;
     }
 
@@ -10298,8 +10324,9 @@ static BOOL g_isSwappingVolume = NO;
     // started never gets a stop signal and runs to 100%.
     if (g_volUpNativeSessionActive) {
         g_volUpNativeSessionActive = NO;
-        SRLog(@"[Vol] Release after hold-timer replay - forwarding to native to stop the ramp");
+        SRLog(@"[Vol] Up release of a native press - forwarding to native");
         g_volUpIsDown = NO;
+        if (g_volComboTriggered && !g_volDownIsDown) g_volComboTriggered = NO;
         g_volIsReplaying = YES;
         %orig;
         g_volIsReplaying = NO;
@@ -10434,6 +10461,9 @@ static BOOL g_isSwappingVolume = NO;
         g_volIsReplaying = NO;
     }
 
+    // See the symmetric comment in volumeIncreasePressDownWithModifiers:.
+    BOOL passthrough = !RC_TriggerIsActionable(@"volume_down_hold") && !RC_TriggerIsActionable(@"volume_down_then_up");
+
     // 4. Check for simultaneous Volume Up + Volume Down dual press
     BOOL isDualPress = g_volUpIsDown || (g_lastVolUpPressTime > 0 && (now - g_lastVolUpPressTime) < 0.20);
     if (isDualPress) {
@@ -10453,6 +10483,20 @@ static BOOL g_isSwappingVolume = NO;
         } else {
             g_volComboTriggered = YES;
         }
+        // See the symmetric comment in volumeIncreasePressDownWithModifiers:.
+        g_volDownLastPassedThrough = passthrough && g_volUpLastPassedThrough;
+        if (g_volDownLastPassedThrough) {
+            g_volDownNativeSessionActive = YES;
+            %orig;
+        }
+        return;
+    }
+
+    g_volDownLastPassedThrough = passthrough;
+    if (passthrough) {
+        SRLog(@"[Vol] Down: no hold/sequence trigger - passing straight to native");
+        g_volDownNativeSessionActive = YES;
+        %orig;
         return;
     }
 
@@ -10510,8 +10554,9 @@ static BOOL g_isSwappingVolume = NO;
     // See the symmetric comment in volumeIncreasePressUp.
     if (g_volDownNativeSessionActive) {
         g_volDownNativeSessionActive = NO;
-        SRLog(@"[Vol] Release after hold-timer replay - forwarding to native to stop the ramp");
+        SRLog(@"[Vol] Down release of a native press - forwarding to native");
         g_volDownIsDown = NO;
+        if (g_volComboTriggered && !g_volUpIsDown) g_volComboTriggered = NO;
         g_volIsReplaying = YES;
         %orig;
         g_volIsReplaying = NO;
