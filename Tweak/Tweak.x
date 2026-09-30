@@ -6507,8 +6507,20 @@ static NSString *handle_command(NSString *cmd) {
         } else if ([btn isEqualToString:@"mute"]) {
             inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_Mute, 0, 0);
         } else if ([btn isEqualToString:@"siri"]) {
+            // SpringBoard's own Siri activation service (the "simple activation" path,
+            // as used by accessibility features) - the HID voice-command press below
+            // doesn't bring up Siri on iOS 17
+            Class svcClass = objc_getClass("SiriActivationService");
+            id svc = [svcClass respondsToSelector:@selector(service)] ? [svcClass performSelector:@selector(service)] : nil;
+            if (svc && [svc respondsToSelector:@selector(activationRequestFromSimpleActivation:)]) {
+                SRLog(@"[Siri] Activating via SiriActivationService simple activation");
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    ((void (*)(id, SEL, long))objc_msgSend)(svc, @selector(activationRequestFromSimpleActivation:), 1);
+                });
+                return @"Siri activated\n";
+            }
+            SRLog(@"[Siri] SiriActivationService unavailable - falling back to HID voice command");
 
-            
             // Use HID Voice Command (0xCF) - Acts like a headset button, typically no "Home" side-effects
             inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_VoiceCommand, 600000000, 0); // 0.6s hold
             
