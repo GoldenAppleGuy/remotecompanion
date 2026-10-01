@@ -1,5 +1,6 @@
 #import "RCActionPickerViewController.h"
 #import "RCServerClient.h"
+#import "RCDevicePickerViewController.h"
 #import "RCConfigManager.h"
 #import "RCHAEntityPickerViewController.h"
 #import "RCKMMacroPickerViewController.h"
@@ -680,218 +681,36 @@
 }
 
 - (void)handleAirPlayConnect {
-    UIAlertController *loading = [UIAlertController alertControllerWithTitle:@"Scanning for devices..." 
-                                                                     message:@"Please wait" 
-                                                              preferredStyle:UIAlertControllerStyleAlert];
-    [self presentViewController:loading animated:YES completion:nil];
-    
-    [[RCServerClient sharedClient] executeCommand:@"airplay list" completion:^(NSString * _Nullable output, NSError * _Nullable error) {
-        [loading dismissViewControllerAnimated:YES completion:^{
-            if (error) {
-                UIAlertController *errAlert = [UIAlertController alertControllerWithTitle:@"Error" 
-                                                                                message:error.localizedDescription 
-                                                                         preferredStyle:UIAlertControllerStyleAlert];
-                [errAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
-                [self presentViewController:errAlert animated:YES completion:nil];
-                return;
-            }
-            
-            // Parse output
-            // Output format expected: "UID - Name" per line, or "No AirPlay devices found."
-            NSArray *lines = [output componentsSeparatedByString:@"\n"];
-            NSMutableArray *devices = [NSMutableArray array];
-            
-            for (NSString *line in lines) {
-                NSString *clean = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                if (clean.length == 0) continue;
-                if ([clean isEqualToString:@"No AirPlay devices found."]) continue;
-                if ([clean hasPrefix:@"Error:"]) continue;
-                
-                // Format from Tweak.x: "  Name [UID]" or "* Name [UID]"
-                if (clean.length < 5) continue;
-                
-                // Strip leading status char if present (* or space)
-                NSString *workingLine = clean;
-                if ([workingLine hasPrefix:@"* "] || [workingLine hasPrefix:@"  "]) {
-                    workingLine = [workingLine substringFromIndex:2];
-                }
-                
-                NSRange openBracket = [workingLine rangeOfString:@" [" options:NSBackwardsSearch];
-                NSRange closeBracket = [workingLine rangeOfString:@"]" options:NSBackwardsSearch];
-                
-                if (openBracket.location != NSNotFound && closeBracket.location != NSNotFound && closeBracket.location > openBracket.location) {
-                    NSString *name = [[workingLine substringToIndex:openBracket.location] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-                    NSString *uid = [[workingLine substringWithRange:NSMakeRange(openBracket.location + 2, closeBracket.location - openBracket.location - 2)] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-                    [devices addObject:@{ @"uid": uid, @"name": name }];
-                }
-            }
-            
-            if (devices.count == 0) {
-                UIAlertController *empty = [UIAlertController alertControllerWithTitle:@"No Devices Found" 
-                                                                               message:@"Ensure AirPlay devices are reachable." 
-                                                                        preferredStyle:UIAlertControllerStyleAlert];
-                [empty addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
-                [self presentViewController:empty animated:YES completion:nil];
-                return;
-            }
-            
-            // Show selection
-            UIAlertController *picker = [UIAlertController alertControllerWithTitle:@"Select AirPlay Device" 
-                                                                            message:nil 
-                                                                     preferredStyle:UIAlertControllerStyleActionSheet];
-            
-            for (NSDictionary *device in devices) {
-                [picker addAction:[UIAlertAction actionWithTitle:device[@"name"] style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-                    NSString *finalCommand = [NSString stringWithFormat:@"airplay connect %@ # %@", device[@"uid"], device[@"name"]];
-                    
-                    if (self.onActionSelected) {
-                        self.onActionSelected(finalCommand);
-                    }
-                    if (self.searchController.isActive) {
-                        [self.searchController dismissViewControllerAnimated:NO completion:^{
-                            [self dismissViewControllerAnimated:YES completion:nil];
-                        }];
-                    } else {
-                        [self dismissViewControllerAnimated:YES completion:nil];
-                    }
-                }]];
-            }
-            
-            [picker addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-            
-            // iPad support
-            picker.popoverPresentationController.sourceView = self.view;
-            picker.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width/2, self.view.bounds.size.height/2, 1, 1);
-            
-            [self presentViewController:picker animated:YES completion:nil];
-        }];
-    }];
+    [self pushDevicePickerWithKind:RCDevicePickerKindAirPlay title:@"Connect AirPlay" commandPrefix:@"airplay connect"];
 }
 
-
-
 - (void)handleBluetoothConnect {
-    UIAlertController *loading = [UIAlertController alertControllerWithTitle:@"Fetching paired devices..." 
-                                                                     message:@"Please wait" 
-                                                              preferredStyle:UIAlertControllerStyleAlert];
-    [self presentViewController:loading animated:YES completion:nil];
-    
-    [[RCServerClient sharedClient] executeCommand:@"bluetooth list" completion:^(NSString * _Nullable output, NSError * _Nullable error) {
-        [loading dismissViewControllerAnimated:YES completion:^{
-            if (error || !output) {
-                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Error" message:error.localizedDescription ?: @"Failed to fetch devices" preferredStyle:UIAlertControllerStyleAlert];
-                [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
-                [self presentViewController:alert animated:YES completion:nil];
-                return;
-            }
-            
-            NSArray *lines = [output componentsSeparatedByString:@"\n"];
-            NSMutableArray *devices = [NSMutableArray array];
-            for (NSString *line in lines) {
-                NSString *trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                if (trimmed.length > 0) {
-                    [devices addObject:trimmed];
-                }
-            }
-            
-            if (devices.count == 0) {
-                UIAlertController *empty = [UIAlertController alertControllerWithTitle:@"No Devices Found" 
-                                                                               message:@"Ensure Bluetooth devices are paired." 
-                                                                        preferredStyle:UIAlertControllerStyleAlert];
-                [empty addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
-                [self presentViewController:empty animated:YES completion:nil];
-                return;
-            }
-            
-            UIAlertController *picker = [UIAlertController alertControllerWithTitle:@"Select Bluetooth Device" 
-                                                                            message:nil 
-                                                                     preferredStyle:UIAlertControllerStyleActionSheet];
-            
-            for (NSString *deviceName in devices) {
-                [picker addAction:[UIAlertAction actionWithTitle:deviceName style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-                    NSString *finalCommand = [NSString stringWithFormat:@"bt connect %@", deviceName];
-                    
-                    if (self.onActionSelected) {
-                        self.onActionSelected(finalCommand);
-                    }
-                    if (self.searchController.isActive) {
-                        [self.searchController dismissViewControllerAnimated:NO completion:^{
-                            [self dismissViewControllerAnimated:YES completion:nil];
-                        }];
-                    } else {
-                        [self dismissViewControllerAnimated:YES completion:nil];
-                    }
-                }]];
-            }
-            
-            [picker addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-            picker.popoverPresentationController.sourceView = self.view;
-            picker.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width/2, self.view.bounds.size.height/2, 1, 1);
-            [self presentViewController:picker animated:YES completion:nil];
-        }];
-    }];
+    [self pushDevicePickerWithKind:RCDevicePickerKindBluetooth title:@"Connect Bluetooth" commandPrefix:@"bt connect"];
 }
 
 - (void)handleBluetoothDisconnect {
-    UIAlertController *loading = [UIAlertController alertControllerWithTitle:@"Fetching paired devices..." 
-                                                                     message:@"Please wait" 
-                                                              preferredStyle:UIAlertControllerStyleAlert];
-    [self presentViewController:loading animated:YES completion:nil];
-    
-    [[RCServerClient sharedClient] executeCommand:@"bluetooth list" completion:^(NSString * _Nullable output, NSError * _Nullable error) {
-        [loading dismissViewControllerAnimated:YES completion:^{
-            if (error || !output) {
-                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Error" message:error.localizedDescription ?: @"Failed to fetch devices" preferredStyle:UIAlertControllerStyleAlert];
-                [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
-                [self presentViewController:alert animated:YES completion:nil];
-                return;
-            }
-            
-            NSArray *lines = [output componentsSeparatedByString:@"\n"];
-            NSMutableArray *devices = [NSMutableArray array];
-            for (NSString *line in lines) {
-                NSString *trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                if (trimmed.length > 0) {
-                    [devices addObject:trimmed];
-                }
-            }
-            
-            if (devices.count == 0) {
-                UIAlertController *empty = [UIAlertController alertControllerWithTitle:@"No Devices Found" 
-                                                                               message:@"Ensure Bluetooth devices are paired." 
-                                                                        preferredStyle:UIAlertControllerStyleAlert];
-                [empty addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
-                [self presentViewController:empty animated:YES completion:nil];
-                return;
-            }
-            
-            UIAlertController *picker = [UIAlertController alertControllerWithTitle:@"Select Bluetooth Device" 
-                                                                            message:nil 
-                                                                     preferredStyle:UIAlertControllerStyleActionSheet];
-            
-            for (NSString *deviceName in devices) {
-                [picker addAction:[UIAlertAction actionWithTitle:deviceName style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-                    NSString *finalCommand = [NSString stringWithFormat:@"bt disconnect %@", deviceName];
-                    
-                    if (self.onActionSelected) {
-                        self.onActionSelected(finalCommand);
-                    }
-                    if (self.searchController.isActive) {
-                        [self.searchController dismissViewControllerAnimated:NO completion:^{
-                            [self dismissViewControllerAnimated:YES completion:nil];
-                        }];
-                    } else {
-                        [self dismissViewControllerAnimated:YES completion:nil];
-                    }
-                }]];
-            }
-            
-            [picker addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-            picker.popoverPresentationController.sourceView = self.view;
-            picker.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width/2, self.view.bounds.size.height/2, 1, 1);
-            [self presentViewController:picker animated:YES completion:nil];
-        }];
-    }];
+    [self pushDevicePickerWithKind:RCDevicePickerKindBluetooth title:@"Disconnect Bluetooth" commandPrefix:@"bt disconnect"];
+}
+
+// Lists the devices; choosing one adds "<prefix> <device>" and closes the picker
+- (void)pushDevicePickerWithKind:(RCDevicePickerKind)kind title:(NSString *)title commandPrefix:(NSString *)prefix {
+    RCDevicePickerViewController *picker = [[RCDevicePickerViewController alloc] initWithKind:kind title:title];
+    __weak typeof(self) weakSelf = self;
+    picker.onDeviceSelected = ^(NSDictionary *device) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (strongSelf.onActionSelected) {
+            strongSelf.onActionSelected([NSString stringWithFormat:@"%@ %@", prefix, device[@"target"]]);
+        }
+        if (strongSelf.searchController.isActive) {
+            [strongSelf.searchController dismissViewControllerAnimated:NO completion:^{
+                [strongSelf dismissViewControllerAnimated:YES completion:nil];
+            }];
+        } else {
+            [strongSelf dismissViewControllerAnimated:YES completion:nil];
+        }
+    };
+    [self.navigationController pushViewController:picker animated:YES];
 }
 
 #pragma mark - Search

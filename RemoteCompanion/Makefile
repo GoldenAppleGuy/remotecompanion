@@ -15,5 +15,6 @@ RemoteCompanion_LDFLAGS = -lc++
 RemoteCompanion_CODESIGN_FLAGS = -SEntitlements.plist
 RemoteCompanion_RESOURCE_FILES = Info.plist Icon.png AppIcon60x60@2x.png AppIcon60x60@3x.png Entitlements.plist
 RemoteCompanion_INSTALL_PATH = /Applications
+RemoteCompanion_FILES += RCDevicePickerViewController.m
 
 include $(THEOS_MAKE_PATH)/application.mk
