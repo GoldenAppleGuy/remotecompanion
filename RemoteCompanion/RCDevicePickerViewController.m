@@ -1,0 +1,290 @@
+#import "RCDevicePickerViewController.h"
+#import "RCConfigManager.h"
+#import "RCServerClient.h"
+
+// An SF Symbol for a device, guessed from its name
+static NSString *RCDeviceIconName(NSString *name, RCDevicePickerKind kind) {
+    NSString *lower = name.lowercaseString;
+    NSSet *words = [NSSet setWithArray:[lower componentsSeparatedByCharactersInSet:[[NSCharacterSet alphanumericCharacterSet] invertedSet]]];
+    // Checked in order: phrases match anywhere in the name, single words only as whole words
+    NSArray<NSArray<NSString *> *> *rules = @[
+        @[ @"airpods max", @"airpodsmax" ], @[ @"airpods pro", @"airpodspro" ], @[ @"airpods", @"airpods" ],
+        @[ @"beats", @"beats.headphones" ],
+        @[ @"homepod mini", @"homepodmini" ], @[ @"homepod", @"homepod" ],
+        @[ @"apple tv", @"appletv" ], @[ @"tv", @"tv" ],
+        @[ @"watch", @"applewatch" ],
+        @[ @"macbook", @"laptopcomputer" ], @[ @"imac", @"desktopcomputer" ], @[ @"mac", @"desktopcomputer" ],
+        @[ @"ipad", @"ipad" ], @[ @"iphone", @"iphone" ],
+        @[ @"carplay", @"car" ], @[ @"car", @"car" ],
+        @[ @"keyboard", @"keyboard" ], @[ @"mouse", @"computermouse" ],
+        @[ @"controller", @"gamecontroller" ], @[ @"xbox", @"gamecontroller" ], @[ @"dualsense", @"gamecontroller" ], @[ @"dualshock", @"gamecontroller" ],
+        @[ @"speaker", @"hifispeaker" ], @[ @"soundbar", @"hifispeaker" ], @[ @"sonos", @"hifispeaker" ], @[ @"bose", @"hifispeaker" ], @[ @"jbl", @"hifispeaker" ],
+        @[ @"headphones", @"headphones" ], @[ @"headset", @"headphones" ], @[ @"buds", @"headphones" ], @[ @"earbuds", @"headphones" ],
+    ];
+    for (NSArray<NSString *> *rule in rules) {
+        BOOL phrase = [rule[0] containsString:@" "];
+        if (phrase ? [lower containsString:rule[0]] : [words containsObject:rule[0]]) {
+            if ([UIImage systemImageNamed:rule[1]]) return rule[1];
+        }
+    }
+    return kind == RCDevicePickerKindAirPlay ? @"airplayaudio" : @"dot.radiowaves.left.and.right";
+}
+
+@interface RCDevicePickerViewController () <UISearchResultsUpdating>
+@property (nonatomic, assign) RCDevicePickerKind kind;
+@property (nonatomic, strong) NSArray<NSDictionary *> *devices;
+@property (nonatomic, assign) BOOL loading;
+@property (nonatomic, copy) NSString *errorText;
+@property (nonatomic, strong) UISearchController *searchController;
+@end
+
+@implementation RCDevicePickerViewController
+
+- (instancetype)initWithKind:(RCDevicePickerKind)kind title:(NSString *)title {
+    self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    if (self) {
+        _kind = kind;
+        _devices = @[];
+        self.title = title;
+    }
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+    self.tableView.rowHeight = 52;
+    RCConfigManager *cm = [RCConfigManager sharedManager];
+    CGFloat mainBG = [cm tweakValueForKey:@"mainBackground" defaultVal:0.09];
+    UIColor *bg = [cm tweakColorForKey:@"actionPickerBackground" defaultVal:mainBG];
+    self.view.backgroundColor = bg;
+    self.tableView.backgroundColor = bg;
+    self.tableView.separatorColor = [cm tweakColorForKey:@"separators" defaultVal:0.30];
+
+    if (self.navigationController.viewControllers.firstObject == self) {
+        self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel target:self action:@selector(cancel)];
+    }
+
+    self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
+    self.searchController.searchResultsUpdater = self;
+    self.searchController.obscuresBackgroundDuringPresentation = NO;
+    self.searchController.searchBar.placeholder = @"Search Devices";
+    self.navigationItem.searchController = self.searchController;
+    self.navigationItem.hidesSearchBarWhenScrolling = NO;
+    self.definesPresentationContext = YES;
+
+    self.refreshControl = [[UIRefreshControl alloc] init];
+    [self.refreshControl addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
+
+    [self reload];
+}
+
+- (void)cancel {
+    if (self.searchController.isActive) self.searchController.active = NO;
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+#pragma mark - Loading
+
+- (void)reload {
+    self.loading = YES;
+    self.errorText = nil;
+    [self.tableView reloadData];
+    NSString *command = self.kind == RCDevicePickerKindAirPlay ? @"airplay list" : @"bluetooth list";
+    __weak typeof(self) weakSelf = self;
+    [[RCServerClient sharedClient] executeCommand:command completion:^(NSString *output, NSError *error) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.loading = NO;
+        [strongSelf.refreshControl endRefreshing];
+        if (error || !output) {
+            strongSelf.errorText = error.localizedDescription ?: @"Couldn't fetch devices";
+            strongSelf.devices = @[];
+        } else {
+            strongSelf.devices = [strongSelf devicesFromOutput:output];
+        }
+        [strongSelf.tableView reloadData];
+    }];
+}
+
+// Bluetooth: one name per line. AirPlay: "  Name" or "* Name" (the current output), with a
+// trailing " [UID]" on builds that include it.
+- (NSArray<NSDictionary *> *)devicesFromOutput:(NSString *)output {
+    NSMutableArray *devices = [NSMutableArray array];
+    NSMutableSet *seen = [NSMutableSet set];
+    for (NSString *line in [output componentsSeparatedByString:@"\n"]) {
+        NSString *text = line;
+        BOOL current = NO;
+        if (self.kind == RCDevicePickerKindAirPlay && [text hasPrefix:@"* "]) {
+            current = YES;
+            text = [text substringFromIndex:2];
+        }
+        text = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (text.length == 0 || [text hasPrefix:@"Error:"] || [text hasPrefix:@"No AirPlay devices found"] || [text hasPrefix:@"No paired Bluetooth devices found"]) continue;
+
+        NSString *name = text;
+        NSString *target = text;
+        if (self.kind == RCDevicePickerKindAirPlay) {
+            NSRange open = [text rangeOfString:@" [" options:NSBackwardsSearch];
+            if (open.location != NSNotFound && [text hasSuffix:@"]"]) {
+                name = [[text substringToIndex:open.location] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                NSString *uid = [text substringWithRange:NSMakeRange(open.location + 2, text.length - open.location - 3)];
+                target = [NSString stringWithFormat:@"%@ # %@", uid, name];
+            }
+        }
+        if ([seen containsObject:name.lowercaseString]) continue;
+        [seen addObject:name.lowercaseString];
+        [devices addObject:@{ @"name": name, @"target": target, @"current": @(current) }];
+    }
+    [devices sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [a[@"name"] localizedCaseInsensitiveCompare:b[@"name"]];
+    }];
+    // Editing an action whose device isn't listed (unpaired, or not reachable now): keep it visible
+    if (self.currentDevice.length && ![seen containsObject:self.currentDevice.lowercaseString]) {
+        [devices insertObject:@{ @"name": self.currentDevice, @"target": self.currentDevice, @"missing": @YES } atIndex:0];
+    }
+    return devices;
+}
+
+#pragma mark - Rows
+
+- (NSString *)searchText {
+    return self.searchController.isActive ? self.searchController.searchBar.text : nil;
+}
+
+- (NSArray<NSDictionary *> *)visibleDevices {
+    NSString *search = [self searchText];
+    if (search.length == 0) return self.devices;
+    NSPredicate *match = [NSPredicate predicateWithFormat:@"name CONTAINS[cd] %@", search];
+    return [self.devices filteredArrayUsingPredicate:match];
+}
+
+// Section 0: devices, or one status row. Section 1: Scan Again / Other Name… (not while searching)
+- (NSArray<NSString *> *)extraRows {
+    if ([self searchText].length) return @[];
+    NSMutableArray *rows = [NSMutableArray array];
+    if (!self.loading && (self.kind == RCDevicePickerKindAirPlay || self.errorText || self.devices.count == 0)) {
+        [rows addObject:self.kind == RCDevicePickerKindAirPlay ? @"Scan Again" : @"Try Again"];
+    }
+    if (self.kind == RCDevicePickerKindBluetooth) [rows addObject:@"Other Name…"];
+    return rows;
+}
+
+- (BOOL)showsStatusRow {
+    return self.loading || self.errorText || [self visibleDevices].count == 0;
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    return [self extraRows].count ? 2 : 1;
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (section == 1) return [self extraRows].count;
+    return [self showsStatusRow] ? 1 : [self visibleDevices].count;
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    if (section != 0) return nil;
+    return self.kind == RCDevicePickerKindAirPlay ? @"Available Outputs" : @"Paired Devices";
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    if (section != 0 || self.loading || self.errorText) return nil;
+    return self.kind == RCDevicePickerKindAirPlay ? @"Only outputs reachable right now are listed." : nil;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    RCConfigManager *cm = [RCConfigManager sharedManager];
+    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
+    cell.backgroundColor = [cm tweakColorForKey:@"blockBackground" defaultVal:0.12];
+    UIView *selBg = [[UIView alloc] init];
+    selBg.backgroundColor = [cm tweakColorForKey:@"selectionHighlight" defaultVal:0.15];
+    cell.selectedBackgroundView = selBg;
+    cell.textLabel.textColor = [UIColor labelColor];
+    cell.imageView.tintColor = [UIColor secondaryLabelColor];
+    cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+
+    if (indexPath.section == 1) {
+        NSString *title = [self extraRows][indexPath.row];
+        cell.textLabel.text = title;
+        cell.textLabel.textColor = self.view.tintColor;
+        cell.imageView.image = [UIImage systemImageNamed:[title isEqualToString:@"Other Name…"] ? @"pencil" : @"arrow.clockwise"];
+        cell.imageView.tintColor = self.view.tintColor;
+        return cell;
+    }
+
+    if ([self showsStatusRow]) {
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.textLabel.textColor = [UIColor secondaryLabelColor];
+        cell.textLabel.numberOfLines = 0;
+        if (self.loading) {
+            cell.textLabel.text = self.kind == RCDevicePickerKindAirPlay ? @"Scanning for devices…" : @"Loading paired devices…";
+            UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+            [spinner startAnimating];
+            cell.accessoryView = spinner;
+        } else if (self.errorText) {
+            cell.textLabel.text = self.errorText;
+        } else if ([self searchText].length) {
+            cell.textLabel.text = @"No matching devices";
+        } else {
+            cell.textLabel.text = self.kind == RCDevicePickerKindAirPlay ? @"No AirPlay devices found" : @"No paired devices found";
+        }
+        return cell;
+    }
+
+    NSDictionary *device = [self visibleDevices][indexPath.row];
+    cell.textLabel.text = device[@"name"];
+    cell.imageView.image = [UIImage systemImageNamed:RCDeviceIconName(device[@"name"], self.kind)];
+    if ([device[@"missing"] boolValue]) cell.detailTextLabel.text = @"Not Found";
+    else if ([device[@"current"] boolValue]) cell.detailTextLabel.text = @"Current Output";
+    BOOL ticked = self.currentDevice.length && [device[@"name"] caseInsensitiveCompare:self.currentDevice] == NSOrderedSame;
+    cell.accessoryType = ticked ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+    return cell;
+}
+
+- (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
+    return indexPath.section == 1 || ![self showsStatusRow];
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.section == 1) {
+        if ([[self extraRows][indexPath.row] isEqualToString:@"Other Name…"]) [self promptForName];
+        else [self reload];
+        return;
+    }
+    if ([self showsStatusRow]) return;
+    [self choose:[self visibleDevices][indexPath.row]];
+}
+
+- (void)choose:(NSDictionary *)device {
+    if (self.searchController.isActive) self.searchController.active = NO;
+    if (self.onDeviceSelected) self.onDeviceSelected(device);
+}
+
+// A device that isn't paired yet, or one whose name changes: matched by name when the action runs
+- (void)promptForName {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Device Name"
+                                                                   message:@"Matches any paired device whose name contains this text."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"My Device";
+        field.text = self.currentDevice;
+        field.autocapitalizationType = UITextAutocapitalizationTypeWords;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"Use" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        NSString *name = [alert.textFields.firstObject.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (name.length) [weakSelf choose:@{ @"name": name, @"target": name }];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+#pragma mark - Search
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
+    [self.tableView reloadData];
+}
+
+@end
