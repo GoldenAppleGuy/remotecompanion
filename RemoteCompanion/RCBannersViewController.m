@@ -11,11 +11,51 @@
 //   match   - command patterns: ending in " ", ":" or "-" = prefix, otherwise exact
 //   exclude - other catalog actions' longer patterns within this one's prefixes
 //             (Open Camera "camera " must not catch Camera Shutter "camera shutter")
+//
+// Actions that show a banner of their own (Camera, Home Assistant, ...) are listed too,
+// ticked unless switched off: their banners stay their own, and switching one off adds
+// it to the config's "bannerOptOut", which the tweak checks before showing it.
 @interface RCBannersViewController ()
 @property (nonatomic, strong) NSArray<NSString *> *sectionTitles;
 @property (nonatomic, strong) NSArray<NSArray<NSDictionary *> *> *sections;
 @property (nonatomic, strong) NSMutableSet<NSString *> *selectedIds;
+@property (nonatomic, strong) NSMutableSet<NSString *> *optedOutIds;
 @end
+
+// Catalog commands of the actions that show a banner of their own (the ids the tweak checks)
+static NSSet<NSString *> *RCOwnBannerIds(void) {
+    static NSSet *ids;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        ids = [NSSet setWithArray:@[@"__CAMERA_PICKER__", @"__CAMERA_VIDEO_PICKER__", @"camera record",
+                                    @"__HA_PICKER__", @"__KM_TRIGGER__", @"__MQTT_PUBLISH__", @"audiomix toggle",
+                                    @"sneakycam photo", @"sneakycam video",
+                                    @"queue album", @"queue artist", @"shuffle all songs", @"delete current song"]];
+    });
+    return ids;
+}
+
+// The picker's catalog, minus entries that don't run an action of their own
+static NSArray<NSArray<NSDictionary *> *> *RCBannerCatalog(NSArray<NSString *> **titlesOut) {
+    NSSet *skip = [NSSet setWithArray:@[@"__IF_CONDITION__", @"__DELAY__", @"__TOAST__"]];
+    RCActionPickerViewController *picker = [[RCActionPickerViewController alloc] init];
+    NSArray *catalog = [picker catalogSections];
+    NSArray *titles = [picker catalogSectionTitles];
+    NSMutableArray *sections = [NSMutableArray array];
+    NSMutableArray *sectionTitles = [NSMutableArray array];
+    for (NSUInteger i = 0; i < catalog.count; i++) {
+        NSMutableArray *items = [NSMutableArray array];
+        for (NSDictionary *item in catalog[i]) {
+            if (![skip containsObject:item[@"command"]]) [items addObject:item];
+        }
+        if (items.count) {
+            [sections addObject:items];
+            [sectionTitles addObject:i < titles.count ? titles[i] : @""];
+        }
+    }
+    if (titlesOut) *titlesOut = sectionTitles;
+    return sections;
+}
 
 @implementation RCBannersViewController
 
@@ -34,30 +74,35 @@
     self.tableView.backgroundColor = bg;
     self.tableView.separatorColor = [cm tweakColorForKey:@"separators" defaultVal:0.30];
 
-    // Same catalog as the action picker, minus entries that don't run an action of their own
-    NSSet *skip = [NSSet setWithArray:@[@"__IF_CONDITION__", @"__DELAY__", @"__TOAST__"]];
-    RCActionPickerViewController *picker = [[RCActionPickerViewController alloc] init];
-    NSArray *catalog = [picker catalogSections];
-    NSArray *titles = [picker catalogSectionTitles];
-    NSMutableArray *sections = [NSMutableArray array];
-    NSMutableArray *sectionTitles = [NSMutableArray array];
-    for (NSUInteger i = 0; i < catalog.count; i++) {
-        NSMutableArray *items = [NSMutableArray array];
-        for (NSDictionary *item in catalog[i]) {
-            if (![skip containsObject:item[@"command"]]) [items addObject:item];
-        }
-        if (items.count) {
-            [sections addObject:items];
-            [sectionTitles addObject:i < titles.count ? titles[i] : @""];
-        }
-    }
-    self.sections = sections;
-    self.sectionTitles = sectionTitles;
+    NSArray *titles = nil;
+    self.sections = RCBannerCatalog(&titles);
+    self.sectionTitles = titles;
 
     self.selectedIds = [NSMutableSet set];
     for (NSDictionary *entry in cm.bannerActions) {
         if ([entry[@"id"] isKindOfClass:[NSString class]]) [self.selectedIds addObject:entry[@"id"]];
     }
+    self.optedOutIds = [NSMutableSet setWithArray:cm.bannerOptOut];
+}
+
++ (NSUInteger)checkedCount {
+    RCConfigManager *cm = [RCConfigManager sharedManager];
+    NSSet *selected = [NSSet setWithArray:[cm.bannerActions valueForKey:@"id"]];
+    NSSet *optedOut = [NSSet setWithArray:cm.bannerOptOut];
+    NSUInteger count = 0;
+    for (NSArray *section in RCBannerCatalog(NULL)) {
+        for (NSDictionary *item in section) {
+            NSString *command = item[@"command"];
+            BOOL own = [RCOwnBannerIds() containsObject:command];
+            if (own ? ![optedOut containsObject:command] : [selected containsObject:command]) count++;
+        }
+    }
+    return count;
+}
+
+- (BOOL)isChecked:(NSString *)command {
+    if ([RCOwnBannerIds() containsObject:command]) return ![self.optedOutIds containsObject:command];
+    return [self.selectedIds containsObject:command];
 }
 
 #pragma mark - Matching
@@ -142,10 +187,12 @@ static BOOL RCBannerIsPrefixPattern(NSString *p) {
     NSMutableArray *entries = [NSMutableArray array];
     for (NSArray *section in self.sections) {
         for (NSDictionary *item in section) {
+            if ([RCOwnBannerIds() containsObject:item[@"command"]]) continue; // own banners: bannerOptOut instead
             if ([self.selectedIds containsObject:item[@"command"]]) [entries addObject:[self entryForItem:item]];
         }
     }
     [RCConfigManager sharedManager].bannerActions = entries;
+    [RCConfigManager sharedManager].bannerOptOut = self.optedOutIds.allObjects;
 }
 
 #pragma mark - Table view
@@ -176,15 +223,16 @@ static BOOL RCBannerIsPrefixPattern(NSString *p) {
     cell.textLabel.textColor = [UIColor labelColor];
     cell.imageView.image = [UIImage systemImageNamed:item[@"icon"]];
     cell.imageView.tintColor = [UIColor systemGrayColor];
-    cell.accessoryType = [self.selectedIds containsObject:item[@"command"]] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+    cell.accessoryType = [self isChecked:item[@"command"]] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
     return cell;
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     NSString *command = self.sections[indexPath.section][indexPath.row][@"command"];
-    if ([self.selectedIds containsObject:command]) [self.selectedIds removeObject:command];
-    else [self.selectedIds addObject:command];
+    NSMutableSet *set = [RCOwnBannerIds() containsObject:command] ? self.optedOutIds : self.selectedIds;
+    if ([set containsObject:command]) [set removeObject:command];
+    else [set addObject:command];
     [self saveSelection];
     [tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
 }

@@ -252,6 +252,16 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     [self saveConfig];
 }
 
+- (NSArray<NSString *> *)bannerOptOut {
+    id list = _config[@"bannerOptOut"];
+    return [list isKindOfClass:[NSArray class]] ? list : @[];
+}
+
+- (void)setBannerOptOut:(NSArray<NSString *> *)bannerOptOut {
+    _config[@"bannerOptOut"] = bannerOptOut ?: @[];
+    [self saveConfig];
+}
+
 - (void)setNfcEnabled:(BOOL)nfcEnabled {
     _config[@"nfcEnabled"] = @(nfcEnabled);
     if (!nfcEnabled) {

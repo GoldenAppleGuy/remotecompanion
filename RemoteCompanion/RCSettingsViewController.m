@@ -225,7 +225,7 @@
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
         } else if (indexPath.row == 3) {
             cell.textLabel.text = @"Banners";
-            NSUInteger count = cm.bannerActions.count;
+            NSUInteger count = [RCBannersViewController checkedCount];
             cell.detailTextLabel.text = count ? [NSString stringWithFormat:@"%lu", (unsigned long)count] : @"Off";
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         }

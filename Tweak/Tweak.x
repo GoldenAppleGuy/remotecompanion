@@ -1022,6 +1022,9 @@ static void rc_show_hud_toast(NSString *title, NSString *subtitle, NSString *ico
     });
 }
 
+// Settings > Banners switches for actions that show a banner of their own (defined below)
+static BOOL rc_own_banner_enabled(NSString *bannerId);
+
 static void toggle_audiomix(BOOL state) {
     @try {
         CFStringRef appID = CFSTR("com.kingpuffdaddi.audiomixprefs");
@@ -1051,7 +1054,7 @@ static void toggle_audiomix(BOOL state) {
 
         SRLog(@"AudioMix Enabled toggled to: %@", state ? @"YES" : @"NO");
 
-        rc_show_hud_toast(@"AudioMix", state ? @"Enabled" : @"Disabled", @"music.note");
+        if (rc_own_banner_enabled(@"audiomix toggle")) rc_show_hud_toast(@"AudioMix", state ? @"Enabled" : @"Disabled", @"music.note");
     } @catch (NSException *e) {
         SRLog(@"EXCEPTION in toggle_audiomix: %@", e);
     }
@@ -1990,9 +1993,64 @@ static NSString *rc_banner_app_name(NSString *arg) {
     return name.length ? name : bundleID;
 }
 
+// Their own banners stay as they are; Settings > Banners only switches them off.
+// Config "bannerOptOut" lists the ones switched off (ids = the catalog commands), so
+// they stay on unless someone turns them off.
+static BOOL rc_own_banner_enabled(NSString *bannerId) {
+    load_trigger_config();
+    NSArray *off = g_triggerConfig[@"bannerOptOut"];
+    return !([off isKindOfClass:[NSArray class]] && [off containsObject:bannerId]);
+}
+
+// Actions that already show a banner of their own (Camera, Home Assistant, Keyboard
+// Maestro, MQTT, AudioMix, SneakyCam, the music-queue actions). Settings > Banners
+// doesn't offer them; this also keeps an older or hand-edited selection from adding
+// a second banner.
+static BOOL rc_action_shows_own_banner(NSString *cmd) {
+    if ([cmd hasPrefix:@"camera"] || [cmd hasPrefix:@"open camera"]) {
+        // Opening the camera shows a banner; the shutter / record toggle don't
+        NSSet *quiet = [NSSet setWithArray:@[@"camera shutter", @"camera snap", @"camera capture", @"camera record toggle", @"camera record-toggle"]];
+        return ![quiet containsObject:cmd];
+    }
+    for (NSString *prefix in @[@"ha ", @"km ", @"mqtt ", @"audiomix", @"sneakycam", @"playlist ", @"play playlist ", @"shuffle playlist ", @"suffle playlist "]) {
+        if ([cmd hasPrefix:prefix]) return YES;
+    }
+    NSSet *exact = [NSSet setWithArray:@[@"queuealbum", @"queue album", @"queueartist", @"queue artist", @"shuffleall", @"shuffle all songs",
+                                         @"suffle all songs", @"deletesong", @"delete song", @"delete current song"]];
+    return [exact containsObject:cmd];
+}
+
+// The volume the hardware buttons change: the active category's (media while something
+// plays, otherwise the ringer), falling back to media volume
+static NSString *rc_banner_volume_percent(void) {
+    AVSystemController *av = [objc_getClass("AVSystemController") sharedAVSystemController];
+    float volume = -1;
+    SEL activeSel = NSSelectorFromString(@"getActiveCategoryVolume:andName:");
+    if ([av respondsToSelector:activeSel]) {
+        NSString *name = nil;
+        if (!((BOOL (*)(id, SEL, float *, NSString **))objc_msgSend)(av, activeSel, &volume, &name)) volume = -1;
+    }
+    if (volume < 0 && [av respondsToSelector:@selector(getVolume:forCategory:)]) {
+        if (![av getVolume:&volume forCategory:@"Audio/Video"]) volume = -1;
+    }
+    return volume < 0 ? nil : [NSString stringWithFormat:@"%.0f%%", volume * 100.0f];
+}
+
+// "Title – Artist" of what's playing, delivered on the main queue (nil if nothing)
+static void rc_banner_now_playing(void (^completion)(NSString *subtitle)) {
+    MRMediaRemoteGetNowPlayingInfo(dispatch_get_main_queue(), ^(CFDictionaryRef information) {
+        NSDictionary *info = (__bridge NSDictionary *)information;
+        NSString *title = info[(__bridge NSString *)kMRMediaRemoteNowPlayingInfoTitle];
+        NSString *artist = info[(__bridge NSString *)kMRMediaRemoteNowPlayingInfoArtist];
+        if (title.length && artist.length) completion([NSString stringWithFormat:@"%@ – %@", title, artist]);
+        else completion(title.length ? title : nil);
+    });
+}
+
 static void rc_maybe_show_action_banner(NSString *action) {
     load_trigger_config();
     NSString *cmd = [[action lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (rc_action_shows_own_banner(cmd)) return;
     NSDictionary *entry = rc_banner_entry_for_command(cmd);
     if (!entry) return;
 
@@ -2004,12 +2062,52 @@ static void rc_maybe_show_action_banner(NSString *action) {
         return;
     }
 
-    // Name the app / shortcut where the command carries one
+    // Results that need the action to land first: the new volume, what's playing
+    if ([cmd isEqualToString:@"volume up"] || [cmd isEqualToString:@"vol up"] || [cmd isEqualToString:@"volume down"] || [cmd isEqualToString:@"vol down"]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            rc_show_hud_toast(title, rc_banner_volume_percent(), icon);
+        });
+        return;
+    }
+    if ([@[@"play", @"pause", @"playpause", @"toggle", @"next", @"prev"] containsObject:cmd]) {
+        // Give a track change time to land
+        double delay = ([cmd isEqualToString:@"next"] || [cmd isEqualToString:@"prev"]) ? 0.8 : 0.3;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            rc_banner_now_playing(^(NSString *nowPlaying) {
+                rc_show_hud_toast(title, nowPlaying, icon);
+            });
+        });
+        return;
+    }
+
+    // Name the app / shortcut / device / level where the command carries one
     NSString *subtitle = nil;
     NSString *original = [action stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if ([cmd hasPrefix:@"uiopen "]) subtitle = rc_banner_app_name([original substringFromIndex:7]);
     else if ([cmd hasPrefix:@"kill "]) subtitle = rc_banner_app_name([original substringFromIndex:5]);
     else if ([cmd hasPrefix:@"shortcut:"]) subtitle = [[original substringFromIndex:9] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    else if ([cmd hasPrefix:@"set-vol "] || [cmd hasPrefix:@"brightness "]) {
+        // Both take 0-100
+        float level = [[cmd substringFromIndex:[cmd rangeOfString:@" "].location + 1] floatValue];
+        subtitle = [NSString stringWithFormat:@"%.0f%%", fmaxf(0, fminf(100, level))];
+    }
+    else if ([cmd isEqualToString:@"previous app"] || [cmd isEqualToString:@"last app"]) {
+        // Still the app being switched to: the switch itself lands asynchronously
+        if (g_previousAppBundleId.length) subtitle = rc_banner_app_name(g_previousAppBundleId);
+    }
+    else {
+        // Connect / Disconnect Bluetooth and Connect AirPlay: the device name as entered
+        for (NSString *prefix in @[@"bluetooth disconnect ", @"bluetooth connect ", @"bt disconnect ", @"bt-disconnect ",
+                                   @"bt connect ", @"bt-connect ", @"airplay connect "]) {
+            if (![cmd hasPrefix:prefix]) continue;
+            NSString *device = [[original substringFromIndex:prefix.length] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if (device.length >= 2 && [device hasPrefix:@"\""] && [device hasSuffix:@"\""]) {
+                device = [device substringWithRange:NSMakeRange(1, device.length - 2)];
+            }
+            if (device.length) subtitle = device;
+            break;
+        }
+    }
     rc_show_hud_toast(title, subtitle, icon);
 }
 
@@ -5069,7 +5167,7 @@ static NSString *rc_execute_ha_command(NSString *cmdArgs) {
     NSString *path = [NSString stringWithFormat:@"/api/services/%@/%@", domain, service];
     NSDictionary *res = rc_execute_ha_request(path, @"POST", payload, nil, nil);
     if ([res[@"ok"] boolValue]) {
-        rc_show_hud_toast(@"Home Assistant", [NSString stringWithFormat:@"Executed %@.%@", domain, service], @"house.fill");
+        if (rc_own_banner_enabled(@"__HA_PICKER__")) rc_show_hud_toast(@"Home Assistant", [NSString stringWithFormat:@"Executed %@.%@", domain, service], @"house.fill");
         return [NSString stringWithFormat:@"Home Assistant call succeeded: %@.%@\n", domain, service];
     } else {
         return [NSString stringWithFormat:@"Home Assistant call failed: %@\n", res[@"error"] ?: @"Unknown error"];
@@ -5332,7 +5430,7 @@ static NSString *rc_execute_km_command(NSString *cmdArgs) {
             } else {
                 NSHTTPURLResponse *http = (NSHTTPURLResponse *)resp;
                 if (http.statusCode >= 200 && http.statusCode < 400) {
-                    rc_show_hud_toast(@"Keyboard Maestro", @"Triggered URL Macro", @"command");
+                    if (rc_own_banner_enabled(@"__KM_TRIGGER__")) rc_show_hud_toast(@"Keyboard Maestro", @"Triggered URL Macro", @"command");
                     respMsg = [NSString stringWithFormat:@"Keyboard Maestro trigger succeeded (HTTP %ld)\n", (long)http.statusCode];
                 } else if (http.statusCode == 401) {
                     respMsg = @"Keyboard Maestro error (HTTP 401: Unauthorized - Check Username/Password)\n";
@@ -5458,7 +5556,7 @@ static NSString *rc_execute_km_command(NSString *cmdArgs) {
     
     if ([res[@"ok"] boolValue]) {
         NSString *toastMsg = [NSString stringWithFormat:@"Triggered %@", displayName];
-        rc_show_hud_toast(@"Keyboard Maestro", toastMsg, @"command");
+        if (rc_own_banner_enabled(@"__KM_TRIGGER__")) rc_show_hud_toast(@"Keyboard Maestro", toastMsg, @"command");
         return [NSString stringWithFormat:@"Keyboard Maestro macro triggered: %@\n", displayName];
     } else {
         return [NSString stringWithFormat:@"Keyboard Maestro trigger failed: %@\n", res[@"error"] ?: @"Unknown error"];
@@ -5653,7 +5751,7 @@ static NSString *rc_execute_mqtt_command(NSString *cmdArgs) {
     BOOL success = rc_mqtt_publish(host, port, user, pass, clientId, topic, payload ?: @"", 0, NO, &error);
     if (success) {
         NSString *toastDetail = payload.length > 0 ? [NSString stringWithFormat:@"%@ (%@)", topic, payload] : topic;
-        rc_show_hud_toast(@"MQTT Published", toastDetail, @"antenna.radiowaves.left.and.right");
+        if (rc_own_banner_enabled(@"__MQTT_PUBLISH__")) rc_show_hud_toast(@"MQTT Published", toastDetail, @"antenna.radiowaves.left.and.right");
         return [NSString stringWithFormat:@"MQTT message published to '%@'\n", topic];
     } else {
         return [NSString stringWithFormat:@"MQTT publish failed: %@\n", error.localizedDescription ?: @"Connection error"];
@@ -5973,7 +6071,9 @@ static NSString *rc_open_camera_unified(NSInteger mode, NSInteger device, double
     NSString *detailStr = (details.count > 0) ? [NSString stringWithFormat:@" (%@)", [details componentsJoinedByString:@", "]] : @"";
     NSString *modeDesc = [NSString stringWithFormat:@"%@ Mode%@", modeName, detailStr];
     
-    rc_show_hud_toast(@"Camera", modeDesc, icon);
+    // Banners row: Camera Record Toggle when recording starts, else Open (Video) Camera
+    NSString *bannerId = (autoShutter && mode == 1) ? @"camera record" : (mode == 1 ? @"__CAMERA_VIDEO_PICKER__" : @"__CAMERA_PICKER__");
+    if (rc_own_banner_enabled(bannerId)) rc_show_hud_toast(@"Camera", modeDesc, icon);
     return [NSString stringWithFormat:@"Opened Camera in %@\n", modeDesc];
 }
 
@@ -7243,7 +7343,7 @@ static NSString *handle_command(NSString *cmd) {
              [service openApplication:@"com.saihgupr.audiostream" withOptions:nil completion:nil];
         });
         notify_post("com.saihgupr.audiostream.queuealbum");
-        rc_show_hud_toast(@"Album Queued", @"Queuing album of current song", @"music.note.list");
+        if (rc_own_banner_enabled(@"queue album")) rc_show_hud_toast(@"Album Queued", @"Queuing album of current song", @"music.note.list");
         return @"Queue album command sent to AudioReceiver\n";
     } else if ([cleanCmd isEqualToString:@"queueartist"] || [cleanCmd isEqualToString:@"queue artist"]) {
         // Signal AudioReceiver app to queue the artist of the currently playing song
@@ -7253,7 +7353,7 @@ static NSString *handle_command(NSString *cmd) {
              [service openApplication:@"com.saihgupr.audiostream" withOptions:nil completion:nil];
         });
         notify_post("com.saihgupr.audiostream.queueartist");
-        rc_show_hud_toast(@"Artist Queued", @"Queuing artist of current song", @"music.mic");
+        if (rc_own_banner_enabled(@"queue artist")) rc_show_hud_toast(@"Artist Queued", @"Queuing artist of current song", @"music.mic");
         return @"Queue artist command sent to AudioReceiver\n";
     } else if ([cleanCmd isEqualToString:@"shuffleall"] || [cleanCmd isEqualToString:@"shuffle all songs"] || [cleanCmd isEqualToString:@"suffle all songs"]) {
         // Signal AudioReceiver app to shuffle all songs and play
@@ -7263,7 +7363,7 @@ static NSString *handle_command(NSString *cmd) {
              [service openApplication:@"com.saihgupr.audiostream" withOptions:nil completion:nil];
         });
         notify_post("com.saihgupr.audiostream.shuffleall");
-        rc_show_hud_toast(@"Shuffle All Songs", @"Shuffling all songs and playing", @"shuffle");
+        if (rc_own_banner_enabled(@"shuffle all songs")) rc_show_hud_toast(@"Shuffle All Songs", @"Shuffling all songs and playing", @"shuffle");
         return @"Shuffle all command sent to AudioReceiver\n";
     } else if ([cleanCmd isEqualToString:@"deletesong"] || [cleanCmd isEqualToString:@"delete song"] || [cleanCmd isEqualToString:@"delete current song"]) {
         // Signal AudioReceiver app to delete currently playing song
@@ -7273,7 +7373,7 @@ static NSString *handle_command(NSString *cmd) {
              [service openApplication:@"com.saihgupr.audiostream" withOptions:nil completion:nil];
         });
         notify_post("com.saihgupr.audiostream.deletesong");
-        rc_show_hud_toast(@"Song Deleted", @"Deleting currently playing song", @"trash");
+        if (rc_own_banner_enabled(@"delete current song")) rc_show_hud_toast(@"Song Deleted", @"Deleting currently playing song", @"trash");
         return @"Delete song command sent to AudioReceiver\n";
     } else if ([cleanCmd hasPrefix:@"playlist "] || [cleanCmd hasPrefix:@"play playlist "] || [cleanCmd hasPrefix:@"shuffle playlist "] || [cleanCmd hasPrefix:@"suffle playlist "]) {
         NSString *playlistName = @"";
@@ -8639,7 +8739,7 @@ static NSString *handle_command(NSString *cmd) {
         notify_post("com.spark.SneakyCam.takePhoto");
         FILE *p = popen("/var/jb/usr/bin/notifyutil -p com.spark.SneakyCam.takephoto 2>/dev/null || /usr/bin/notifyutil -p com.spark.SneakyCam.takephoto 2>/dev/null || notifyutil -p com.spark.SneakyCam.takephoto 2>/dev/null", "r");
         if (p) pclose(p);
-        rc_show_hud_toast(@"SneakyCam", @"Photo Triggered", @"camera.fill");
+        if (rc_own_banner_enabled(@"sneakycam photo")) rc_show_hud_toast(@"SneakyCam", @"Photo Triggered", @"camera.fill");
         return @"SneakyCam: Photo trigger sent\n";
     } else if ([cleanCmd isEqualToString:@"sneakycam video"] || [cleanCmd isEqualToString:@"sneakycam record"] || [cleanCmd isEqualToString:@"sneakycam startstopvideo"]) {
         SRLog(@"[SneakyCam] Triggering Video Notification...");
@@ -8648,7 +8748,7 @@ static NSString *handle_command(NSString *cmd) {
         notify_post("com.spark.SneakyCam.startStopVideo");
         FILE *p = popen("/var/jb/usr/bin/notifyutil -p com.spark.SneakyCam.startstopvideo 2>/dev/null || /usr/bin/notifyutil -p com.spark.SneakyCam.startstopvideo 2>/dev/null || notifyutil -p com.spark.SneakyCam.startStopVideo 2>/dev/null", "r");
         if (p) pclose(p);
-        rc_show_hud_toast(@"SneakyCam", @"Video Toggled", @"video.fill");
+        if (rc_own_banner_enabled(@"sneakycam video")) rc_show_hud_toast(@"SneakyCam", @"Video Toggled", @"video.fill");
         return @"SneakyCam: Video trigger sent\n";
     } else if ([cleanCmd hasPrefix:@"trigger:"]) {
         NSString *trigKey = [[cleanCmd substringFromIndex:8] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
