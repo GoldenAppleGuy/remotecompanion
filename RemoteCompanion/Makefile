@@ -11,6 +11,7 @@ APPLICATION_NAME = RemoteCompanion
 RemoteCompanion_FILES = main.m RCAppDelegate.m RCConfigManager.m RCTriggersViewController.m RCActionsViewController.m RCActionPickerViewController.m RCSettingsViewController.m RCIntegrationsViewController.m RCHASettingsViewController.m RCKMSettingsViewController.m RCMQTTSettingsViewController.m RCMQTTClient.m RCMQTTTriggerViewController.m RCNFCTriggerViewController.m RCShortcutPickerViewController.m RCTextInputViewController.m RCAppPickerViewController.m RCServerClient.m RCWiFiTriggerViewController.m RCBluetoothTriggerViewController.m RCUITweaker.m RCNotificationTriggerViewController.m RCScheduledTriggerViewController.m RCHAEntityPickerViewController.m RCKMMacroPickerViewController.m
 RemoteCompanion_FRAMEWORKS = UIKit Foundation UserNotifications CoreNFC MobileCoreServices
 RemoteCompanion_CFLAGS = -fobjc-arc
+RemoteCompanion_FILES += RCNewTriggerViewController.m
 RemoteCompanion_LDFLAGS = -lc++
 RemoteCompanion_CODESIGN_FLAGS = -SEntitlements.plist
 RemoteCompanion_RESOURCE_FILES = Info.plist Icon.png AppIcon60x60@2x.png AppIcon60x60@3x.png Entitlements.plist

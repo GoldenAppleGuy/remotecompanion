@@ -1,6 +1,7 @@
 #import "RCTriggersViewController.h"
 #import "RCConfigManager.h"
 #import "RCActionsViewController.h"
+#import "RCNewTriggerViewController.h"
 #import "RCSettingsViewController.h"
 #import "RCNFCTriggerViewController.h"
 #import <notify.h>
@@ -351,141 +352,68 @@
 }
 
 - (void)addNewItem {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"New Trigger"
-        message:@"Select a trigger type to expand your RemoteCompanion setup."
-        preferredStyle:UIAlertControllerStyleActionSheet];
-        
-    [alert addAction:[UIAlertAction actionWithTitle:@"NFC Tag" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [self startNFCScan];
-    }]];
+    __weak typeof(self) weakSelf = self;
+    void (^push)(UIViewController *) = ^(UIViewController *vc) {
+        [weakSelf.navigationController pushViewController:vc animated:YES];
+    };
 
-    [alert addAction:[UIAlertAction actionWithTitle:@"WiFi Network" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        RCWiFiTriggerViewController *vc = [[RCWiFiTriggerViewController alloc] init];
-        [self.navigationController pushViewController:vc animated:YES];
-    }]];
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"Bluetooth Device" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        RCBluetoothTriggerViewController *vc = [[RCBluetoothTriggerViewController alloc] init];
-        [self.navigationController pushViewController:vc animated:YES];
-    }]];
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"App Launch" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        RCAppPickerViewController *vc = [[RCAppPickerViewController alloc] init];
-        vc.suppressAutoPop = YES; // We handle navigation ourselves
-        vc.onAppSelected = ^(NSString *appName, NSString *bundleId) {
-            NSString *triggerKey = [NSString stringWithFormat:@"app_launch_%@", bundleId];
-            NSString *friendlyName = [NSString stringWithFormat:@"Launch %@", appName];
-            
-            NSDictionary *triggerData = @{
-                @"name": friendlyName,
-                @"enabled": @YES,
-                @"actions": @[]
-            };
-            
-            [[RCConfigManager sharedManager] updateTrigger:triggerKey withData:triggerData];
-            
-            // Push actionsVC, then let the app picker pop (leaving [TriggersVC, ActionsVC])
-            RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:triggerKey];
-            NSMutableArray *vcs = [self.navigationController.viewControllers mutableCopy];
-            [vcs removeLastObject]; // Remove the app picker
-            [vcs addObject:actionsVC];
-            [self.navigationController setViewControllers:vcs animated:YES];
-        };
-        [self.navigationController pushViewController:vc animated:YES];
-    }]];
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"Notification" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        RCNotificationTriggerViewController *vc = [[RCNotificationTriggerViewController alloc] init];
-        [self.navigationController pushViewController:vc animated:YES];
-    }]];
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"Scheduled Trigger" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        RCScheduledTriggerViewController *vc = [[RCScheduledTriggerViewController alloc] init];
-        [self.navigationController pushViewController:vc animated:YES];
-    }]];
-    
-    [alert addAction:[UIAlertAction actionWithTitle:@"MQTT Topic" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        RCMQTTTriggerViewController *vc = [[RCMQTTTriggerViewController alloc] init];
-        [self.navigationController pushViewController:vc animated:YES];
-    }]];
-    
-    [alert addAction:[UIAlertAction actionWithTitle:@"System Event" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        UIAlertController *systemAlert = [UIAlertController alertControllerWithTitle:@"System Event" message:@"Select a system event to trigger actions." preferredStyle:UIAlertControllerStyleAlert];
-        
-        [systemAlert addAction:[UIAlertAction actionWithTitle:@"Device Locked" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            NSString *key = @"trigger_device_lock";
+    // System events can only be added once; one that exists just opens
+    NSArray *configured = [[RCConfigManager sharedManager] allConfiguredTriggerKeys];
+    NSMutableArray *systemEvents = [NSMutableArray array];
+    for (NSArray *event in @[@[@"trigger_device_lock", @"Device Locked", @"lock.fill"],
+                             @[@"trigger_device_unlock", @"Device Unlocked", @"lock.open.fill"],
+                             @[@"trigger_power_connect", @"Power Connected", @"bolt.fill"],
+                             @[@"trigger_power_disconnect", @"Power Disconnected", @"bolt.slash.fill"],
+                             @[@"trigger_media_play", @"Media Playing", @"play.fill"],
+                             @[@"trigger_media_pause", @"Media Paused", @"pause.fill"],
+                             @[@"trigger_media_track_change", @"Media Track Changed", @"forward.fill"]]) {
+        NSString *key = event[0], *title = event[1];
+        NSMutableDictionary *child = [@{ @"title": title, @"icon": event[2], @"handler": ^{
             if (![[[RCConfigManager sharedManager] allConfiguredTriggerKeys] containsObject:key]) {
-                [[RCConfigManager sharedManager] updateTrigger:key withData:@{@"name": @"Device Locked", @"enabled": @YES, @"actions": @[]}];
+                [[RCConfigManager sharedManager] updateTrigger:key withData:@{@"name": title, @"enabled": @YES, @"actions": @[]}];
             }
-            RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:key];
-            [self.navigationController pushViewController:actionsVC animated:YES];
-        }]];
-        
-        [systemAlert addAction:[UIAlertAction actionWithTitle:@"Device Unlocked" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            NSString *key = @"trigger_device_unlock";
-            if (![[[RCConfigManager sharedManager] allConfiguredTriggerKeys] containsObject:key]) {
-                [[RCConfigManager sharedManager] updateTrigger:key withData:@{@"name": @"Device Unlocked", @"enabled": @YES, @"actions": @[]}];
-            }
-            RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:key];
-            [self.navigationController pushViewController:actionsVC animated:YES];
-        }]];
-        
-        [systemAlert addAction:[UIAlertAction actionWithTitle:@"Power Connected" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            NSString *key = @"trigger_power_connect";
-            if (![[[RCConfigManager sharedManager] allConfiguredTriggerKeys] containsObject:key]) {
-                [[RCConfigManager sharedManager] updateTrigger:key withData:@{@"name": @"Power Connected", @"enabled": @YES, @"actions": @[]}];
-            }
-            RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:key];
-            [self.navigationController pushViewController:actionsVC animated:YES];
-        }]];
-        
-        [systemAlert addAction:[UIAlertAction actionWithTitle:@"Power Disconnected" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            NSString *key = @"trigger_power_disconnect";
-            if (![[[RCConfigManager sharedManager] allConfiguredTriggerKeys] containsObject:key]) {
-                [[RCConfigManager sharedManager] updateTrigger:key withData:@{@"name": @"Power Disconnected", @"enabled": @YES, @"actions": @[]}];
-            }
-            RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:key];
-            [self.navigationController pushViewController:actionsVC animated:YES];
-        }]];
-        
-        [systemAlert addAction:[UIAlertAction actionWithTitle:@"Media Playing" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            NSString *key = @"trigger_media_play";
-            if (![[[RCConfigManager sharedManager] allConfiguredTriggerKeys] containsObject:key]) {
-                [[RCConfigManager sharedManager] updateTrigger:key withData:@{@"name": @"Media Playing", @"enabled": @YES, @"actions": @[]}];
-            }
-            RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:key];
-            [self.navigationController pushViewController:actionsVC animated:YES];
-        }]];
-        
-        [systemAlert addAction:[UIAlertAction actionWithTitle:@"Media Paused" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            NSString *key = @"trigger_media_pause";
-            if (![[[RCConfigManager sharedManager] allConfiguredTriggerKeys] containsObject:key]) {
-                [[RCConfigManager sharedManager] updateTrigger:key withData:@{@"name": @"Media Paused", @"enabled": @YES, @"actions": @[]}];
-            }
-            RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:key];
-            [self.navigationController pushViewController:actionsVC animated:YES];
-        }]];
-        
-        [systemAlert addAction:[UIAlertAction actionWithTitle:@"Media Track Changed" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            NSString *key = @"trigger_media_track_change";
-            if (![[[RCConfigManager sharedManager] allConfiguredTriggerKeys] containsObject:key]) {
-                [[RCConfigManager sharedManager] updateTrigger:key withData:@{@"name": @"Media Track Changed", @"enabled": @YES, @"actions": @[]}];
-            }
-            RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:key];
-            [self.navigationController pushViewController:actionsVC animated:YES];
-        }]];
-        
-        [systemAlert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-        [self presentViewController:systemAlert animated:YES completion:nil];
-    }]];
-    
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    
-    if (alert.popoverPresentationController) {
-        alert.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.firstObject;
+            push([[RCActionsViewController alloc] initWithTriggerKey:key]);
+        } } mutableCopy];
+        if ([configured containsObject:key]) child[@"detail"] = @"Added";
+        [systemEvents addObject:child];
     }
-    
-    [self presentViewController:alert animated:YES completion:nil];
+
+    NSArray *items = @[
+        @{ @"title": @"NFC Tag", @"icon": @"wave.3.right", @"section": @"Nearby", @"handler": ^{ push([[RCNFCTriggerViewController alloc] init]); } },
+        @{ @"title": @"Wi-Fi Network", @"icon": @"wifi", @"section": @"Nearby", @"handler": ^{ push([[RCWiFiTriggerViewController alloc] init]); } },
+        @{ @"title": @"Bluetooth Device", @"icon": @"dot.radiowaves.left.and.right", @"section": @"Nearby", @"handler": ^{ push([[RCBluetoothTriggerViewController alloc] init]); } },
+        @{ @"title": @"App Launch", @"icon": @"square.grid.2x2", @"section": @"Apps", @"handler": ^{
+            RCAppPickerViewController *vc = [[RCAppPickerViewController alloc] init];
+            vc.suppressAutoPop = YES; // We handle navigation ourselves
+            vc.onAppSelected = ^(NSString *appName, NSString *bundleId) {
+                __strong typeof(weakSelf) self = weakSelf;
+                if (!self) return;
+                NSString *triggerKey = [NSString stringWithFormat:@"app_launch_%@", bundleId];
+                NSString *friendlyName = [NSString stringWithFormat:@"Launch %@", appName];
+                
+                NSDictionary *triggerData = @{
+                    @"name": friendlyName,
+                    @"enabled": @YES,
+                    @"actions": @[]
+                };
+                
+                [[RCConfigManager sharedManager] updateTrigger:triggerKey withData:triggerData];
+                
+                // Push actionsVC, then let the app picker pop (leaving [TriggersVC, ActionsVC])
+                RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:triggerKey];
+                NSMutableArray *vcs = [self.navigationController.viewControllers mutableCopy];
+                [vcs removeLastObject]; // Remove the app picker
+                [vcs addObject:actionsVC];
+                [self.navigationController setViewControllers:vcs animated:YES];
+            };
+            push(vc);
+        } },
+        @{ @"title": @"Notification", @"icon": @"bell.badge", @"section": @"Apps", @"handler": ^{ push([[RCNotificationTriggerViewController alloc] init]); } },
+        @{ @"title": @"Scheduled Trigger", @"icon": @"calendar.badge.clock", @"section": @"Time", @"handler": ^{ push([[RCScheduledTriggerViewController alloc] init]); } },
+        @{ @"title": @"System Event", @"icon": @"gearshape", @"section": @"System", @"children": systemEvents },
+        @{ @"title": @"MQTT Topic", @"icon": @"antenna.radiowaves.left.and.right", @"section": @"Integrations", @"handler": ^{ push([[RCMQTTTriggerViewController alloc] init]); } },
+    ];
+    [self.navigationController pushViewController:[[RCNewTriggerViewController alloc] initWithItems:items] animated:YES];
 }
 
 - (void)startNFCScan {
