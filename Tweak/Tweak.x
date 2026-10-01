@@ -1144,6 +1144,25 @@ static void inject_hid_event(uint32_t page, uint32_t usage, uint64_t durationNs,
     });
 }
 
+// One volume step through SpringBoard's volume controller (with the volume HUD), for the
+// Volume Up / Down actions. Not a simulated button press: fired from a button trigger that
+// is still held (e.g. Power + Volume Up), such a press is taken as part of that combo and
+// swallowed. Not increaseVolume/decreaseVolume either - those act like holding the button
+// and keep ramping until a matching release. Returns NO if the controller isn't available.
+static BOOL rc_step_volume(BOOL up) {
+    id sb = [UIApplication sharedApplication];
+    id volumeControl = [sb respondsToSelector:@selector(volumeControl)] ? [sb performSelector:@selector(volumeControl)] : nil;
+    SEL stepSel = up ? @selector(volumeStepUp) : @selector(volumeStepDown);
+    if (![volumeControl respondsToSelector:@selector(changeVolumeByDelta:)] || ![volumeControl respondsToSelector:stepSel]) return NO;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        float step = fabsf(((float (*)(id, SEL))objc_msgSend)(volumeControl, stepSel));
+        if (step <= 0) step = 1.0f / 16.0f; // the usual hardware step
+        ((void (*)(id, SEL, float))objc_msgSend)(volumeControl, @selector(changeVolumeByDelta:), up ? step : -step);
+    });
+    return YES;
+}
+
+
 static void toggle_system_vibration(BOOL silentMode, BOOL enable) {
     NSString *key = silentMode ? @"silent-vibrate" : @"ring-vibrate";
     CFStringRef appID = CFSTR("com.apple.springboard");
@@ -7404,10 +7423,10 @@ static NSString *handle_command(NSString *cmd) {
         
         return @"Error: AVSystemController failed. Cannot control media mute.\n";
     } else if ([cleanCmd isEqualToString:@"volume up"] || [cleanCmd isEqualToString:@"vol up"]) {
-        inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_VolumeIncrement, 0, 0);
+        if (!rc_step_volume(YES)) inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_VolumeIncrement, 0, 0);
         return @"OK\n";
     } else if ([cleanCmd isEqualToString:@"volume down"] || [cleanCmd isEqualToString:@"vol down"]) {
-        inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_VolumeDecrement, 0, 0);
+        if (!rc_step_volume(NO)) inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_VolumeDecrement, 0, 0);
         return @"OK\n";
     } else if ([cleanCmd hasPrefix:@"volume "] || [cleanCmd hasPrefix:@"volume"]) { // Matches "volume" and "volume <N>"
         NSString *arg = nil;
