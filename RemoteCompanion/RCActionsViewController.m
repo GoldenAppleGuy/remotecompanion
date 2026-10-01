@@ -3,6 +3,7 @@
 #import "RCActionPickerViewController.h"
 #import "RCShortcutPickerViewController.h"
 #import "RCAppPickerViewController.h"
+#import "RCConditionPickerViewController.h"
 #import "RCTextInputViewController.h"
 #import "RCServerClient.h"
 #import "RCScheduledTriggerViewController.h"
@@ -996,11 +997,32 @@ static id g_actionClipboard = nil;
     return @[
         @{
             @"key": @"time_between",
-            @"title": @"Time of Day (Between)"
+            @"title": @"Time of Day (Between)",
+            @"icon": @"clock",
+            @"section": @"Time"
+        },
+        @{
+            @"key": @"day_of_week",
+            @"title": @"Day of the Week",
+            @"icon": @"calendar",
+            @"section": @"Time",
+            @"values": @[
+                @{ @"value": @"WEEKDAYS", @"title": @"Weekdays" },
+                @{ @"value": @"WEEKENDS", @"title": @"Weekends" },
+                @{ @"value": @"MON", @"title": @"Monday" },
+                @{ @"value": @"TUE", @"title": @"Tuesday" },
+                @{ @"value": @"WED", @"title": @"Wednesday" },
+                @{ @"value": @"THU", @"title": @"Thursday" },
+                @{ @"value": @"FRI", @"title": @"Friday" },
+                @{ @"value": @"SAT", @"title": @"Saturday" },
+                @{ @"value": @"SUN", @"title": @"Sunday" }
+            ]
         },
         @{
             @"key": @"lock",
             @"title": @"Lock Status",
+            @"icon": @"lock.fill",
+            @"section": @"Device",
             @"values": @[
                 @{ @"value": @"LOCKED", @"title": @"Locked" },
                 @{ @"value": @"UNLOCKED", @"title": @"Unlocked" }
@@ -1009,6 +1031,8 @@ static id g_actionClipboard = nil;
         @{
             @"key": @"player",
             @"title": @"Player Status",
+            @"icon": @"play.circle",
+            @"section": @"Sound",
             @"values": @[
                 @{ @"value": @"PLAYING", @"title": @"Playing" },
                 @{ @"value": @"PAUSED", @"title": @"Paused" },
@@ -1018,14 +1042,44 @@ static id g_actionClipboard = nil;
         @{
             @"key": @"wifi",
             @"title": @"Wi-Fi",
+            @"icon": @"wifi",
+            @"section": @"Connectivity",
             @"values": @[
                 @{ @"value": @"ON", @"title": @"On" },
                 @{ @"value": @"OFF", @"title": @"Off" }
             ]
         },
         @{
+            @"key": @"wifi_network",
+            @"title": @"Wi-Fi Network",
+            @"icon": @"network",
+            @"section": @"Connectivity",
+            @"input": @"text",
+            @"placeholder": @"Network name"
+        },
+        @{
             @"key": @"bluetooth",
             @"title": @"Bluetooth",
+            @"icon": @"dot.radiowaves.left.and.right",
+            @"section": @"Connectivity",
+            @"values": @[
+                @{ @"value": @"ON", @"title": @"On" },
+                @{ @"value": @"OFF", @"title": @"Off" }
+            ]
+        },
+        @{
+            @"key": @"bt_device",
+            @"title": @"Bluetooth Device Connected",
+            @"icon": @"headphones",
+            @"section": @"Connectivity",
+            @"input": @"text",
+            @"placeholder": @"Device name"
+        },
+        @{
+            @"key": @"cellular",
+            @"title": @"Cellular Data",
+            @"icon": @"antenna.radiowaves.left.and.right",
+            @"section": @"Connectivity",
             @"values": @[
                 @{ @"value": @"ON", @"title": @"On" },
                 @{ @"value": @"OFF", @"title": @"Off" }
@@ -1034,6 +1088,8 @@ static id g_actionClipboard = nil;
         @{
             @"key": @"location",
             @"title": @"Location Services",
+            @"icon": @"location.fill",
+            @"section": @"Connectivity",
             @"values": @[
                 @{ @"value": @"ON", @"title": @"On" },
                 @{ @"value": @"OFF", @"title": @"Off" }
@@ -1042,14 +1098,48 @@ static id g_actionClipboard = nil;
         @{
             @"key": @"airplane",
             @"title": @"Airplane Mode",
+            @"icon": @"airplane",
+            @"section": @"Connectivity",
             @"values": @[
                 @{ @"value": @"ON", @"title": @"On" },
                 @{ @"value": @"OFF", @"title": @"Off" }
             ]
         },
         @{
+            @"key": @"dnd",
+            @"title": @"Do Not Disturb",
+            @"icon": @"moon.fill",
+            @"section": @"Sound",
+            @"values": @[
+                @{ @"value": @"ON", @"title": @"On" },
+                @{ @"value": @"OFF", @"title": @"Off" }
+            ]
+        },
+        @{
+            @"key": @"lpm",
+            @"title": @"Low Power Mode",
+            @"icon": @"battery.25",
+            @"section": @"Power",
+            @"values": @[
+                @{ @"value": @"ON", @"title": @"On" },
+                @{ @"value": @"OFF", @"title": @"Off" }
+            ]
+        },
+        @{
+            @"key": @"ringer",
+            @"title": @"Ringer Switch",
+            @"icon": @"bell.fill",
+            @"section": @"Sound",
+            @"values": @[
+                @{ @"value": @"SILENT", @"title": @"Silent" },
+                @{ @"value": @"RING", @"title": @"Ring" }
+            ]
+        },
+        @{
             @"key": @"silent_vibration",
             @"title": @"Silent Vibration",
+            @"icon": @"bell.slash",
+            @"section": @"Sound",
             @"values": @[
                 @{ @"value": @"ON", @"title": @"On" },
                 @{ @"value": @"OFF", @"title": @"Off" }
@@ -1058,6 +1148,8 @@ static id g_actionClipboard = nil;
         @{
             @"key": @"ring_vibration",
             @"title": @"Ring Vibration",
+            @"icon": @"bell",
+            @"section": @"Sound",
             @"values": @[
                 @{ @"value": @"ON", @"title": @"On" },
                 @{ @"value": @"OFF", @"title": @"Off" }
@@ -1066,21 +1158,101 @@ static id g_actionClipboard = nil;
         @{
             @"key": @"orientation",
             @"title": @"Orientation",
+            @"icon": @"rotate.right",
+            @"section": @"Device",
             @"values": @[
                 @{ @"value": @"PORTRAIT", @"title": @"Portrait" },
                 @{ @"value": @"LANDSCAPE", @"title": @"Landscape" }
             ]
         },
         @{
+            @"key": @"rotation_lock",
+            @"title": @"Rotation Lock",
+            @"icon": @"lock.rotation",
+            @"section": @"Device",
+            @"values": @[
+                @{ @"value": @"LOCKED", @"title": @"Locked" },
+                @{ @"value": @"UNLOCKED", @"title": @"Unlocked" }
+            ]
+        },
+        @{
+            @"key": @"appearance",
+            @"title": @"Appearance",
+            @"icon": @"circle.lefthalf.fill",
+            @"section": @"Device",
+            @"values": @[
+                @{ @"value": @"DARK", @"title": @"Dark" },
+                @{ @"value": @"LIGHT", @"title": @"Light" }
+            ]
+        },
+        @{
+            @"key": @"flashlight",
+            @"title": @"Flashlight",
+            @"icon": @"flashlight.on.fill",
+            @"section": @"Device",
+            @"values": @[
+                @{ @"value": @"ON", @"title": @"On" },
+                @{ @"value": @"OFF", @"title": @"Off" }
+            ]
+        },
+        @{
+            @"key": @"screenrecord",
+            @"title": @"Screen Recording",
+            @"icon": @"record.circle",
+            @"section": @"Device",
+            @"values": @[
+                @{ @"value": @"ACTIVE", @"title": @"Recording" },
+                @{ @"value": @"INACTIVE", @"title": @"Not Recording" }
+            ]
+        },
+        @{
+            @"key": @"charging",
+            @"title": @"Charging",
+            @"icon": @"bolt.fill",
+            @"section": @"Power",
+            @"values": @[
+                @{ @"value": @"CHARGING", @"title": @"Charging" },
+                @{ @"value": @"NOT_CHARGING", @"title": @"Not Charging" }
+            ]
+        },
+        @{
+            @"key": @"battery",
+            @"title": @"Battery Level",
+            @"icon": @"battery.100",
+            @"section": @"Power",
+            @"input": @"threshold"
+        },
+        @{
+            @"key": @"volume",
+            @"title": @"Volume Level",
+            @"icon": @"speaker.wave.2.fill",
+            @"section": @"Sound",
+            @"input": @"threshold"
+        },
+        @{
             @"key": @"front_app",
-            @"title": @"Front Application"
+            @"title": @"Front Application",
+            @"icon": @"square.grid.2x2",
+            @"section": @"Device"
         },
         @{
             @"key": @"proximity",
             @"title": @"Proximity Sensor",
+            @"icon": @"ear",
+            @"section": @"Device",
             @"values": @[
                 @{ @"value": @"NEAR", @"title": @"Near" },
                 @{ @"value": @"FAR", @"title": @"Far" }
+            ]
+        },
+        @{
+            @"key": @"screen",
+            @"title": @"Screen",
+            @"icon": @"iphone",
+            @"section": @"Device",
+            @"values": @[
+                @{ @"value": @"ON", @"title": @"On" },
+                @{ @"value": @"OFF", @"title": @"Off" }
             ]
         }
     ];
@@ -1103,8 +1275,90 @@ static id g_actionClipboard = nil;
     };
 }
 
+// Puts an If / Else If block in place: replaces the one being edited, or inserts it
+// (with its End If) at insertIndex or the end.
+- (void)applyIfAction:(NSDictionary *)ifAction existingIndex:(NSInteger)existingIndex insertIndex:(NSInteger)insertIndex {
+    if (existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)self.actions.count) {
+        self.actions[existingIndex] = ifAction;
+    } else if (insertIndex != NSNotFound && insertIndex >= 0 && insertIndex <= (NSInteger)self.actions.count) {
+        [self.actions insertObject:ifAction atIndex:insertIndex];
+        [self.actions insertObject:@{ @"type": @"end_if" } atIndex:insertIndex + 1];
+    } else {
+        [self.actions addObject:ifAction];
+        [self.actions addObject:@{ @"type": @"end_if" }];
+    }
+    [self saveActions];
+    [self.tableView reloadData];
+}
+
+// The value of the block being edited, if it's for this condition (to prefill inputs)
+- (NSString *)existingExpectedValueForCondition:(NSString *)key index:(NSInteger)existingIndex {
+    if (existingIndex == NSNotFound || existingIndex < 0 || existingIndex >= (NSInteger)self.actions.count) return nil;
+    NSDictionary *act = self.actions[existingIndex];
+    if (![act isKindOfClass:[NSDictionary class]] || ![act[@"conditionKey"] isEqualToString:key]) return nil;
+    return act[@"expectedValue"];
+}
+
 - (void)presentIfValuePickerForCondition:(NSDictionary *)condition existingIndex:(NSInteger)existingIndex insertIndex:(NSInteger)insertIndex type:(NSString *)type {
     NSString *actionType = type ?: @"if";
+
+    // Text: a name to match (Wi-Fi network, Bluetooth device), case-insensitive
+    if ([condition[@"input"] isEqualToString:@"text"]) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:condition[@"title"]
+                                                                       message:@"Matches the exact name (case doesn't matter)."
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        NSString *existing = [self existingExpectedValueForCondition:condition[@"key"] index:existingIndex];
+        [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+            textField.placeholder = condition[@"placeholder"];
+            textField.autocorrectionType = UITextAutocorrectionTypeNo;
+            textField.text = existing;
+        }];
+        __weak typeof(self) weakSelf = self;
+        [alert addAction:[UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            NSString *name = [alert.textFields[0].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if (name.length == 0) return;
+            [weakSelf applyIfAction:@{ @"type": actionType, @"conditionKey": condition[@"key"], @"conditionTitle": condition[@"title"],
+                                       @"expectedValue": name, @"expectedTitle": name }
+                      existingIndex:existingIndex insertIndex:insertIndex];
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+        [self configurePopoverSourceForAlert:alert];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+
+    // Threshold: above / below a percentage (battery, volume)
+    if ([condition[@"input"] isEqualToString:@"threshold"]) {
+        UIAlertController *direction = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"%@ is...", condition[@"title"]]
+                                                                           message:nil
+                                                                    preferredStyle:UIAlertControllerStyleActionSheet];
+        __weak typeof(self) weakSelf = self;
+        for (NSString *word in @[@"Above", @"Below"]) {
+            [direction addAction:[UIAlertAction actionWithTitle:word style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+                UIAlertController *amount = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"%@ %@", condition[@"title"], word.lowercaseString]
+                                                                                message:@"Percentage (0-100)"
+                                                                         preferredStyle:UIAlertControllerStyleAlert];
+                [amount addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+                    textField.placeholder = @"50";
+                    textField.keyboardType = UIKeyboardTypeNumberPad;
+                }];
+                [amount addAction:[UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+                    NSInteger value = MAX(0, MIN(100, [amount.textFields[0].text integerValue]));
+                    [weakSelf applyIfAction:@{ @"type": actionType, @"conditionKey": condition[@"key"], @"conditionTitle": condition[@"title"],
+                                               @"expectedValue": [NSString stringWithFormat:@"%@ %ld", word.uppercaseString, (long)value],
+                                               @"expectedTitle": [NSString stringWithFormat:@"%@ %ld%%", word.lowercaseString, (long)value] }
+                              existingIndex:existingIndex insertIndex:insertIndex];
+                }]];
+                [amount addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+                [weakSelf configurePopoverSourceForAlert:amount];
+                [weakSelf presentViewController:amount animated:YES completion:nil];
+            }]];
+        }
+        [direction addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+        [self configurePopoverSourceForAlert:direction];
+        [self presentViewController:direction animated:YES completion:nil];
+        return;
+    }
     
     if ([condition[@"key"] isEqualToString:@"time_between"]) {
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Time of Day Condition"
@@ -1200,7 +1454,9 @@ static id g_actionClipboard = nil;
             }
             [strongSelf saveActions];
             [strongSelf.tableView reloadData];
+            [strongSelf.navigationController popToViewController:strongSelf animated:YES];
         };
+        appPicker.suppressAutoPop = YES; // back to this editor, past the condition picker
         [self.navigationController pushViewController:appPicker animated:YES];
         return;
     }
@@ -1247,24 +1503,23 @@ static id g_actionClipboard = nil;
 
 - (void)presentIfConditionPickerForIndex:(NSInteger)existingIndex insertIndex:(NSInteger)insertIndex type:(NSString *)type {
     NSString *title = [type isEqualToString:@"else_if"] ? @"Else If Condition" : @"If Condition";
-    UIAlertController *picker = [UIAlertController alertControllerWithTitle:title
-                                                                     message:@"Choose a status to evaluate"
-                                                              preferredStyle:UIAlertControllerStyleActionSheet];
-    __weak typeof(self) weakSelf = self;
-    
-    for (NSDictionary *condition in [self ifConditionDefinitions]) {
-        [picker addAction:[UIAlertAction actionWithTitle:condition[@"title"]
-                                                  style:UIAlertActionStyleDefault
-                                                handler:^(__unused UIAlertAction * _Nonnull action) {
-            __strong typeof(weakSelf) strongSelf = weakSelf;
-            if (!strongSelf) return;
-            [strongSelf presentIfValuePickerForCondition:condition existingIndex:existingIndex insertIndex:insertIndex type:type];
-        }]];
+    NSDictionary *existing = nil;
+    if (existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)self.actions.count && [self.actions[existingIndex] isKindOfClass:[NSDictionary class]]) {
+        existing = self.actions[existingIndex];
     }
-    
-    [picker addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [self configurePopoverSourceForAlert:picker];
-    [self presentViewController:picker animated:YES completion:nil];
+    RCConditionPickerViewController *picker = [[RCConditionPickerViewController alloc] initWithConditions:[self ifConditionDefinitions] title:title existing:existing];
+    __weak typeof(self) weakSelf = self;
+    NSString *actionType = type ?: @"if";
+    picker.onValueSelected = ^(NSDictionary *condition, NSDictionary *value) {
+        [weakSelf applyIfAction:@{ @"type": actionType, @"conditionKey": condition[@"key"] ?: @"", @"conditionTitle": condition[@"title"] ?: @"Condition",
+                                   @"expectedValue": value[@"value"] ?: @"", @"expectedTitle": value[@"title"] ?: @"Value" }
+                  existingIndex:existingIndex insertIndex:insertIndex];
+    };
+    // Time range, names, levels, apps: the editor's own prompts
+    picker.onInputRequested = ^(NSDictionary *condition) {
+        [weakSelf presentIfValuePickerForCondition:condition existingIndex:existingIndex insertIndex:insertIndex type:type];
+    };
+    [self.navigationController pushViewController:picker animated:YES];
 }
 
 - (void)presentIfConditionPickerForIndex:(NSInteger)index {
@@ -2147,6 +2402,9 @@ static id g_actionClipboard = nil;
     if ([actionItem isKindOfClass:[NSDictionary class]] && !((NSDictionary *)actionItem)[@"command"]) {
         cell.textLabel.text = cleanName;
         cell.textLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
+        // If / Else If rows can be long ("If Bluetooth Device Connected is …"): wrap to a second line
+        cell.textLabel.numberOfLines = 2;
+        cell.textLabel.lineBreakMode = NSLineBreakByTruncatingTail;
         BOOL isControl = [self isEndIfActionItem:actionItem] || [self isElseActionItem:actionItem];
         cell.textLabel.textColor = isControl ? [UIColor secondaryLabelColor] : [UIColor labelColor];
         cell.detailTextLabel.text = nil;
@@ -2166,6 +2424,7 @@ static id g_actionClipboard = nil;
     }
 
     NSString *action = [actionItem isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)actionItem)[@"command"] : (NSString *)actionItem;
+    cell.textLabel.numberOfLines = 1; // a reused If row may have set 2
     NSDictionary *toggleInfo = [[RCConfigManager sharedManager] toggleInfoForCommand:action];
 
     // Logic to separate "Type" from "Value"

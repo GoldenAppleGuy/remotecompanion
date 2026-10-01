@@ -1672,6 +1672,7 @@ static NSString *rc_status_command_for_condition_key(NSString *conditionKey) {
         @"cellular": @"cell status",
         @"bluetooth": @"bluetooth status",
         @"airplane": @"airplane status",
+        @"dnd": @"dnd status",
         @"silent_vibration": @"vibration silent-status",
         @"ring_vibration": @"vibration ring-status",
         @"orientation": @"orientation status",
@@ -1708,8 +1709,9 @@ static NSString *rc_canonical_status_value_for_condition_key(NSString *condition
     }
     
     if ([conditionKey isEqualToString:@"screenrecord"] || [conditionKey isEqualToString:@"screen_recording"]) {
-        if ([upper containsString:@"ACTIVE"]) return @"ACTIVE";
+        // INACTIVE first: "inactive" contains "active"
         if ([upper containsString:@"INACTIVE"]) return @"INACTIVE";
+        if ([upper containsString:@"ACTIVE"]) return @"ACTIVE";
         if ([upper containsString:@"ON"]) return @"ACTIVE";
         if ([upper containsString:@"OFF"]) return @"INACTIVE";
         return nil;
@@ -1788,6 +1790,110 @@ static BOOL rc_is_current_time_in_range(NSString *rangeString) {
     }
 }
 
+static void rc_dispatch_sync_main_safe(dispatch_block_t block);
+
+// "ABOVE 20" / "BELOW 80" against a 0-100 level
+static BOOL rc_threshold_matches(NSString *expected, float level) {
+    NSScanner *scanner = [NSScanner scannerWithString:expected];
+    NSString *word = nil;
+    float limit = 0;
+    if (![scanner scanCharactersFromSet:[NSCharacterSet letterCharacterSet] intoString:&word] || ![scanner scanFloat:&limit]) return NO;
+    if ([word isEqualToString:@"ABOVE"]) return level > limit;
+    if ([word isEqualToString:@"BELOW"]) return level < limit;
+    return NO;
+}
+
+// Names typed for a condition (Wi-Fi network, Bluetooth device) compared without regard to
+// case or curly vs straight quotes - iOS names devices "Corey’s AirPods" with a curly
+// apostrophe, which a name typed on a Mac or without Smart Punctuation won't have
+static NSString *rc_normalized_name(NSString *name) {
+    NSMutableString *n = [[name uppercaseString] mutableCopy];
+    for (NSString *q in @[@"\u2018", @"\u2019", @"\u02BC"]) [n replaceOccurrencesOfString:q withString:@"'" options:0 range:NSMakeRange(0, n.length)];
+    for (NSString *q in @[@"\u201C", @"\u201D"]) [n replaceOccurrencesOfString:q withString:@"\"" options:0 range:NSMakeRange(0, n.length)];
+    return n;
+}
+
+// If conditions answered by reading the state directly rather than through a status
+// command. Sets *handled for the keys it knows. expected is already uppercased.
+static BOOL rc_condition_direct_match(NSString *key, NSString *expected, BOOL *handled) {
+    *handled = YES;
+    __block NSString *actual = nil;
+
+    if ([key isEqualToString:@"lpm"]) {
+        actual = [[NSProcessInfo processInfo] isLowPowerModeEnabled] ? @"ON" : @"OFF";
+    } else if ([key isEqualToString:@"flashlight"]) {
+        AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
+        actual = (device.torchMode == AVCaptureTorchModeOn) ? @"ON" : @"OFF";
+    } else if ([key isEqualToString:@"charging"]) {
+        UIDevice *device = [UIDevice currentDevice];
+        device.batteryMonitoringEnabled = YES;
+        UIDeviceBatteryState state = device.batteryState;
+        actual = (state == UIDeviceBatteryStateCharging || state == UIDeviceBatteryStateFull) ? @"CHARGING" : @"NOT_CHARGING";
+    } else if ([key isEqualToString:@"battery"]) {
+        UIDevice *device = [UIDevice currentDevice];
+        device.batteryMonitoringEnabled = YES;
+        float level = device.batteryLevel;
+        return level >= 0 && rc_threshold_matches(expected, level * 100.0f);
+    } else if ([key isEqualToString:@"volume"]) {
+        AVSystemController *av = [objc_getClass("AVSystemController") sharedAVSystemController];
+        float volume = -1;
+        if (![av respondsToSelector:@selector(getVolume:forCategory:)] || ![av getVolume:&volume forCategory:@"Audio/Video"]) return NO;
+        return rc_threshold_matches(expected, volume * 100.0f);
+    } else if ([key isEqualToString:@"day_of_week"]) {
+        NSInteger weekday = [[NSCalendar currentCalendar] component:NSCalendarUnitWeekday fromDate:[NSDate date]]; // 1 = Sunday
+        if ([expected isEqualToString:@"WEEKDAYS"]) return weekday >= 2 && weekday <= 6;
+        if ([expected isEqualToString:@"WEEKENDS"]) return weekday == 1 || weekday == 7;
+        // A list of days, e.g. "MON,WED,FRI" (Settings' multi-select)
+        NSArray *names = @[@"SUN", @"MON", @"TUE", @"WED", @"THU", @"FRI", @"SAT"];
+        NSString *today = names[weekday - 1];
+        for (NSString *day in [expected componentsSeparatedByString:@","]) {
+            NSString *d = [day stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            if ([d isEqualToString:today]) return YES;
+        }
+        return NO;
+    } else if ([key isEqualToString:@"bt_device"]) {
+        // A connected device with this name (case-insensitive)
+        dlopen("/System/Library/PrivateFrameworks/BluetoothManager.framework/BluetoothManager", RTLD_NOW);
+        BluetoothManager *manager = [objc_getClass("BluetoothManager") sharedInstance];
+        for (BluetoothDevice *device in [manager pairedDevices]) {
+            if ([device connected] && [rc_normalized_name([device name]) isEqualToString:rc_normalized_name(expected)]) return YES;
+        }
+        return NO;
+    } else if ([@[@"ringer", @"rotation_lock", @"appearance", @"screen", @"wifi_network"] containsObject:key]) {
+        // SpringBoard UI state - read on the main thread
+        rc_dispatch_sync_main_safe(^{
+            id sb = [UIApplication sharedApplication];
+            if ([key isEqualToString:@"ringer"]) {
+                id ringer = [sb respondsToSelector:@selector(ringerControl)] ? [sb performSelector:@selector(ringerControl)] : nil;
+                SEL mutedSel = [ringer respondsToSelector:@selector(_accessibilityIsRingerMuted)] ? @selector(_accessibilityIsRingerMuted)
+                             : [ringer respondsToSelector:@selector(isRingerMuted)] ? @selector(isRingerMuted)
+                             : NULL;
+                if (mutedSel) {
+                    actual = ((BOOL (*)(id, SEL))objc_msgSend)(ringer, mutedSel) ? @"SILENT" : @"RING";
+                } else if ([sb respondsToSelector:@selector(ringerSwitchState)]) {
+                    // iOS 14: SpringBoard has no ringerControl, but reports the switch itself (0 = silent)
+                    actual = ((int (*)(id, SEL))objc_msgSend)(sb, @selector(ringerSwitchState)) == 0 ? @"SILENT" : @"RING";
+                }
+            } else if ([key isEqualToString:@"rotation_lock"]) {
+                actual = [[objc_getClass("SBOrientationLockManager") sharedInstance] isUserLocked] ? @"LOCKED" : @"UNLOCKED";
+            } else if ([key isEqualToString:@"appearance"]) {
+                actual = ([UIScreen mainScreen].traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark) ? @"DARK" : @"LIGHT";
+            } else if ([key isEqualToString:@"screen"]) {
+                actual = [[objc_getClass("SBBacklightController") sharedInstance] screenIsOn] ? @"ON" : @"OFF";
+            } else if ([key isEqualToString:@"wifi_network"]) {
+                actual = [[objc_getClass("SBWiFiManager") sharedInstance] currentNetworkName];
+            }
+        });
+        if ([key isEqualToString:@"wifi_network"]) {
+            return actual.length > 0 && [rc_normalized_name(actual) isEqualToString:rc_normalized_name(expected)];
+        }
+    } else {
+        *handled = NO;
+        return NO;
+    }
+    return actual.length > 0 && [actual isEqualToString:expected];
+}
+
 static BOOL rc_evaluate_if_condition(NSDictionary *ifAction) {
     if (![ifAction isKindOfClass:[NSDictionary class]]) return NO;
     
@@ -1855,6 +1961,10 @@ static BOOL rc_evaluate_if_condition(NSDictionary *ifAction) {
         return (isNear == expectedBool);
     }
     
+    BOOL handled = NO;
+    BOOL directMatch = rc_condition_direct_match(conditionKey, expectedValue, &handled);
+    if (handled) return directMatch;
+
     NSString *statusCommand = rc_status_command_for_condition_key(conditionKey);
     if (statusCommand.length == 0) return NO;
     
