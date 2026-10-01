@@ -6620,9 +6620,14 @@ static NSString *handle_command(NSString *cmd) {
                 if ([viewCtrlClass respondsToSelector:@selector(sharedInstance)]) {
                     switcher = [viewCtrlClass sharedInstance];
                 }
+                SEL noninteractiveSel = @selector(toggleMainSwitcherNoninteractivelyWithSource:animated:);
                 if (switcher && [switcher respondsToSelector:@selector(toggleSwitcher)]) {
                     [switcher performSelector:@selector(toggleSwitcher)];
                     success = YES;
+                } else if (switcher && [switcher respondsToSelector:noninteractiveSel]) {
+                    // iOS 14: the same toggle the iOS 16+ coordinator has, on the view controller
+                    success = ((BOOL (*)(id, SEL, long, BOOL))objc_msgSend)(switcher, noninteractiveSel, 1, YES);
+                    SRLog(@"Using Method 1b: toggleMainSwitcherNoninteractivelyWithSource:animated: -> %d", success);
                 }
             }
             
