@@ -451,8 +451,13 @@ extern void BKSTerminateApplicationForReasonAndReportWithDescription(NSString *b
 @interface SBLockHardwareButtonActions : NSObject
 - (void)performInitialButtonDownActions;
 - (void)performButtonUpPreActions;
+- (void)performButtonUpPostActions;
 - (void)performLongPressActions;
 - (void)performDoublePressActions;
+@end
+
+@interface SBLockHardwareButton : NSObject
+- (void)singlePress:(id)arg1;
 @end
 
 @interface SBUIBiometricResource : NSObject
@@ -1147,6 +1152,25 @@ static void inject_hid_event(uint32_t page, uint32_t usage, uint64_t durationNs,
     });
 }
 
+// One volume step through SpringBoard's volume controller (with the volume HUD), for the
+// Volume Up / Down actions. Not a simulated button press: fired from a button trigger that
+// is still held (e.g. Power + Volume Up), such a press is taken as part of that combo and
+// swallowed. Not increaseVolume/decreaseVolume either - those act like holding the button
+// and keep ramping until a matching release. Returns NO if the controller isn't available.
+static BOOL rc_step_volume(BOOL up) {
+    id sb = [UIApplication sharedApplication];
+    id volumeControl = [sb respondsToSelector:@selector(volumeControl)] ? [sb performSelector:@selector(volumeControl)] : nil;
+    SEL stepSel = up ? @selector(volumeStepUp) : @selector(volumeStepDown);
+    if (![volumeControl respondsToSelector:@selector(changeVolumeByDelta:)] || ![volumeControl respondsToSelector:stepSel]) return NO;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        float step = fabsf(((float (*)(id, SEL))objc_msgSend)(volumeControl, stepSel));
+        if (step <= 0) step = 1.0f / 16.0f; // the usual hardware step
+        ((void (*)(id, SEL, float))objc_msgSend)(volumeControl, @selector(changeVolumeByDelta:), up ? step : -step);
+    });
+    return YES;
+}
+
+
 static void toggle_system_vibration(BOOL silentMode, BOOL enable) {
     NSString *key = silentMode ? @"silent-vibrate" : @"ring-vibrate";
     CFStringRef appID = CFSTR("com.apple.springboard");
@@ -1631,6 +1655,7 @@ static void save_trigger_config() {
 
 // Forward declaration
 static NSString *handle_command(NSString *cmd);
+static void RC_PressPowerAfterRelease(void);
 
 static BOOL rc_is_if_action_item(id item) {
     if (![item isKindOfClass:[NSDictionary class]]) return NO;
@@ -6622,7 +6647,7 @@ static NSString *handle_command(NSString *cmd) {
         NSString *btn = [[cleanCmd substringFromIndex:7] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         
         if ([btn isEqualToString:@"power"] || [btn isEqualToString:@"lock"]) {
-            inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_Power, 0, 0);
+            RC_PressPowerAfterRelease();
         } else if ([btn isEqualToString:@"home"]) {
             simulate_home_press();
         } else if ([btn isEqualToString:@"volup"]) {
@@ -6863,11 +6888,11 @@ static NSString *handle_command(NSString *cmd) {
                      SRLog(@"[SmartLock] Device already locked. Skipping power button.");
                  } else {
                      SRLog(@"[SmartLock] Device unlocked. Sending power button event...");
-                     inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_Power, 0, 0);
+                     RC_PressPowerAfterRelease();
                  }
             } else {
                 SRLog(@"[SmartLock] ERROR: manager is nil or does not respond to isUILocked. Forcing lock.");
-                 inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_Power, 0, 0);
+                 RC_PressPowerAfterRelease();
             }
         });
         return @"Lock command sent\n";
@@ -7523,10 +7548,10 @@ static NSString *handle_command(NSString *cmd) {
         
         return @"Error: AVSystemController failed. Cannot control media mute.\n";
     } else if ([cleanCmd isEqualToString:@"volume up"] || [cleanCmd isEqualToString:@"vol up"]) {
-        inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_VolumeIncrement, 0, 0);
+        if (!rc_step_volume(YES)) inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_VolumeIncrement, 0, 0);
         return @"OK\n";
     } else if ([cleanCmd isEqualToString:@"volume down"] || [cleanCmd isEqualToString:@"vol down"]) {
-        inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_VolumeDecrement, 0, 0);
+        if (!rc_step_volume(NO)) inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_VolumeDecrement, 0, 0);
         return @"OK\n";
     } else if ([cleanCmd hasPrefix:@"volume "] || [cleanCmd hasPrefix:@"volume"]) { // Matches "volume" and "volume <N>"
         NSString *arg = nil;
@@ -9848,15 +9873,29 @@ static void start_server() {
 static NSTimer *g_volUpTimer = nil;
 static BOOL g_volUpTriggered = NO;
 static BOOL g_volIsReplaying = NO; // Recursion guard for replay
+static BOOL g_volUpNativeSessionActive = NO; // set when the hold timer replays
+                                              // DOWN to the native handler with
+                                              // the button still physically held;
+                                              // the real release must also reach
+                                              // %orig or the native ramp never
+                                              // gets a stop signal and runs to 100%
 
 static NSTimer *g_volDownTimer = nil;
 static BOOL g_volDownTriggered = NO;
+static BOOL g_volDownNativeSessionActive = NO; // symmetric to g_volUpNativeSessionActive
+// The latest press of each button went straight to native (no hold/sequence trigger
+// needed it held back). A Volume Both Press then lets its second press through too,
+// so up +1 and down -1 cancel out.
+static BOOL g_volUpLastPassedThrough = NO;
+static BOOL g_volDownLastPassedThrough = NO;
 
 static BOOL g_volUpIsDown = NO;
 static BOOL g_volDownIsDown = NO;
 static BOOL g_volComboTriggered = NO;
 static NSTimeInterval g_lastVolUpPressTime = 0;
 static NSTimeInterval g_lastVolDownPressTime = 0;
+static BOOL g_hidBothPressPending = NO; // HID listener: a Both Press check is queued
+static BOOL g_hidBothPressFired = NO;   // HID listener fired Both Press; it resets the flag
 
 static NSTimer *g_pendingVolUpSeqTimer = nil;
 static NSTimer *g_pendingVolDownSeqTimer = nil;
@@ -9879,6 +9918,258 @@ static NSTimer *g_systemPowerOffTimer = nil; // New for dual-stage
 static BOOL g_forceSystemLongPress = NO;     // New for dual-stage
 static BOOL g_powerIsDown = NO;
 static BOOL g_powerVolComboTriggered = NO;
+// Set alongside g_powerVolComboTriggered at every site that fires a power+
+// volume combo. SBLockHardwareButton's own singlePress: gesture recognizer
+// reacts directly to the real hardware press/release, entirely independent
+// of SBLockHardwareButtonActions - suppressing the Actions-class notifications
+// (everything g_powerVolComboTriggered itself guards) does not stop it from
+// firing its own native lock on top of the combo action. A timestamp-based
+// cooldown (checked in the singlePress: hook) is used instead of a plain flag
+// because singlePress: fires after performButtonUpPreActions has already
+// consumed and reset g_powerVolComboTriggered - by then the boolean is gone,
+// but a recent-enough timestamp still is.
+static NSTimeInterval g_lastPowerVolComboFireTime = 0;
+// A power+volume combo consumed the current power press. Reset by each real
+// power press-down (performInitialButtonDownActions). The singlePress: and
+// performDoublePressActions hooks use it to recognize that press's native
+// callbacks, which arrive after it was already handled.
+static BOOL g_powerPressIsCombo = NO;
+// A volume button went down during the current power press (either order). With no
+// power+volume action bound this is the native chord (Vol Up + Power = screenshot),
+// so the deferred press must not be counted as a click and replayed as a lock/sleep.
+// Reset by each real power press-down. Written from the HID listener thread too.
+static volatile BOOL g_volPressedDuringPower = NO;
+
+static void RC_MarkPowerVolComboFired(void) {
+    g_lastPowerVolComboFireTime = [[NSDate date] timeIntervalSince1970];
+    g_powerPressIsCombo = YES;
+}
+
+// YES if a power+volume combo fired during the volume hold that began at
+// pressTime - i.e. the combo consumed this press. The volume hooks' own
+// hold timer and release replay can't rely on g_powerVolComboTriggered for
+// this: performButtonUpPreActions consumes that flag on the power release,
+// which usually lands before the volume button's timer fires or its release
+// arrives. Without this, the timer replayed a press-down for a button already
+// let go, starting a native ramp that never got a stop signal.
+static BOOL RC_VolumePressWasPowerCombo(NSTimeInterval pressTime) {
+    return g_lastPowerVolComboFireTime >= pressTime;
+}
+
+// Volume-Up + Power is also the native screenshot gesture. Suppressing its
+// callback (screenshotRecognizerDidRecognize:) doesn't stop the capture - it
+// starts inside the recognizer's own tracking - so the recognizer itself is
+// disabled while power_volume_up has actions and the power button is held:
+// from power press-down until power release (volume-up release also re-enables
+// it once power is up). Disabling only once the combo fired was too late when
+// power went down first - the recognizer, already tracking the power press,
+// sometimes captured the instant volume-up landed, before the volume hook ran
+// (confirmed in the field, roughly 1 in 4). Disabling it frees LockButton-
+// singlePress, which waits on this recognizer failing, to fire sooner; that's
+// harmless now - a deferred press's own singlePress: and one during a combo
+// are both swallowed in the singlePress: hook. An earlier version toggled it on
+// every volume press, whose state reset broke the native volume ramp; this only
+// toggles on power presses.
+static __weak UIGestureRecognizer *g_screenshotGestureRecognizer = nil;
+static BOOL g_screenshotRecognizerSuppressed = NO;
+
+static void RC_SetScreenshotRecognizerSuppressed(BOOL suppress) {
+    if (suppress == g_screenshotRecognizerSuppressed) return;
+    UIGestureRecognizer *recognizer = g_screenshotGestureRecognizer;
+    if (!recognizer) {
+        if (suppress) SRLog(@"⚠️ [Screenshot] No cached recognizer - can't suppress screenshot");
+        return;
+    }
+    g_screenshotRecognizerSuppressed = suppress;
+    recognizer.enabled = !suppress;
+    SRLog(@"[Screenshot] Native screenshot recognizer %@", suppress ? @"disabled (power_volume_up combo)" : @"re-enabled");
+}
+
+// --- POWER DEFER + REPLAY (mirrors the volume button design) ---
+// The old logic let click #1 through to %orig (so the phone locked before a
+// double/triple trigger could fire) and decided suppression from a counter that
+// the background HID thread wrote without synchronisation. Instead we now
+// suppress the system press unconditionally while a multi-click trigger is
+// armed, count on the main thread inside the hook, and REPLAY the original
+// press if the sequence turns out not to match any enabled trigger.
+static BOOL g_powerIsReplaying = NO;          // recursion guard for the replay
+static BOOL g_replayDownAwaitingUp = NO;      // the injected replay press has gone down; its
+                                               // release is the next performButtonUpPreActions
+static BOOL g_replayAwaitingSinglePress = NO; // the replay finished; the next singlePress: is its
+                                               // own, and the only one a deferred press should get
+static NSUInteger g_replayGeneration = 0;     // lets a stale fallback timer skip a newer replay
+static BOOL g_walletIsReplaying = NO;         // separate guard: Wallet's replay can take ~1-2s to
+                                               // open (no predictive fast-path), and must not hold
+                                               // up real clicks arriving on Down/Up/Post meanwhile
+static BOOL g_powerHookAlive = NO;            // set once the Actions hook actually runs
+static BOOL g_volHookAlive = NO;              // set once the Volume Down-With-Modifiers hooks run;
+                                               // gates the redundant HID-level Power+Volume combo
+                                               // check below (see handle_hid_event) so both the main-
+                                               // thread hook and the background HID thread can't both
+                                               // fire the same combo trigger for one physical press
+static BOOL g_powerSuppressPostUp = NO;       // carry suppression from Pre into Post
+static BOOL g_powerDownAwaitingUp = NO;       // armed by a real power press-down, consumed by the
+                                               // first performButtonUpPreActions after it. The system
+                                               // also re-invokes that UP method on its own with no
+                                               // matching press; with no press left to pair with, that
+                                               // phantom call is filtered. Armed from BOTH the raw HID
+                                               // press-down and performInitialButtonDownActions:
+                                               // - HID alone lost a same-event race: arming on the HID
+                                               //   *release* sometimes landed after the main-thread UP,
+                                               //   making a real release look like a phantom. A press-
+                                               //   down precedes its release by a physical press
+                                               //   duration, so arming on DOWN leaves no such race.
+                                               // - performInitialButtonDownActions alone missed clicks:
+                                               //   iOS skips it for presses it folds into its own
+                                               //   multi-press gesture (confirmed: the 2nd click of a
+                                               //   triple), so their real releases were filtered
+static BOOL g_powerDeferActive = NO;          // latched at DOWN, honoured at UP
+static __weak id g_powerActionsInstance = nil; // cached SBLockHardwareButtonActions
+static BOOL g_walletDoublePressDeferred = NO; // latched when native Wallet double-press is held back
+
+// Mirrors RCExecuteTrigger's own "will this actually do anything" check -
+// a trigger toggled on with zero actions assigned fires as a silent no-op
+// there, so any native behavior we suppress on its behalf must require the
+// same thing, or we'd swallow native features for a trigger that was never
+// going to replace them with anything.
+static BOOL RC_TriggerIsActionable(NSString *key) {
+    load_trigger_config();
+    if (![g_triggerConfig[@"masterEnabled"] boolValue]) return NO;
+    id trigger = g_triggerConfig[@"triggers"][key];
+    if (![trigger isKindOfClass:[NSDictionary class]]) return NO;
+    if (![trigger[@"enabled"] boolValue]) return NO;
+    NSArray *actions = trigger[@"actions"];
+    return actions.count > 0;
+}
+
+// Is any power multi-click trigger armed? Only then do we defer the press.
+// (Without this, a user with no power triggers would eat a 0.4s lock delay.)
+static BOOL RC_PowerMultiClickEnabled(void) {
+    load_trigger_config();
+    if (![g_triggerConfig[@"masterEnabled"] boolValue]) return NO;
+    NSDictionary *t = g_triggerConfig[@"triggers"];
+    return [t[@"power_double_tap"][@"enabled"] boolValue] ||
+           [t[@"power_triple_click"][@"enabled"] boolValue] ||
+           [t[@"power_quadruple_click"][@"enabled"] boolValue];
+}
+
+// Is a trigger armed that needs MORE than 2 clicks to resolve? Only then is a
+// native double-press (Wallet) ambiguous with the start of a longer sequence -
+// a plain double-click with only power_double_tap configured is unambiguous
+// and should reach Wallet immediately, same as always.
+static BOOL RC_HigherPowerMultiClickArmed(void) {
+    load_trigger_config();
+    if (![g_triggerConfig[@"masterEnabled"] boolValue]) return NO;
+    NSDictionary *t = g_triggerConfig[@"triggers"];
+    return [t[@"power_triple_click"][@"enabled"] boolValue] ||
+           [t[@"power_quadruple_click"][@"enabled"] boolValue];
+}
+
+// Only defer while the screen is already ON. Deferring a press made against a
+// dark screen would add ~0.4s to every wake, which is far more noticeable than
+// the same delay on a lock - and nobody double-clicks power to wake anyway.
+static BOOL RC_ScreenIsOn(void) {
+    Class blCls = objc_getClass("SBBacklightController");
+    if (blCls) {
+        SBBacklightController *bl = [blCls sharedInstance];
+        if (bl) {
+            if ([bl respondsToSelector:@selector(screenIsOn)]) {
+                return [bl screenIsOn];
+            } else if ([bl respondsToSelector:@selector(backlightLevel)]) {
+                return [bl backlightLevel] != 0;
+            }
+        }
+    }
+    return YES; // Can't tell - safer to defer than to risk a double lock/wake.
+}
+
+static BOOL RC_ShouldDeferPowerPress(void) {
+    if (!RC_PowerMultiClickEnabled()) return NO;
+    return RC_ScreenIsOn();
+}
+
+// Hand the press back to SpringBoard as a genuine synthetic HID event, rather
+// than calling the Actions-class methods ourselves. Manually invoking
+// performInitialButtonDownActions/performButtonUpPreActions/
+// performButtonUpPostActions - no matter how their timing was spaced - only
+// ever got as far as flipping isUILocked and showing the lock screen lit;
+// the backlight itself never reliably turned off. inject_hid_event() (used
+// elsewhere in this file for the "button power" remote command) posts through
+// IOHIDEventSystemClientDispatchEvent, the same system-wide path the real
+// hardware button reports through - so the OS's own internal dispatch drives
+// the Down/Up timing itself, identically to a real press, reaching whatever
+// actually turns the backlight off (not just the Actions-class notifications).
+//
+// The replay stays marked as ours until its own release reaches
+// performButtonUpPreActions (see g_replayDownAwaitingUp), not for a fixed
+// time. A fixed 200ms window was too short for the first injection after a
+// respring, which is slower: confirmed in the field, the injected release
+// landed after the window closed, was filtered as a phantom, and the native
+// lock got its press-down with no release - locked, screen left on.
+static void RC_ReplayPowerPress(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        SRLog(@"[Power] ▶️ Replaying system power press (HID injection)");
+        NSUInteger generation = ++g_replayGeneration;
+        g_powerIsReplaying = YES;
+        g_replayDownAwaitingUp = NO;
+        inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_Power, 0, 0);
+        // Fallback only, in case the injected release never reaches the hook.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (generation != g_replayGeneration || !g_powerIsReplaying) return;
+            SRLog(@"⚠️ [Power] Replayed release never arrived - ending replay window");
+            g_powerIsReplaying = NO;
+            g_replayDownAwaitingUp = NO;
+        });
+    });
+}
+
+// A power press requested by an action (Lock Device, "button power"). Injected as a
+// replay so our own button hooks pass it through - a plain injection fired from a
+// Power + Volume combo landed while that combo's press was still being suppressed
+// and was swallowed with it. Waits for the physical power button to be released
+// first, so the synthetic press never overlaps a real one.
+static void RC_PressPowerAfterRelease(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        __block int polls = 0;
+        __block void (^waitForRelease)(void);
+        void (^block)(void) = ^{
+            if (g_powerIsDown && ++polls < 60) { // up to 3s
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), waitForRelease);
+                return;
+            }
+            waitForRelease = nil;
+            // Wait out iOS's double-press window, as the multi-click replay does (0.4s after
+            // the last release) - at 0.15s SpringBoard took the real press and this one
+            // together as a double-press (Wallet), and nothing locked
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                RC_ReplayPowerPress();
+            });
+        };
+        waitForRelease = block;
+        block();
+    });
+}
+
+// Hand a deferred native double-press (Wallet) back to SpringBoard once we
+// know for certain the sequence didn't turn into a triple/quad.
+static void RC_ReplayWalletDoublePress(void) {
+    id actions = g_powerActionsInstance;
+    if (!actions) {
+        SRLog(@"⚠️ [Power] No cached Actions instance - cannot replay double-press");
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        SRLog(@"[Power] ▶️ Replaying native double-press (Wallet)");
+        g_walletIsReplaying = YES;
+        @try {
+            if ([actions respondsToSelector:@selector(performDoublePressActions)])
+                [actions performDoublePressActions];
+        } @catch (NSException *e) {
+            SRLog(@"⚠️ [Power] Wallet replay raised: %@", e);
+        }
+        g_walletIsReplaying = NO;
+    });
+}
 
 
 
@@ -9991,6 +10282,8 @@ static BOOL g_isSwappingVolume = NO;
 %hook SBVolumeHardwareButtonActions
 
 - (void)volumeIncreasePressDownWithModifiers:(long long)arg1 {
+    g_volHookAlive = YES;
+
     if (!g_isSwappingVolume && should_swap_in_hooks()) {
         g_isSwappingVolume = YES;
         [self volumeDecreasePressDownWithModifiers:arg1];
@@ -9999,6 +10292,7 @@ static BOOL g_isSwappingVolume = NO;
     }
 
     if (g_volIsReplaying || RC_IsForegroundAppExcluded()) {
+        SRLog(@"[Vol] Passing through to native (replaying=%d, excluded=%d)", g_volIsReplaying, RC_IsForegroundAppExcluded());
         %orig;
         return;
     }
@@ -10006,16 +10300,17 @@ static BOOL g_isSwappingVolume = NO;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     g_volUpIsDown = YES;
     g_lastVolUpPressTime = now;
+    if (g_powerIsDown) g_volPressedDuringPower = YES;
 
     // 1. Check for Power + Volume Up combination
     if (g_powerIsDown) {
         cancel_pending_volume_sequences();
-        load_trigger_config();
-        BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
-        BOOL enabled = masterEnabled && [g_triggerConfig[@"triggers"][@"power_volume_up"][@"enabled"] boolValue];
-        if (enabled) {
+        BOOL enabled = RC_TriggerIsActionable(@"power_volume_up");
+        if (enabled && !g_powerVolComboTriggered) {
             SRLog(@"Power + Volume Up combo triggered (from Vol Up Hook)");
             g_powerVolComboTriggered = YES;
+            RC_MarkPowerVolComboFired();
+            RC_SetScreenshotRecognizerSuppressed(YES);
             if (g_volUpTimer) { [g_volUpTimer invalidate]; g_volUpTimer = nil; }
             if (g_volDownTimer) { [g_volDownTimer invalidate]; g_volDownTimer = nil; }
             trigger_haptic();
@@ -10024,13 +10319,22 @@ static BOOL g_isSwappingVolume = NO;
         }
     }
 
+    // The power hook can fire this same combo before this hook runs - the HID
+    // listener sees this button go down first and tells it (confirmed in the
+    // field). This press is part of that combo: swallow it, and backdate its
+    // press time so the release recognizes it too. Otherwise it looks like a
+    // fresh press started after the combo, and its release replays a tap -
+    // an intermittent one-tick volume change.
+    if (g_powerIsDown && g_powerVolComboTriggered) {
+        g_lastVolUpPressTime = g_lastPowerVolComboFireTime;
+        return;
+    }
+
     // 2. Check for pending Volume Down -> Volume Up sequence
     if (g_pendingVolDownSeqTimer) {
         [g_pendingVolDownSeqTimer invalidate];
         g_pendingVolDownSeqTimer = nil;
-        load_trigger_config();
-        BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
-        BOOL seqDownUpEnabled = masterEnabled && [g_triggerConfig[@"triggers"][@"volume_down_then_up"][@"enabled"] boolValue];
+        BOOL seqDownUpEnabled = RC_TriggerIsActionable(@"volume_down_then_up");
         if (seqDownUpEnabled) {
             SRLog(@"Volume Down then Up sequence triggered!");
             g_volSeqJustFired = YES;
@@ -10052,14 +10356,18 @@ static BOOL g_isSwappingVolume = NO;
         g_volIsReplaying = NO;
     }
 
+    // Only a hold or sequence trigger needs this press held back (to tell a tap
+    // from a hold). Otherwise hand it to native straight away, so taps and holds
+    // behave exactly like stock - replaying it after a 0.35s wait delayed the ramp
+    // and made the volume jerk. Volume Both Press is still detected below.
+    BOOL passthrough = !RC_TriggerIsActionable(@"volume_up_hold") && !RC_TriggerIsActionable(@"volume_up_then_down");
+
     // 4. Check for simultaneous Volume Up + Volume Down dual press
     BOOL isDualPress = g_volDownIsDown || (g_lastVolDownPressTime > 0 && (now - g_lastVolDownPressTime) < 0.20);
     if (isDualPress) {
         cancel_pending_volume_sequences();
-        load_trigger_config();
-        BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
-        BOOL comboEnabled = masterEnabled && [g_triggerConfig[@"triggers"][@"volume_both_press"][@"enabled"] boolValue];
-        
+        BOOL comboEnabled = RC_TriggerIsActionable(@"volume_both_press");
+
         if (g_volUpTimer) { [g_volUpTimer invalidate]; g_volUpTimer = nil; }
         if (g_volDownTimer) { [g_volDownTimer invalidate]; g_volDownTimer = nil; }
         g_volUpTriggered = NO;
@@ -10073,32 +10381,69 @@ static BOOL g_isSwappingVolume = NO;
         } else {
             g_volComboTriggered = YES;
         }
+        // The other button's press already reached native: let this one through
+        // too, so the two cancel out and the volume ends where it started.
+        g_volUpLastPassedThrough = passthrough && g_volDownLastPassedThrough;
+        if (g_volUpLastPassedThrough) {
+            g_volUpNativeSessionActive = YES;
+            %orig;
+        }
+        return;
+    }
+
+    g_volUpLastPassedThrough = passthrough;
+    if (passthrough) {
+        SRLog(@"[Vol] Up: no hold/sequence trigger - passing straight to native");
+        g_volUpNativeSessionActive = YES;
+        %orig;
         return;
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        load_trigger_config();
-        BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
-        BOOL comboEnabled = masterEnabled && [g_triggerConfig[@"triggers"][@"volume_both_press"][@"enabled"] boolValue];
-        BOOL holdEnabled = masterEnabled && [g_triggerConfig[@"triggers"][@"volume_up_hold"][@"enabled"] boolValue];
-        BOOL seqUpDownEnabled = masterEnabled && [g_triggerConfig[@"triggers"][@"volume_up_then_down"][@"enabled"] boolValue];
+        // A power press landing in the same instant can fire the combo before
+        // this block runs, when the combo's own timer-invalidate had nothing
+        // to cancel yet.
+        if (RC_VolumePressWasPowerCombo(now)) return;
+
+        // Only intercept the hold (and sacrifice the native ramp) when these
+        // triggers would actually do something - matches RCExecuteTrigger's
+        // own "enabled AND has actions" check. An enabled-but-empty hold
+        // trigger was blocking the native ramp for nothing.
+        BOOL comboEnabled = RC_TriggerIsActionable(@"volume_both_press");
+        BOOL holdEnabled = RC_TriggerIsActionable(@"volume_up_hold");
+        BOOL seqUpDownEnabled = RC_TriggerIsActionable(@"volume_up_then_down");
+        SRLog(@"[Vol] Up-down branch decision: holdEnabled=%d comboEnabled=%d seqUpDownEnabled=%d", holdEnabled, comboEnabled, seqUpDownEnabled);
 
         if (holdEnabled || comboEnabled || seqUpDownEnabled) {
             if (g_volUpTimer) [g_volUpTimer invalidate];
             g_volUpTimer = [NSTimer scheduledTimerWithTimeInterval:0.35 repeats:NO block:^(NSTimer *timer) {
                 if (g_volComboTriggered || g_powerVolComboTriggered || g_volDownIsDown) return;
                 g_volUpTimer = nil;
+                // Never start a hold action or native ramp for a press a
+                // combo consumed, or one already released - nothing would
+                // ever send the ramp its stop signal.
+                if (RC_VolumePressWasPowerCombo(now) || !g_volUpIsDown) return;
                 if (holdEnabled) {
                     g_volUpTriggered = YES;
                     trigger_haptic();
                     RCExecuteTrigger(@"volume_up_hold");
                 } else {
+                    // We only armed this timer to watch for volume_both_press or a
+                    // volume_up_then_down sequence - neither materialized, so this
+                    // was just a single press. The button is still physically held
+                    // at this point, so this starts the native ramp - mark the
+                    // session active so the real release (which arrives later,
+                    // separately) also reaches %orig to stop it. Without that, the
+                    // ramp never gets a stop signal and runs all the way to 100%.
+                    SRLog(@"[Vol] Hold timer expired with no hold/combo - replaying to reach native");
+                    g_volUpNativeSessionActive = YES;
                     g_volIsReplaying = YES;
                     [self volumeIncreasePressDownWithModifiers:arg1];
                     g_volIsReplaying = NO;
                 }
             }];
         } else {
+            SRLog(@"[Vol] Replaying volumeIncreasePressDownWithModifiers: to reach native");
             g_volIsReplaying = YES;
             [self volumeIncreasePressDownWithModifiers:arg1];
             g_volIsReplaying = NO;
@@ -10107,10 +10452,27 @@ static BOOL g_isSwappingVolume = NO;
 }
 
 - (void)volumeIncreasePressUp {
+    if (!g_powerIsDown) RC_SetScreenshotRecognizerSuppressed(NO);
+
     if (!g_isSwappingVolume && should_swap_in_hooks()) {
         g_isSwappingVolume = YES;
         [self volumeDecreasePressUp];
         g_isSwappingVolume = NO;
+        return;
+    }
+
+    // A hold-timer fallback already replayed DOWN to the native handler while
+    // this button was still held (see volumeIncreasePressDownWithModifiers:'s
+    // timer). This real release must reach %orig too, or the native ramp it
+    // started never gets a stop signal and runs to 100%.
+    if (g_volUpNativeSessionActive) {
+        g_volUpNativeSessionActive = NO;
+        SRLog(@"[Vol] Up release of a native press - forwarding to native");
+        g_volUpIsDown = NO;
+        if (g_volComboTriggered && !g_volDownIsDown) g_volComboTriggered = NO;
+        g_volIsReplaying = YES;
+        %orig;
+        g_volIsReplaying = NO;
         return;
     }
 
@@ -10132,17 +10494,15 @@ static BOOL g_isSwappingVolume = NO;
         return;
     }
 
-    if (g_powerVolComboTriggered) {
+    if (g_powerVolComboTriggered || RC_VolumePressWasPowerCombo(g_lastVolUpPressTime)) {
         if (g_volUpTimer) { [g_volUpTimer invalidate]; g_volUpTimer = nil; }
         return;
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        load_trigger_config();
-        BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
-        BOOL holdEnabled = masterEnabled && [g_triggerConfig[@"triggers"][@"volume_up_hold"][@"enabled"] boolValue];
-        BOOL comboEnabled = masterEnabled && [g_triggerConfig[@"triggers"][@"volume_both_press"][@"enabled"] boolValue];
-        BOOL seqUpDownEnabled = masterEnabled && [g_triggerConfig[@"triggers"][@"volume_up_then_down"][@"enabled"] boolValue];
+        BOOL holdEnabled = RC_TriggerIsActionable(@"volume_up_hold");
+        BOOL comboEnabled = RC_TriggerIsActionable(@"volume_both_press");
+        BOOL seqUpDownEnabled = RC_TriggerIsActionable(@"volume_up_then_down");
 
         if (g_volUpTriggered) {
             g_volUpTriggered = NO;
@@ -10177,6 +10537,8 @@ static BOOL g_isSwappingVolume = NO;
 }
 
 - (void)volumeDecreasePressDownWithModifiers:(long long)arg1 {
+    g_volHookAlive = YES;
+
     if (!g_isSwappingVolume && should_swap_in_hooks()) {
         g_isSwappingVolume = YES;
         [self volumeIncreasePressDownWithModifiers:arg1];
@@ -10192,20 +10554,20 @@ static BOOL g_isSwappingVolume = NO;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     g_volDownIsDown = YES;
     g_lastVolDownPressTime = now;
+    if (g_powerIsDown) g_volPressedDuringPower = YES;
 
     // 1. Check for Power + Volume Down combination
     if (g_powerIsDown) {
         cancel_pending_volume_sequences();
-        load_trigger_config();
-        BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
-        BOOL enabled = masterEnabled && [g_triggerConfig[@"triggers"][@"power_volume_down"][@"enabled"] boolValue];
         // A power + volume press must not leave the custom power-long-press timer
         // running. Otherwise the combo action is followed by the long-power action.
         if (g_lockButtonTimer) { [g_lockButtonTimer invalidate]; g_lockButtonTimer = nil; }
         if (g_systemPowerOffTimer) { [g_systemPowerOffTimer invalidate]; g_systemPowerOffTimer = nil; }
-        if (enabled) {
+        BOOL enabled = RC_TriggerIsActionable(@"power_volume_down");
+        if (enabled && !g_powerVolComboTriggered) {
             SRLog(@"Power + Volume Down combo triggered (from Vol Down Hook)");
             g_powerVolComboTriggered = YES;
+            RC_MarkPowerVolComboFired();
             if (g_volUpTimer) { [g_volUpTimer invalidate]; g_volUpTimer = nil; }
             if (g_volDownTimer) { [g_volDownTimer invalidate]; g_volDownTimer = nil; }
             trigger_haptic();
@@ -10222,13 +10584,17 @@ static BOOL g_isSwappingVolume = NO;
         return;
     }
 
+    // See the symmetric comment in volumeIncreasePressDownWithModifiers:.
+    if (g_powerIsDown && g_powerVolComboTriggered) {
+        g_lastVolDownPressTime = g_lastPowerVolComboFireTime;
+        return;
+    }
+
     // 2. Check for pending Volume Up -> Volume Down sequence
     if (g_pendingVolUpSeqTimer) {
         [g_pendingVolUpSeqTimer invalidate];
         g_pendingVolUpSeqTimer = nil;
-        load_trigger_config();
-        BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
-        BOOL seqUpDownEnabled = masterEnabled && [g_triggerConfig[@"triggers"][@"volume_up_then_down"][@"enabled"] boolValue];
+        BOOL seqUpDownEnabled = RC_TriggerIsActionable(@"volume_up_then_down");
         if (seqUpDownEnabled) {
             SRLog(@"Volume Up then Down sequence triggered!");
             g_volSeqJustFired = YES;
@@ -10250,14 +10616,15 @@ static BOOL g_isSwappingVolume = NO;
         g_volIsReplaying = NO;
     }
 
+    // See the symmetric comment in volumeIncreasePressDownWithModifiers:.
+    BOOL passthrough = !RC_TriggerIsActionable(@"volume_down_hold") && !RC_TriggerIsActionable(@"volume_down_then_up");
+
     // 4. Check for simultaneous Volume Up + Volume Down dual press
     BOOL isDualPress = g_volUpIsDown || (g_lastVolUpPressTime > 0 && (now - g_lastVolUpPressTime) < 0.20);
     if (isDualPress) {
         cancel_pending_volume_sequences();
-        load_trigger_config();
-        BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
-        BOOL comboEnabled = masterEnabled && [g_triggerConfig[@"triggers"][@"volume_both_press"][@"enabled"] boolValue];
-        
+        BOOL comboEnabled = RC_TriggerIsActionable(@"volume_both_press");
+
         if (g_volUpTimer) { [g_volUpTimer invalidate]; g_volUpTimer = nil; }
         if (g_volDownTimer) { [g_volDownTimer invalidate]; g_volDownTimer = nil; }
         g_volUpTriggered = NO;
@@ -10271,26 +10638,53 @@ static BOOL g_isSwappingVolume = NO;
         } else {
             g_volComboTriggered = YES;
         }
+        // See the symmetric comment in volumeIncreasePressDownWithModifiers:.
+        g_volDownLastPassedThrough = passthrough && g_volUpLastPassedThrough;
+        if (g_volDownLastPassedThrough) {
+            g_volDownNativeSessionActive = YES;
+            %orig;
+        }
+        return;
+    }
+
+    g_volDownLastPassedThrough = passthrough;
+    if (passthrough) {
+        SRLog(@"[Vol] Down: no hold/sequence trigger - passing straight to native");
+        g_volDownNativeSessionActive = YES;
+        %orig;
         return;
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        load_trigger_config();
-        BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
-        BOOL comboEnabled = masterEnabled && [g_triggerConfig[@"triggers"][@"volume_both_press"][@"enabled"] boolValue];
-        BOOL holdEnabled = masterEnabled && [g_triggerConfig[@"triggers"][@"volume_down_hold"][@"enabled"] boolValue];
-        BOOL seqDownUpEnabled = masterEnabled && [g_triggerConfig[@"triggers"][@"volume_down_then_up"][@"enabled"] boolValue];
+        // See the symmetric comment in volumeIncreasePressDownWithModifiers:.
+        if (RC_VolumePressWasPowerCombo(now)) return;
+
+        // Only intercept the hold (and sacrifice the native ramp) when these
+        // triggers would actually do something - see the symmetric comment in
+        // volumeIncreasePressDownWithModifiers:.
+        BOOL comboEnabled = RC_TriggerIsActionable(@"volume_both_press");
+        BOOL holdEnabled = RC_TriggerIsActionable(@"volume_down_hold");
+        BOOL seqDownUpEnabled = RC_TriggerIsActionable(@"volume_down_then_up");
 
         if (holdEnabled || comboEnabled || seqDownUpEnabled) {
             if (g_volDownTimer) [g_volDownTimer invalidate];
             g_volDownTimer = [NSTimer scheduledTimerWithTimeInterval:0.35 repeats:NO block:^(NSTimer *timer) {
                 if (g_volComboTriggered || g_powerVolComboTriggered || g_volUpIsDown) return;
                 g_volDownTimer = nil;
+                // See the symmetric comment in volumeIncreasePressDownWithModifiers:.
+                if (RC_VolumePressWasPowerCombo(now) || !g_volDownIsDown) return;
                 if (holdEnabled) {
                     g_volDownTriggered = YES;
                     trigger_haptic();
                     RCExecuteTrigger(@"volume_down_hold");
                 } else {
+                    // We only armed this timer to watch for volume_both_press or a
+                    // volume_down_then_up sequence - neither materialized, so this
+                    // was just a single press. See the symmetric comment in
+                    // volumeIncreasePressDownWithModifiers: for why
+                    // g_volDownNativeSessionActive matters here.
+                    SRLog(@"[Vol] Hold timer expired with no hold/combo - replaying to reach native");
+                    g_volDownNativeSessionActive = YES;
                     g_volIsReplaying = YES;
                     [self volumeDecreasePressDownWithModifiers:arg1];
                     g_volIsReplaying = NO;
@@ -10312,6 +10706,18 @@ static BOOL g_isSwappingVolume = NO;
         return;
     }
 
+    // See the symmetric comment in volumeIncreasePressUp.
+    if (g_volDownNativeSessionActive) {
+        g_volDownNativeSessionActive = NO;
+        SRLog(@"[Vol] Down release of a native press - forwarding to native");
+        g_volDownIsDown = NO;
+        if (g_volComboTriggered && !g_volUpIsDown) g_volComboTriggered = NO;
+        g_volIsReplaying = YES;
+        %orig;
+        g_volIsReplaying = NO;
+        return;
+    }
+
     g_volDownIsDown = NO;
     if (g_volIsReplaying || RC_IsForegroundAppExcluded()) {
         %orig;
@@ -10330,17 +10736,15 @@ static BOOL g_isSwappingVolume = NO;
         return;
     }
 
-    if (g_powerVolComboTriggered) {
+    if (g_powerVolComboTriggered || RC_VolumePressWasPowerCombo(g_lastVolDownPressTime)) {
         if (g_volDownTimer) { [g_volDownTimer invalidate]; g_volDownTimer = nil; }
         return;
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        load_trigger_config();
-        BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
-        BOOL holdEnabled = masterEnabled && [g_triggerConfig[@"triggers"][@"volume_down_hold"][@"enabled"] boolValue];
-        BOOL comboEnabled = masterEnabled && [g_triggerConfig[@"triggers"][@"volume_both_press"][@"enabled"] boolValue];
-        BOOL seqDownUpEnabled = masterEnabled && [g_triggerConfig[@"triggers"][@"volume_down_then_up"][@"enabled"] boolValue];
+        BOOL holdEnabled = RC_TriggerIsActionable(@"volume_down_hold");
+        BOOL comboEnabled = RC_TriggerIsActionable(@"volume_both_press");
+        BOOL seqDownUpEnabled = RC_TriggerIsActionable(@"volume_down_then_up");
 
         if (g_volDownTriggered) {
             g_volDownTriggered = NO;
@@ -10516,6 +10920,10 @@ static void RC_CheckAndFirePower() {
         trigger_haptic();
         RCExecuteTrigger(@"power_quadruple_click");
         g_powerClickCount = 0;
+        // Quad just claimed the sequence - any deferred Wallet double-press
+        // belongs to a click that was actually part of this quad, not a
+        // standalone double, so drop it rather than replaying it.
+        g_walletDoublePressDeferred = NO;
         return;
     }
     
@@ -10525,23 +10933,55 @@ static void RC_CheckAndFirePower() {
     // 5. Schedule Timer
     g_powerClickTimer = [NSTimer scheduledTimerWithTimeInterval:timeout repeats:NO block:^(NSTimer *timer) {
         g_powerClickTimer = nil;
-        SRLog(@"POWER SEQUENCE ENDED. Final count: %d", g_powerClickCount);
-        
+
+        // Snapshot and reset up front so a press arriving during the replay
+        // below starts a clean sequence.
+        int count = g_powerClickCount;
+        g_powerClickCount = 0;
+        SRLog(@"POWER SEQUENCE ENDED. Final count: %d", count);
+
         NSString *triggerKey = nil;
-        
-        if (g_powerClickCount == 4) triggerKey = @"power_quadruple_click"; // Backup if immediate failed or disabled? No, if disabled we land here.
-        else if (g_powerClickCount == 3) triggerKey = @"power_triple_click";
-        else if (g_powerClickCount == 2) triggerKey = @"power_double_tap";
-        
+
+        if (count == 4) triggerKey = @"power_quadruple_click"; // Backup if immediate fire was disabled
+        else if (count == 3) triggerKey = @"power_triple_click";
+        else if (count == 2) triggerKey = @"power_double_tap";
+
+        BOOL claimed = NO;
+        BOOL higherClaimed = NO; // triple/quad specifically claimed this sequence
         if (triggerKey && masterEnabled) {
             BOOL enabled = [g_triggerConfig[@"triggers"][triggerKey][@"enabled"] boolValue];
             if (enabled) {
                 SRLog(@"✅ FIRING POWER TRIGGER: %@", triggerKey);
                 trigger_haptic();
                 RCExecuteTrigger(triggerKey);
+                claimed = YES;
+                higherClaimed = (count >= 3);
             }
         }
-        g_powerClickCount = 0;
+
+        // Resolve any deferred native double-press (Wallet): drop it if a
+        // triple/quad trigger just claimed the sequence - those two clicks
+        // were the start of a longer press, not a standalone double - replay
+        // it otherwise, so a genuine double-click still opens Wallet.
+        BOOL walletReplayed = NO;
+        if (g_walletDoublePressDeferred) {
+            g_walletDoublePressDeferred = NO;
+            if (!higherClaimed) {
+                RC_ReplayWalletDoublePress();
+                walletReplayed = YES;
+            }
+        }
+
+        // Nothing claimed this sequence, but we suppressed the system press to
+        // find that out - so give it back now. This is what stops a plain
+        // single press from becoming a no-op, and is the counterpart to the
+        // unconditional suppression in the Actions hook. Skipped when Wallet
+        // was just replayed instead - that already gave the system a native
+        // outcome for these clicks, and replaying a click on top would spuriously
+        // lock/wake the screen right after Wallet opens.
+        if (!claimed && !walletReplayed && count >= 1 && g_powerHookAlive) {
+            RC_ReplayPowerPress();
+        }
     }];
 }
 
@@ -10735,10 +11175,32 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
         
         // Power Button (Page 0x0C, Usage 0x30)
         if (usagePage == kHIDPage_Consumer && usage == kHIDUsage_Csmr_Power) {
+            // inject_hid_event() posts our own replay through the same
+            // system-wide HID bus this listener taps, so our own synthetic
+            // press comes back through here too, where it would look exactly
+            // like a new physical click (confirmed in the field: one real
+            // press cascaded into repeated replays and a false double-press).
+            // Skip it entirely; the OS's own separate internal dispatch still
+            // processes it normally for the actual lock/sleep effect.
+            if (g_powerIsReplaying) {
+                SRLog(@"[HID] (replay) Power %@ seen on the HID bus", down ? @"DOWN" : @"UP");
+                if (down) g_replayDownAwaitingUp = YES;
+                return;
+            }
             NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
             static NSTimeInterval lastPowerDownTime = 0;
 
             if (down) {
+                // Outside the !g_powerIsDown guard: the main thread can set
+                // g_powerIsDown first, which would skip this whole block.
+                g_powerDownAwaitingUp = YES;
+                // Backup for presses where iOS skips performInitialButtonDownActions
+                // (e.g. the 2nd of two quick presses) - see g_screenshotGestureRecognizer.
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (g_powerIsDown && RC_TriggerIsActionable(@"power_volume_up")) {
+                        RC_SetScreenshotRecognizerSuppressed(YES);
+                    }
+                });
                 if (!g_powerIsDown) {
                     g_powerIsDown = YES;
                     lastPowerDownTime = now;
@@ -10759,16 +11221,20 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
                     g_bioFingerDownTime = 0;
                     g_bioHoldTriggered = NO;
 
-                    // Check for simultaneous press if Volume is already down
-                    if (g_volUpIsDown || g_volDownIsDown) {
+                    // Check for simultaneous press if Volume is already down.
+                    // FALLBACK ONLY. performInitialButtonDownActions already detects this
+                    // same combo on the main thread. Without the g_powerHookAlive guard,
+                    // this background-thread copy and that main-thread copy both race past
+                    // the (non-atomic) !g_powerVolComboTriggered check and double-fire the
+                    // trigger - confirmed in the field as a rapid double-toggle.
+                    if (!g_powerHookAlive && (g_volUpIsDown || g_volDownIsDown)) {
                         NSString *triggerKey = g_volUpIsDown ? @"power_volume_up" : @"power_volume_down";
-                        load_trigger_config();
-                        BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
-                        BOOL enabled = masterEnabled && [g_triggerConfig[@"triggers"][triggerKey][@"enabled"] boolValue];
-                        
+                        BOOL enabled = RC_TriggerIsActionable(triggerKey);
+
                         if (enabled && !g_powerVolComboTriggered) {
                             SRLog(@"[HID] ⚡️+🔊 POWER + VOLUME COMBINATION DETECTED (Power after Volume): %@", triggerKey);
                             g_powerVolComboTriggered = YES;
+                            RC_MarkPowerVolComboFired();
                             dispatch_async(dispatch_get_main_queue(), ^{
                                  cancel_pending_volume_sequences();
                                  if (g_volUpTimer) { [g_volUpTimer invalidate]; g_volUpTimer = nil; }
@@ -10787,11 +11253,15 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
                     }
                 }
             } else { // UP
+                // Power is up, so the screenshot gesture can no longer fire.
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    RC_SetScreenshotRecognizerSuppressed(NO);
+                });
                 if (g_powerIsDown) {
                     if (now - lastPowerDownTime > 0.05) { // 50ms Debounce
                         g_powerIsDown = NO;
                         SRLog(@"[HID] ⚡️ Power UP");
-                        
+
                         // Invalidate pending power hold timers immediately on physical button release
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if (g_lockButtonTimer) {
@@ -10804,12 +11274,26 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
                             }
                         });
 
-                        // If a combo was triggered, DON'T count this as a click for multi-tap
+                        // If a combo was triggered, DON'T count this as a click for multi-tap.
+                        // Reset the click count here, but leave g_powerVolComboTriggered itself
+                        // alone - performButtonUpPreActions/performInitialButtonDownActions now
+                        // consume and reset it themselves, atomically, in the same call that
+                        // reads it. This callback runs on our own background runloop with no
+                        // ordering guarantee against those main-thread calls, and racing to
+                        // reset it here too sometimes won, clearing it before the main thread
+                        // ever saw it - confirmed in the field: the combo fired correctly, but
+                        // the main-thread hook then fell through into normal click counting and
+                        // replayed an unwanted extra lock/sleep on top of it.
                         if (g_powerVolComboTriggered) {
                             SRLog(@"[HID] Combo was triggered, resetting power click count.");
                             g_powerClickCount = 0;
-                            g_powerVolComboTriggered = NO;
-                        } else {
+                        } else if (!g_powerHookAlive) {
+                            // FALLBACK ONLY. When the SBLockHardwareButtonActions hook is
+                            // live it counts on the main thread, in the same call that
+                            // decides whether to suppress %orig - counting here too would
+                            // double-count, and this callback runs on our own background
+                            // runloop with no ordering guarantee against SpringBoard's
+                            // main-thread button dispatch.
                             RC_ProcessPowerClick();
                         }
                     }
@@ -10827,18 +11311,22 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
 
             if (mappedUsage == kHIDUsage_Csmr_VolumeIncrement) g_volUpIsDown = !!down;
             if (mappedUsage == kHIDUsage_Csmr_VolumeDecrement) g_volDownIsDown = !!down;
+            if (down && g_powerIsDown) g_volPressedDuringPower = YES;
             
-            // Check for Power + Volume combination
-            if (down && g_powerIsDown) {
+            // Check for Power + Volume combination.
+            // FALLBACK ONLY. volumeIncreasePressDownWithModifiers:/volumeDecreasePress-
+            // DownWithModifiers: already detect this same combo on the main thread, and
+            // unlike the block above this one had no !g_powerVolComboTriggered guard at
+            // all - it fired unconditionally alongside the ObjC hook every single time.
+            if (!g_volHookAlive && down && g_powerIsDown) {
                 NSString *triggerKey = (mappedUsage == kHIDUsage_Csmr_VolumeIncrement) ? @"power_volume_up" : @"power_volume_down";
-                load_trigger_config();
-                BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
-                BOOL enabled = masterEnabled && [g_triggerConfig[@"triggers"][triggerKey][@"enabled"] boolValue];
-                
-                if (enabled) {
+                BOOL enabled = RC_TriggerIsActionable(triggerKey);
+
+                if (enabled && !g_powerVolComboTriggered) {
                     SRLog(@"[HID] ⚡️+🔊 POWER + VOLUME COMBINATION DETECTED: %@", triggerKey);
                     g_powerVolComboTriggered = YES;
-                    
+                    RC_MarkPowerVolComboFired();
+
                     // Invalidate standard timers in Main Thread
                     dispatch_async(dispatch_get_main_queue(), ^{
                          cancel_pending_volume_sequences();
@@ -10853,26 +11341,40 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
                 }
             }
             
+            // Volume Both Press. The volume hooks detect it on the main thread and reset
+            // g_volComboTriggered on release; detecting it here as well fired it twice,
+            // since this background callback runs ahead of the hooks. But iOS 14 never
+            // calls the hooks for a both-buttons press (single presses still reach them),
+            // so hooks that bound can't be relied on for it. Wait a beat on the main
+            // thread, then fire from here only if no hook saw either press.
             if (g_volUpIsDown && g_volDownIsDown) {
-                if (!g_volComboTriggered) {
-                    load_trigger_config();
-                    if ([g_triggerConfig[@"masterEnabled"] boolValue] && [g_triggerConfig[@"triggers"][@"volume_both_press"][@"enabled"] boolValue]) {
-                        g_volComboTriggered = YES;
-                        
-                        // Invalidate standard timers in Main Thread
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                             cancel_pending_volume_sequences();
-                             if (g_volUpTimer) { [g_volUpTimer invalidate]; g_volUpTimer = nil; }
-                             if (g_volDownTimer) { [g_volDownTimer invalidate]; g_volDownTimer = nil; }
-                             trigger_haptic();
-                             RCExecuteTrigger(@"volume_both_press");
-                        });
-                    }
+                if (!g_volComboTriggered && !g_hidBothPressPending) {
+                    g_hidBothPressPending = YES;
+                    NSTimeInterval bothDownTime = [[NSDate date] timeIntervalSince1970];
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        g_hidBothPressPending = NO;
+                        // The hooks record each press they see; the two presses land at most a moment apart
+                        BOOL hooksSawIt = MAX(g_lastVolUpPressTime, g_lastVolDownPressTime) > bothDownTime - 0.3;
+                        if (hooksSawIt || g_volComboTriggered || !RC_TriggerIsActionable(@"volume_both_press")) return;
+                        SRLog(@"[HID] Volume Both Press - the volume hooks didn't see it, firing from HID");
+                        // Hold the flag until both buttons are up (reset below), unless they already are
+                        g_hidBothPressFired = (g_volUpIsDown || g_volDownIsDown);
+                        g_volComboTriggered = g_hidBothPressFired;
+                        cancel_pending_volume_sequences();
+                        if (g_volUpTimer) { [g_volUpTimer invalidate]; g_volUpTimer = nil; }
+                        if (g_volDownTimer) { [g_volDownTimer invalidate]; g_volDownTimer = nil; }
+                        trigger_haptic();
+                        RCExecuteTrigger(@"volume_both_press");
+                    });
                 }
             } else if (!g_volUpIsDown && !g_volDownIsDown) {
-                if (g_volComboTriggered) {
-                    g_volComboTriggered = NO;
-                }
+                // Both up: reset a combo fired from here (the hooks reset their own)
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (g_hidBothPressFired) {
+                        g_hidBothPressFired = NO;
+                        g_volComboTriggered = NO;
+                    }
+                });
             }
         }
     }
@@ -10945,23 +11447,42 @@ static void setup_background_hid_listener() {
 %hook SBLockHardwareButtonActions
 
 - (void)performInitialButtonDownActions {
+    // Record that this hook is actually live on this iOS version, and cache the
+    // instance so RC_ReplayPowerPress() has something to call back into.
+    g_powerHookAlive = YES;
+    g_powerActionsInstance = self;
+
+    if (g_powerIsReplaying) {
+        SRLog(@"[Power] Replay: injected press-down reached performInitialButtonDownActions");
+        g_replayDownAwaitingUp = YES;
+        %orig;
+        return;
+    }
+
     if (RC_IsForegroundAppExcluded()) {
         %orig;
         return;
     }
     SRLog(@"performInitialButtonDownActions on %@", [self class]);
+
+    g_powerSuppressPostUp = NO; // fresh press
     g_powerIsDown = YES;
+    g_powerDownAwaitingUp = YES;
+    g_replayAwaitingSinglePress = NO; // a new real press; any unclaimed replay slot is stale
+    g_powerPressIsCombo = NO;
+    g_volPressedDuringPower = (g_volUpIsDown || g_volDownIsDown);
+    if (RC_TriggerIsActionable(@"power_volume_up")) RC_SetScreenshotRecognizerSuppressed(YES);
     
     // Check for simultaneous press if Volume is already down
     if (g_volUpIsDown || g_volDownIsDown) {
         NSString *triggerKey = g_volUpIsDown ? @"power_volume_up" : @"power_volume_down";
-        load_trigger_config();
-        BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
-        BOOL enabled = masterEnabled && [g_triggerConfig[@"triggers"][triggerKey][@"enabled"] boolValue];
-        
+        BOOL enabled = RC_TriggerIsActionable(triggerKey);
+
         if (enabled && !g_powerVolComboTriggered) {
             SRLog(@"Power + Volume combo detected (from Lock button down): %@", triggerKey);
             g_powerVolComboTriggered = YES;
+            RC_MarkPowerVolComboFired();
+            if (g_volUpIsDown) RC_SetScreenshotRecognizerSuppressed(YES);
             if (g_volUpTimer) { [g_volUpTimer invalidate]; g_volUpTimer = nil; }
             if (g_volDownTimer) { [g_volDownTimer invalidate]; g_volDownTimer = nil; }
             trigger_haptic();
@@ -10969,7 +11490,22 @@ static void setup_background_hid_listener() {
             return;
         }
     }
-    
+
+    // The background HID listener's own fallback combo-detection can win the
+    // race and already fire the trigger before this call runs - it correctly
+    // skips re-firing here (the !g_powerVolComboTriggered check above), but
+    // was still falling through into the normal defer/long-press logic below
+    // for the very same press, unconditionally deferring it as a fresh click.
+    // Confirmed in the field: this let a since-consumed combo press replay an
+    // unwanted extra lock/sleep on top of the combo action that had already
+    // fired. Suppress this DOWN entirely instead.
+    if (g_powerVolComboTriggered) {
+        g_powerDeferActive = NO;
+        g_powerPressIsCombo = YES;
+        g_powerSuppressPostUp = YES;
+        return;
+    }
+
     load_trigger_config();
     BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
     BOOL longPressEnabled = masterEnabled && 
@@ -11004,15 +11540,17 @@ static void setup_background_hid_listener() {
         }
     }
 
-    BOOL multiClickEnabled = masterEnabled && 
-        ([g_triggerConfig[@"triggers"][@"power_double_tap"][@"enabled"] boolValue] ||
-         [g_triggerConfig[@"triggers"][@"power_triple_click"][@"enabled"] boolValue] ||
-         [g_triggerConfig[@"triggers"][@"power_quadruple_click"][@"enabled"] boolValue]);
-
-    // SUPPRESSION: If a multi-click sequence is in progress, swallow the DOWN event for 2nd click onwards.
-    // This stops the phone from waking/locking on subsequent clicks while allowing single-tap %orig.
-    if (multiClickEnabled && g_powerClickCount >= 2) {
-        SRLog(@"Suppressing system DOWN for click sequence (count=%d)", g_powerClickCount);
+    // SUPPRESSION: while any multi-click power trigger is armed we swallow the
+    // DOWN event unconditionally - including the FIRST press. The old code only
+    // suppressed from click #2 onward, which meant click #1 always reached
+    // %orig and locked the phone before the trigger could fire.
+    // If the sequence turns out to be an unclaimed press, RC_CheckAndFirePower()
+    // replays it, so a plain single press still locks/wakes as normal.
+    // Latch the decision at DOWN so a config reload mid-press can't leave the
+    // UP half disagreeing with the DOWN half.
+    g_powerDeferActive = RC_ShouldDeferPowerPress();
+    if (g_powerDeferActive) {
+        SRLog(@"Deferring system power DOWN (multi-click armed)");
         return;
     }
 
@@ -11020,6 +11558,32 @@ static void setup_background_hid_listener() {
 }
 
 - (void)performButtonUpPreActions {
+    g_powerHookAlive = YES;
+    g_powerActionsInstance = self;
+
+    if (g_powerIsReplaying) {
+        if (g_replayDownAwaitingUp) {
+            // The injected press's own release: hand it through, and the
+            // replay is complete.
+            SRLog(@"[Power] Replay: injected release reached performButtonUpPreActions - replay complete");
+            g_replayAwaitingSinglePress = YES;
+            g_replayDownAwaitingUp = NO;
+            g_powerIsReplaying = NO;
+            %orig;
+            return;
+        }
+        // Arrived before the injected press went down, so it's the real
+        // press's own phantom call - don't let it reach %orig.
+        SRLog(@"Ignoring phantom performButtonUpPreActions call during replay");
+        g_powerSuppressPostUp = YES;
+        return;
+    }
+
+    if (RC_IsForegroundAppExcluded()) {
+        %orig;
+        return;
+    }
+
     SRLog(@"performButtonUpPreActions on %@", [self class]);
     SRLog(@"Power Button UP (Actions)");
     g_powerIsDown = NO;
@@ -11033,31 +11597,91 @@ static void setup_background_hid_listener() {
         g_systemPowerOffTimer = nil;
     }
     g_forceSystemLongPress = NO;
-    
+
+    // The system re-invokes this method a second time on its own, with no
+    // matching press - confirmed in the field: a real triple-click produced a
+    // 4th, phantom call here. Only the first UP after a real DOWN is real (see
+    // g_powerDownAwaitingUp). This must run before ANY suppression-reason
+    // branch below, not just the deferred-click one: each of those returns
+    // early once it decides why to suppress the REAL call, and if any of them
+    // left this flag unconsumed, the phantom call - which hits none of those
+    // reasons since its press was already fully handled - would fall through
+    // all the way to %orig and fire an uncontrolled extra native lock
+    // (confirmed in the field via the combo branch). Suppress the paired
+    // postActions call too via the same one-shot flag it already checks, so
+    // neither half of the phantom event reaches the system.
+    BOOL isRealPress = g_powerDownAwaitingUp;
+    g_powerDownAwaitingUp = NO;
+    if (!isRealPress) {
+        SRLog(@"Ignoring synthetic performButtonUpPreActions call (no matching press)");
+        g_powerSuppressPostUp = YES;
+        return;
+    }
+
     if (g_lockButtonTriggered) {
         g_lockButtonTriggered = NO;
         SRLog(@"Power Button Release: Long press already fired, resetting.");
-        return; 
-    }
-
-    load_trigger_config();
-    BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
-    BOOL multiClickEnabled = masterEnabled && 
-        ([g_triggerConfig[@"triggers"][@"power_double_tap"][@"enabled"] boolValue] ||
-         [g_triggerConfig[@"triggers"][@"power_triple_click"][@"enabled"] boolValue] ||
-         [g_triggerConfig[@"triggers"][@"power_quadruple_click"][@"enabled"] boolValue]);
-
-    // SUPPRESSION: Swallow UP events for 2nd click onwards.
-    // Click 1 passes %orig so system can lock/wake normally if sequence stops.
-    if (multiClickEnabled && g_powerClickCount >= 2) {
-        SRLog(@"Suppressing system UP for click #%d", g_powerClickCount);
+        g_powerSuppressPostUp = YES;
         return;
     }
 
     // SUPPRESSION: If a Power + Volume combo was triggered, swallow the Power UP as well.
     if (g_powerVolComboTriggered) {
         SRLog(@"Suppressing system UP because a Power + Volume combo was triggered.");
-        // g_powerVolComboTriggered will be reset in handle_hid_event UP
+        // Consume it here, on the main thread, in the same call that reads it.
+        // Leaving this to the background HID listener's own UP handler raced
+        // against this one and sometimes lost - confirmed in the field: the
+        // background thread's reset ran first, this check then saw NO, fell
+        // through to normal click counting, and replayed an extra, unwanted
+        // lock/sleep on top of the combo action that had already fired.
+        g_powerVolComboTriggered = NO;
+        g_powerSuppressPostUp = YES;
+        return;
+    }
+
+    // A deferred press with a volume button held (no combo action bound) is the
+    // native chord - iOS's own recognizer already handled it (Vol Up + Power takes
+    // the screenshot). Swallow it rather than count it as a click, which would
+    // replay a lone power press and lock/sleep the phone on top of the screenshot.
+    if (g_powerDeferActive && g_volPressedDuringPower) {
+        SRLog(@"Power pressed with a volume button (no combo action) - native chord, not counted as a click");
+        g_powerSuppressPostUp = YES;
+        return;
+    }
+
+    // SUPPRESSION + COUNT: swallow every UP while a multi-click trigger is armed
+    // and count the click HERE, on the main thread, in the same call that makes
+    // the suppression decision. That removes the cross-thread race with the HID
+    // listener entirely - the count and the %orig decision can no longer disagree.
+    if (g_powerDeferActive) {
+        g_powerClickCount++;
+        SRLog(@"⚡️ POWER CLICK (hook). Count: %d - deferring system UP", g_powerClickCount);
+        g_powerSuppressPostUp = YES;
+        RC_CheckAndFirePower();
+        return;
+    }
+
+    %orig;
+}
+
+// The lock is issued across BOTH halves of the button-up phase. Returning early
+// from performButtonUpPreActions does not stop SpringBoard from calling Post, so
+// suppression has to cover it too - otherwise the phone still sleeps even when
+// the log says the UP was suppressed.
+- (void)performButtonUpPostActions {
+    if (g_powerIsReplaying) {
+        %orig;
+        return;
+    }
+
+    if (RC_IsForegroundAppExcluded()) {
+        %orig;
+        return;
+    }
+
+    if (g_powerSuppressPostUp) {
+        g_powerSuppressPostUp = NO;
+        SRLog(@"Suppressing system UP (Post phase)");
         return;
     }
 
@@ -11111,32 +11735,50 @@ static void setup_background_hid_listener() {
 }
 
 - (void)performDoublePressActions {
+    g_powerHookAlive = YES;
+    g_powerActionsInstance = self;
+
+    // Deliberately its own flag, not g_powerIsReplaying: opening Wallet can take
+    // a second or two with no predictive fast-path, and a real 3rd click must
+    // still be counted normally while that's in flight.
+    if (g_walletIsReplaying) {
+        %orig;
+        return;
+    }
+
     SRLog(@"performDoublePressActions called (System)");
     // We handle double press manually in performButtonUpPreActions to support Triple/Quad clicks.
-    // So we do NOT fire "power_double_tap" here to avoid duplicates.
-    // However, if we suppress %orig completely, we might break Wallet double-click.
-    // For now, let's just allow orig so system features work, 
-    // relying on our manual counter for OUR actions.
-    
-    // Logic: If we have a configured double tap action, our manual handler will fire it.
-    // If not, this does nothing related to us.
-    
-    /*
-    load_trigger_config();
-    BOOL enabled = [g_triggerConfig[@"masterEnabled"] boolValue] && 
-                   [g_triggerConfig[@"triggers"][@"power_double_tap"][@"enabled"] boolValue];
+    // So we do NOT fire "power_double_tap" here to avoid duplicates - our manual
+    // counter fires it independently if configured.
 
-    if (enabled) {
-        // Don't fire here, manual handler does it.
+    // A double-press only means something while one of our click counts is
+    // running (g_powerClickTimer pending) - a genuine double-click always
+    // arrives with its count still open. The system also reports doubles for
+    // presses we already fully handled, with no count running: the tail of a
+    // quadruple that fired immediately, or back-to-back power+volume combos
+    // (both confirmed in the field). Deferring those left them armed with
+    // nothing to resolve them, so the next unrelated single press opened
+    // Wallet. Drop them. Presses we didn't take over aren't ours to drop.
+    BOOL excluded = RC_IsForegroundAppExcluded();
+    if (!excluded && !g_powerClickTimer && (g_powerDeferActive || g_powerPressIsCombo)) {
+        SRLog(@"Ignoring native double-press - its presses were already handled");
+        return;
     }
-    */
-    /*
-        trigger_haptic();
-        RCExecuteTrigger(@"power_double_tap");
-        SRLog(@"Power Double Tap Fired (Actions)");
-        return; 
+
+    // The system calls this as soon as it sees 2 clicks, before it knows
+    // whether a 3rd is coming. If triple/quad is armed that's ambiguous - it
+    // could be a genuine double (which should still open Wallet) or the start
+    // of a longer sequence (which should NOT). Defer it and let
+    // RC_CheckAndFirePower's timeout resolve it once the sequence actually ends.
+    // Keyed on the count actually running rather than the screen being on:
+    // a double-click from screen-off wakes it with the first press, and the
+    // old check then deferred a double that no count would ever resolve.
+    if (!excluded && g_powerClickTimer && RC_HigherPowerMultiClickArmed()) {
+        SRLog(@"Deferring native double-press (Wallet) - triple/quad armed");
+        g_walletDoublePressDeferred = YES;
+        return;
     }
-    */
+
     %orig;
 }
 
@@ -11145,19 +11787,75 @@ static void setup_background_hid_listener() {
 // [Generic simulation registration handled by catch-all observer in register_simulation_observers]
 
 %hook SBLockHardwareButton
+
+// This gesture-recognizer target-action fires directly off the real hardware
+// press/release, entirely independent of SBLockHardwareButtonActions - none
+// of the suppression this file does there (defer/replay, combo, long-press)
+// stops this from also firing its own native lock. It is swallowed only for
+// presses we took over; every other press passes straight through.
+- (void)singlePress:(id)arg1 {
+    // A deferred press is handed back via RC_ReplayPowerPress(), and that
+    // synthetic press brings its own singlePress: - always after its release
+    // has completed the replay. It must be the only one the press gets, so it
+    // is checked first: it can arrive right after a combo, which an earlier
+    // time-based combo check here swallowed, leaving the phone awake.
+    if (g_replayAwaitingSinglePress) {
+        g_replayAwaitingSinglePress = NO;
+        SRLog(@"[Power] Native singlePress: fired for the replayed press");
+        %orig;
+        return;
+    }
+    // A combo consumed this press. Disabling the screenshot recognizer (which
+    // this one waits on) also frees it to fire sooner during the combo.
+    if (g_powerPressIsCombo && !RC_IsForegroundAppExcluded()) {
+        SRLog(@"Suppressing native singlePress: - a Power + Volume combo consumed this press");
+        return;
+    }
+    // The real press's own singlePress: is usually a visible no-op, but on the
+    // first press after a respring it starts the sleep itself (confirmed in
+    // the field: backlight change right after it, before the replay began),
+    // and the replay's then acts as a second press - the phone locked but
+    // was left on the lit lock screen. Presses we don't defer (screen already
+    // off, excluded app) pass through untouched.
+    if (g_powerDeferActive && !RC_IsForegroundAppExcluded()) {
+        SRLog(@"Suppressing native singlePress: for a deferred press - its replay supplies its own");
+        return;
+    }
+    SRLog(@"[Power] Native singlePress: fired");
+    %orig;
+}
+
 - (void)doublePress:(id)arg1 {
     SRLog(@"SBLockHardwareButton doublePress: called");
     load_trigger_config();
-    BOOL enabled = [g_triggerConfig[@"masterEnabled"] boolValue] && 
+    BOOL enabled = [g_triggerConfig[@"masterEnabled"] boolValue] &&
                    [g_triggerConfig[@"triggers"][@"power_double_tap"][@"enabled"] boolValue];
     if (enabled) {
         // We already handled it in Actions (hopefully), or we handle it here if Actions wasn't called
         // But to be safe, let's see if this one fires.
-        %orig; 
+        %orig;
     } else {
         %orig;
     }
 }
+
+// The screenshot recognizer is handed straight into one of these initializers;
+// its setter (setScreenshotGestureRecognizer:) never fires in practice. Both
+// variants exist across iOS versions - hook whichever one actually runs.
+- (id)initWithScreenshotGestureRecognizer:(id)arg1 shutdownGestureRecognizer:(id)arg2 proximitySensorManager:(id)arg3 homeHardwareButton:(id)arg4 volumeHardwareButton:(id)arg5 homeButtonType:(NSInteger)arg6 {
+    id result = %orig;
+    SRLog(@"[Screenshot] Cached screenshot recognizer (short init): %@", arg1);
+    g_screenshotGestureRecognizer = arg1;
+    return result;
+}
+
+- (id)initWithScreenshotGestureRecognizer:(id)arg1 shutdownGestureRecognizer:(id)arg2 proximitySensorManager:(id)arg3 homeHardwareButton:(id)arg4 volumeHardwareButton:(id)arg5 buttonActions:(id)arg6 homeButtonType:(NSInteger)arg7 createGestures:(BOOL)arg8 {
+    id result = %orig;
+    SRLog(@"[Screenshot] Cached screenshot recognizer (long init): %@", arg1);
+    g_screenshotGestureRecognizer = arg1;
+    return result;
+}
+
 %end
 
 
@@ -11937,6 +12635,7 @@ static void rc_camera_launched_notification_callback(CFNotificationCenterRef cen
     });
 }
 
+
 %end
 
 // =========================================================================
@@ -12572,7 +13271,45 @@ static NSTimeInterval s_last_camera_launch_notify = 0;
         %init(_ungrouped);
         
         SRLog(@"Tweak Loaded in %@ - Starting Initialization...", bundleID);
-        
+
+        // --- Power button hook sanity check ---
+        // If Apple renamed or moved these on this iOS version, %hook silently
+        // binds nothing and every suppression path below is dead code. Log it
+        // once at load so this shows up in the syslog instead of looking like a
+        // logic bug.
+        Class lockActions = objc_getClass("SBLockHardwareButtonActions");
+        if (!lockActions) {
+            SRLog(@"❌ [Power] SBLockHardwareButtonActions NOT FOUND on this iOS version");
+        } else {
+            const char *sels[] = { "performInitialButtonDownActions",
+                                   "performButtonUpPreActions",
+                                   "performButtonUpPostActions",
+                                   "performLongPressActions",
+                                   "performDoublePressActions" };
+            for (size_t i = 0; i < sizeof(sels)/sizeof(sels[0]); i++) {
+                BOOL present = class_getInstanceMethod(lockActions, sel_registerName(sels[i])) != NULL;
+                SRLog(@"%@ [Power] -[SBLockHardwareButtonActions %s]",
+                      present ? @"✅" : @"❌", sels[i]);
+            }
+        }
+
+        // The HID listener's combo/click fallbacks exist only for iOS versions
+        // where the Actions hooks don't bind. Learning that from each hook's
+        // first call left the fallbacks live for the first press after every
+        // respring - confirmed in the field: the fallback fired a
+        // power+volume-down combo ahead of the volume hook, and that volume
+        // press then leaked through as a one-tick volume change.
+        if (class_getInstanceMethod(lockActions, @selector(performInitialButtonDownActions)) &&
+            class_getInstanceMethod(lockActions, @selector(performButtonUpPreActions))) {
+            g_powerHookAlive = YES;
+        }
+        Class volActions = objc_getClass("SBVolumeHardwareButtonActions");
+        if (class_getInstanceMethod(volActions, @selector(volumeIncreasePressDownWithModifiers:)) &&
+            class_getInstanceMethod(volActions, @selector(volumeDecreasePressDownWithModifiers:))) {
+            g_volHookAlive = YES;
+        }
+        SRLog(@"[Power] Hooks live at load: power=%d volume=%d", g_powerHookAlive, g_volHookAlive);
+
         CFNotificationCenterAddObserver(
             CFNotificationCenterGetDarwinNotifyCenter(),
             NULL,
