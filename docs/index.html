@@ -6,7 +6,7 @@
     <title>RemoteCompanion — Modern iOS Automation & Jailbreak Repo</title>
     
     <!-- SEO & Metadata -->
-    <meta name="description" content="Official repository for RemoteCompanion: Scriptable system control, gesture automation, and desktop hub for modern jailbroken iOS (iOS 14.0–16.x).">
+    <meta name="description" content="Official repository for RemoteCompanion: Scriptable system control, gesture automation, and desktop hub for modern jailbroken iOS (iOS 14–17, partial iOS 26 support).">
     <meta name="keywords" content="RemoteCompanion, iOS, Jailbreak, Sileo, Zebra, Cydia, Dopamine, Palera1n, Rootless, RootHide, Tweaks, Automation, Home Assistant, Keyboard Maestro, MQTT">
     <meta name="author" content="saihgupr">
     <meta name="theme-color" content="#0071e3" media="(prefers-color-scheme: light)">
@@ -16,7 +16,7 @@
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://saihgupr.github.io/remotecompanion/">
     <meta property="og:title" content="RemoteCompanion — iOS Automation & Jailbreak Repo">
-    <meta property="og:description" content="Scriptable system control, gesture automation, and desktop hub for modern jailbroken iOS. Supports iOS 14.0–16.x (Rootless & Rootful).">
+    <meta property="og:description" content="Scriptable system control, gesture automation, and desktop hub for modern jailbroken iOS. Supports iOS 14–17 with partial iOS 26 support (Rootless & Rootful).">
     <meta property="og:image" content="https://saihgupr.github.io/remotecompanion/Icon.png">
     <meta property="og:image:alt" content="RemoteCompanion App Icon">
     <meta property="og:site_name" content="RemoteCompanion Repository">
@@ -24,7 +24,7 @@
     <!-- Twitter / X Card (Enables app icon preview on Reddit link posts) -->
     <meta name="twitter:card" content="summary">
     <meta name="twitter:title" content="RemoteCompanion — iOS Automation & Jailbreak Repo">
-    <meta name="twitter:description" content="Scriptable system control, gesture automation, and desktop hub for modern jailbroken iOS. Supports iOS 14.0–16.x (Rootless & Rootful).">
+    <meta name="twitter:description" content="Scriptable system control, gesture automation, and desktop hub for modern jailbroken iOS. Supports iOS 14–17 with partial iOS 26 support (Rootless & Rootful).">
     <meta name="twitter:image" content="https://saihgupr.github.io/remotecompanion/Icon.png">
     <meta name="twitter:image:alt" content="RemoteCompanion Icon">
 
@@ -78,8 +78,8 @@
                 <h1 class="hero-title">RemoteCompanion</h1>
                 <p class="hero-tagline">Scriptable system control, gesture automation, and desktop hub for modern jailbroken iOS.</p>
                 <div class="badge-group">
-                    <span class="compat-badge"><span class="badge-dot"></span> v3.6.3 Latest</span>
-                    <span class="compat-badge">iOS 14.0 – 16.x</span>
+                    <span class="compat-badge"><span class="badge-dot"></span> v3.7.0 Latest</span>
+                    <span class="compat-badge">iOS 14 – 17 • Partial iOS 26</span>
                     <span class="compat-badge secondary">Rootless (Dopamine / Palera1n)</span>
                     <span class="compat-badge secondary">Rootful & RootHide</span>
                     <span class="compat-badge secondary">arm64 / arm64e</span>
@@ -143,7 +143,7 @@
                 </div>
                 <div class="meta-item">
                     <span class="meta-label">Latest Version</span>
-                    <span class="meta-value">3.6.3</span>
+                    <span class="meta-value">3.7.0</span>
                 </div>
                 <div class="meta-item">
                     <span class="meta-label">Architectures</span>
@@ -337,31 +337,31 @@
             <div class="changelog-header">
                 <div>
                     <div class="section-label">Release Notes</div>
-                    <h2 class="section-title">What's New in v3.6</h2>
+                    <h2 class="section-title">What's New in v3.7</h2>
                 </div>
-                <span class="version-badge">September 3, 2026</span>
+                <span class="version-badge">October 1, 2026</span>
             </div>
 
             <div class="changelog-list">
                 <div class="changelog-item">
                     <span class="changelog-tag tag-new">New</span>
-                    <p class="changelog-text"><strong>External Integrations Hub:</strong> Connect your automation sequences to Home Assistant (live entity browser & toggles), Keyboard Maestro (visual macro browser & parameter editing), and native MQTT 3.1.1 (pub/sub triggers & actions).</p>
+                    <p class="changelog-text"><strong>Screen Recording Controls:</strong> Start, stop, toggle, and query screen recording from RemoteCompanion actions and the CLI.</p>
                 </div>
                 <div class="changelog-item">
                     <span class="changelog-tag tag-new">New</span>
-                    <p class="changelog-text"><strong>Camera & Video Automation:</strong> Automated video recording controls and Lock Screen camera launch triggers.</p>
+                    <p class="changelog-text"><strong>Snapper 2 and Snapper 3 Support:</strong> Open, freeze, instantly capture, close, reopen the last capture, and view Snapper history.</p>
                 </div>
                 <div class="changelog-item">
                     <span class="changelog-tag tag-new">New</span>
-                    <p class="changelog-text"><strong>Time of Day Conditions:</strong> Native conditional branching (<em>If Time is Between ...</em>) for 12h/24h time ranges.</p>
-                </div>
-                <div class="changelog-item">
-                    <span class="changelog-tag tag-improved">Improved</span>
-                    <p class="changelog-text"><strong>Action Enable / Disable:</strong> Easily toggle individual actions on or off in an automation sequence.</p>
+                    <p class="changelog-text"><strong>Three-Zone Bottom Swipe Gestures:</strong> Use separate left, center, and right bottom-edge swipe-up triggers.</p>
                 </div>
                 <div class="changelog-item">
                     <span class="changelog-tag tag-new">New</span>
-                    <p class="changelog-text"><strong>Location Services & Safe Mode:</strong> GPS toggle in companion app, Web UI, and CLI (<code>rc location on|off|toggle</code>), plus dedicated Safe Mode trigger (<code>rc safemode</code>).</p>
+                    <p class="changelog-text"><strong>Sequential Volume Triggers:</strong> Trigger actions with Volume Up → Down or Volume Down → Up.</p>
+                </div>
+                <div class="changelog-item">
+                    <span class="changelog-tag tag-fix">Fixed</span>
+                    <p class="changelog-text"><strong>UI and Compatibility Fixes:</strong> Better long-name wrapping, Select App styling, toast positioning, rootless Terminal Commands, and Lua error logging.</p>
                 </div>
             </div>
 
@@ -415,17 +415,17 @@
                     <h3 class="feature-title">2. Direct .deb Downloads</h3>
                     <p class="feature-desc">Download prebuilt Debian binaries directly for Filza or terminal installation:</p>
                     <div class="direct-downloads">
-                        <a href="com.saihgupr.remotecompanion_3.6.3_iphoneos-arm64.deb" class="deb-btn" download>
+                        <a href="com.saihgupr.remotecompanion_3.7.0_iphoneos-arm64.deb" class="deb-btn" download>
                             <div>
                                 <div>Rootless (arm64) .deb</div>
-                                <span class="deb-meta">Dopamine / Palera1n • v3.6.3</span>
+                                <span class="deb-meta">Dopamine / Palera1n • v3.7.0</span>
                             </div>
                             <span>⬇</span>
                         </a>
-                        <a href="com.saihgupr.remotecompanion_3.6.3_iphoneos-arm.deb" class="deb-btn" download>
+                        <a href="com.saihgupr.remotecompanion_3.7.0_iphoneos-arm.deb" class="deb-btn" download>
                             <div>
                                 <div>Rootful (arm) .deb</div>
-                                <span class="deb-meta">Legacy Rootful • v3.6.3</span>
+                                <span class="deb-meta">Legacy Rootful • v3.7.0</span>
                             </div>
                             <span>⬇</span>
                         </a>
