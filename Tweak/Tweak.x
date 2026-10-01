@@ -9772,6 +9772,8 @@ static BOOL g_volDownIsDown = NO;
 static BOOL g_volComboTriggered = NO;
 static NSTimeInterval g_lastVolUpPressTime = 0;
 static NSTimeInterval g_lastVolDownPressTime = 0;
+static BOOL g_hidBothPressPending = NO; // HID listener: a Both Press check is queued
+static BOOL g_hidBothPressFired = NO;   // HID listener fired Both Press; it resets the flag
 
 static NSTimer *g_pendingVolUpSeqTimer = nil;
 static NSTimer *g_pendingVolDownSeqTimer = nil;
@@ -11198,33 +11200,40 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
                 }
             }
             
-            // Volume Both Press - FALLBACK ONLY, like the power combo above. The volume
-            // hooks detect it on the main thread and reset g_volComboTriggered on release.
-            // Detecting it here too fired it twice: this background callback runs ahead
-            // of the hooks, so it could fire and then clear the flag (both buttons up)
-            // before a busy main thread even delivered the presses to the hooks, which
-            // then fired it again - e.g. a toggle action ran twice and undid itself.
-            if (g_volHookAlive) {
-                // hooks handle both-press detection and the flag reset
-            } else if (g_volUpIsDown && g_volDownIsDown) {
-                if (!g_volComboTriggered) {
-                    if (RC_TriggerIsActionable(@"volume_both_press")) {
-                        g_volComboTriggered = YES;
-                        
-                        // Invalidate standard timers in Main Thread
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                             cancel_pending_volume_sequences();
-                             if (g_volUpTimer) { [g_volUpTimer invalidate]; g_volUpTimer = nil; }
-                             if (g_volDownTimer) { [g_volDownTimer invalidate]; g_volDownTimer = nil; }
-                             trigger_haptic();
-                             RCExecuteTrigger(@"volume_both_press");
-                        });
-                    }
+            // Volume Both Press. The volume hooks detect it on the main thread and reset
+            // g_volComboTriggered on release; detecting it here as well fired it twice,
+            // since this background callback runs ahead of the hooks. But iOS 14 never
+            // calls the hooks for a both-buttons press (single presses still reach them),
+            // so hooks that bound can't be relied on for it. Wait a beat on the main
+            // thread, then fire from here only if no hook saw either press.
+            if (g_volUpIsDown && g_volDownIsDown) {
+                if (!g_volComboTriggered && !g_hidBothPressPending) {
+                    g_hidBothPressPending = YES;
+                    NSTimeInterval bothDownTime = [[NSDate date] timeIntervalSince1970];
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        g_hidBothPressPending = NO;
+                        // The hooks record each press they see; the two presses land at most a moment apart
+                        BOOL hooksSawIt = MAX(g_lastVolUpPressTime, g_lastVolDownPressTime) > bothDownTime - 0.3;
+                        if (hooksSawIt || g_volComboTriggered || !RC_TriggerIsActionable(@"volume_both_press")) return;
+                        SRLog(@"[HID] Volume Both Press - the volume hooks didn't see it, firing from HID");
+                        // Hold the flag until both buttons are up (reset below), unless they already are
+                        g_hidBothPressFired = (g_volUpIsDown || g_volDownIsDown);
+                        g_volComboTriggered = g_hidBothPressFired;
+                        cancel_pending_volume_sequences();
+                        if (g_volUpTimer) { [g_volUpTimer invalidate]; g_volUpTimer = nil; }
+                        if (g_volDownTimer) { [g_volDownTimer invalidate]; g_volDownTimer = nil; }
+                        trigger_haptic();
+                        RCExecuteTrigger(@"volume_both_press");
+                    });
                 }
             } else if (!g_volUpIsDown && !g_volDownIsDown) {
-                if (g_volComboTriggered) {
-                    g_volComboTriggered = NO;
-                }
+                // Both up: reset a combo fired from here (the hooks reset their own)
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (g_hidBothPressFired) {
+                        g_hidBothPressFired = NO;
+                        g_volComboTriggered = NO;
+                    }
+                });
             }
         }
     }
