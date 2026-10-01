@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.7.0] - 2026-10-01
+
+### Added
+- Screen recording controls.
+- Snapper 2 and Snapper 3 actions.
+- Three bottom-edge swipe-up triggers.
+- Volume button sequence triggers.
+- AudioStream auto-connect.
+
+### Fixed
+- Long action names being cut off.
+- Select App screen styling.
+- Toast positioning on newer devices and in landscape.
+- Terminal Command execution in rootless environments.
+- Lua errors are now logged for debugging.
+
 ## [3.6.4] - 2026-09-10
 
 ### Added
