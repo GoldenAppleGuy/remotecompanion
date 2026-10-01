@@ -1275,17 +1275,23 @@ static id g_actionClipboard = nil;
     };
 }
 
-// Puts an If / Else If block in place: replaces the one being edited, or inserts it
-// (with its End If) at insertIndex or the end.
+// Puts an If / Else If row in place: replaces the one being edited, or inserts it
+// at insertIndex or the end. Only a new top-level If owns an End If marker; an
+// Else If belongs to the existing block and must not create another terminator.
 - (void)applyIfAction:(NSDictionary *)ifAction existingIndex:(NSInteger)existingIndex insertIndex:(NSInteger)insertIndex {
+    BOOL isElseIf = [[ifAction[@"type"] description].lowercaseString isEqualToString:@"else_if"];
     if (existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)self.actions.count) {
         self.actions[existingIndex] = ifAction;
     } else if (insertIndex != NSNotFound && insertIndex >= 0 && insertIndex <= (NSInteger)self.actions.count) {
         [self.actions insertObject:ifAction atIndex:insertIndex];
-        [self.actions insertObject:@{ @"type": @"end_if" } atIndex:insertIndex + 1];
+        if (!isElseIf) {
+            [self.actions insertObject:@{ @"type": @"end_if" } atIndex:insertIndex + 1];
+        }
     } else {
         [self.actions addObject:ifAction];
-        [self.actions addObject:@{ @"type": @"end_if" }];
+        if (!isElseIf) {
+            [self.actions addObject:@{ @"type": @"end_if" }];
+        }
     }
     [self saveActions];
     [self.tableView reloadData];
