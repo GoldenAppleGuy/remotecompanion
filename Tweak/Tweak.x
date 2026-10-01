@@ -6691,8 +6691,20 @@ static NSString *handle_command(NSString *cmd) {
         } else if ([btn isEqualToString:@"mute"]) {
             inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_Mute, 0, 0);
         } else if ([btn isEqualToString:@"siri"]) {
+            // SpringBoard's own Siri activation service (the "simple activation" path,
+            // as used by accessibility features) - the HID voice-command press below
+            // doesn't bring up Siri on iOS 17
+            Class svcClass = objc_getClass("SiriActivationService");
+            id svc = [svcClass respondsToSelector:@selector(service)] ? [svcClass performSelector:@selector(service)] : nil;
+            if (svc && [svc respondsToSelector:@selector(activationRequestFromSimpleActivation:)]) {
+                SRLog(@"[Siri] Activating via SiriActivationService simple activation");
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    ((void (*)(id, SEL, long))objc_msgSend)(svc, @selector(activationRequestFromSimpleActivation:), 1);
+                });
+                return @"Siri activated\n";
+            }
+            SRLog(@"[Siri] SiriActivationService unavailable - falling back to HID voice command");
 
-            
             // Use HID Voice Command (0xCF) - Acts like a headset button, typically no "Home" side-effects
             inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_VoiceCommand, 600000000, 0); // 0.6s hold
             
@@ -6773,17 +6785,33 @@ static NSString *handle_command(NSString *cmd) {
         void (^switcherBlock)(void) = ^{
             Class SBClass = objc_getClass("SpringBoard");
             id sb = [SBClass sharedApplication];
-            
+
+            // Method 0: SBMainSwitcherControllerCoordinator (iOS 16+/17; SBMainSwitcherViewController is gone)
+            Class coordClass = objc_getClass("SBMainSwitcherControllerCoordinator");
+            SEL toggleSel = @selector(toggleMainSwitcherNoninteractivelyWithSource:animated:windowScene:);
+            id coordinator = [coordClass respondsToSelector:@selector(sharedInstance)] ? [coordClass performSelector:@selector(sharedInstance)] : nil;
+            if (coordinator && [coordinator respondsToSelector:toggleSel]) {
+                id wsm = [sb respondsToSelector:@selector(windowSceneManager)] ? [sb performSelector:@selector(windowSceneManager)] : nil;
+                id scene = [wsm respondsToSelector:@selector(embeddedDisplayWindowScene)] ? [wsm performSelector:@selector(embeddedDisplayWindowScene)] : nil;
+                success = ((BOOL (*)(id, SEL, long, BOOL, id))objc_msgSend)(coordinator, toggleSel, 1, YES, scene);
+                SRLog(@"Using Method 0: toggleMainSwitcherNoninteractivelyWithSource: -> %d", success);
+            }
+
             // Method 1: SBMainSwitcherViewController (iOS 15/16 discovered methods)
             Class viewCtrlClass = objc_getClass("SBMainSwitcherViewController");
-            if (viewCtrlClass) {
+            if (!success && viewCtrlClass) {
                 id switcher = nil;
                 if ([viewCtrlClass respondsToSelector:@selector(sharedInstance)]) {
                     switcher = [viewCtrlClass sharedInstance];
                 }
+                SEL noninteractiveSel = @selector(toggleMainSwitcherNoninteractivelyWithSource:animated:);
                 if (switcher && [switcher respondsToSelector:@selector(toggleSwitcher)]) {
                     [switcher performSelector:@selector(toggleSwitcher)];
                     success = YES;
+                } else if (switcher && [switcher respondsToSelector:noninteractiveSel]) {
+                    // iOS 14: the same toggle the iOS 16+ coordinator has, on the view controller
+                    success = ((BOOL (*)(id, SEL, long, BOOL))objc_msgSend)(switcher, noninteractiveSel, 1, YES);
+                    SRLog(@"Using Method 1b: toggleMainSwitcherNoninteractivelyWithSource:animated: -> %d", success);
                 }
             }
             
