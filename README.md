@@ -3,13 +3,12 @@
 RemoteCompanion provides fast, scriptable system control for modern rootless jailbreaks. It lets you bind physical gestures and hardware buttons, or send commands remotely from your computer, to trigger system actions, control media playback, and run custom scripts.
 
 > [!IMPORTANT]
-> **What’s New in v3.6**
-> - **Location Services in iOS Companion App**: Added Location Services directly to the iOS app action picker (Connectivity section), action display names/icons, and conditional branching (`If Condition... -> Location Services`).
-> - **Integrations Hub**: Dedicated Settings sub-menu organizing external services into modular configuration screens (Home Assistant, Keyboard Maestro, and native MQTT Pub/Sub).
-> - **Camera & Video Recording Automation**: Automated video recording modes and Lock Screen camera launch triggers.
-> - **Time of Day Condition Target (`time_between`)**: Native conditional time evaluation (`If Time is Between ...`).
-> - **Action Disable / Enable**: Easily disable and enable individual actions within an action sequence.
-> - **Safe Mode Action & CLI**: Enter Safe Mode directly from CLI (`rc safemode`), Web UI, or iOS companion app.
+> **What’s New in v3.7**
+> - **Screen Recording Controls**: Start, stop, toggle, and query screen recording from RemoteCompanion actions and the CLI.
+> - **Snapper 2 and Snapper 3 Support**: Open, freeze, instantly capture, close, reopen the last capture, and view Snapper history.
+> - **Three-Zone Bottom Swipe Gestures**: Use separate left, center, and right bottom-edge swipe-up triggers.
+> - **Sequential Volume Triggers**: Trigger actions with Volume Up → Down or Volume Down → Up.
+> - **UI and Compatibility Fixes**: Better long-name wrapping, Select App styling, toast positioning, rootless Terminal Commands, and Lua error logging.
 
 <p align="center">
   <a href="https://saihgupr.github.io/remotecompanion/">Official Website</a> •
@@ -33,7 +32,7 @@ RemoteCompanion provides fast, scriptable system control for modern rootless jai
 ## Features
 - **Hardware Triggers**: Bind actions to Power/Volume buttons, Home button, Touch ID (Tap/Hold), or the Ringer Switch.
 - **Universal Search**: Instantly find actions, shortcuts, and devices with integrated search bars in every picker.
-- **Cross-Version Support**: Full compatibility for iOS 14 through iOS 16+, supporting Rootless, Rootful, and RootHide environments.
+- **Cross-Version Support**: Supports iOS 14 through iOS 17, with partial iOS 26 support, across Rootless, Rootful, and RootHide environments.
 - **Advanced Automation**: Full support for NFC tags, custom Lua scripts (with `objc_call` support), and native Siri integration.
 - **AI-Assisted Scripting**: Use any AI assistant to generate action sequences from plain English — see [SCRIPTING.md](SCRIPTING.md).
 - **iPad Experience**: Native landscape orientation and optimized layouts for iPad power users.
@@ -312,7 +311,7 @@ The background listener daemon runs inside SpringBoard with automatic 60s keep-a
 ## Installation & Setup
 
 ### 1. Requirements
-- A **Jailbroken Device** running iOS 14 through iOS 16+.
+- A **Jailbroken Device** running iOS 14 through iOS 17. iOS 26 is partially supported and still needs broader testing.
 - Compatible with **Rootless**, **Rootful**, and **RootHide** jailbreak environments (Dopamine, Palera1n, unc0ver, Taurine, XinaA15, NathanLR).
 
 ### 2. Installation
