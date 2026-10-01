@@ -16,4 +16,7 @@ RemoteCompanion_CODESIGN_FLAGS = -SEntitlements.plist
 RemoteCompanion_RESOURCE_FILES = Info.plist Icon.png AppIcon60x60@2x.png AppIcon60x60@3x.png Entitlements.plist
 RemoteCompanion_INSTALL_PATH = /Applications
 
+# Shared UI components
+RemoteCompanion_FILES += RCCategoryBar.m
+
 include $(THEOS_MAKE_PATH)/application.mk
