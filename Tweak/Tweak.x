@@ -421,11 +421,18 @@ extern CFStringRef kMRMediaRemoteNowPlayingInfoArtist;
 - (id)activeModeAssertionWithError:(NSError **)error;
 @end
 
-// CoreDuet - Low Power Mode
+// CoreDuet - Low Power Mode (iOS 14 and earlier)
 @interface _CDBatterySaver : NSObject
 + (instancetype)batterySaver;
 - (long long)getPowerMode;
 - (BOOL)setPowerMode:(long long)mode error:(NSError **)error;
+@end
+
+// LowPowerMode.framework - replaced _CDBatterySaver from iOS 15
+@interface _PMLowPowerMode : NSObject
++ (instancetype)sharedInstance;
+- (BOOL)setPowerMode:(long long)mode fromSource:(NSString *)source;
+- (void)setPowerMode:(long long)mode fromSource:(NSString *)source withCompletion:(void (^)(BOOL success, NSError *error))completion;
 @end
 
 // BackBoardServices for killing apps
@@ -670,6 +677,33 @@ static void toggle_dnd(BOOL state) {
 static void toggle_lpm(BOOL state) {
     dispatch_async(dispatch_get_main_queue(), ^{
         @try {
+            // Power mode: 0 = normal, 1 = low power
+            long long mode = state ? 1 : 0;
+
+            // iOS 15+: _CDBatterySaver is gone; Low Power Mode lives in its own
+            // framework, which SpringBoard doesn't load on its own.
+            static dispatch_once_t lpmOnce;
+            dispatch_once(&lpmOnce, ^{
+                dlopen("/System/Library/PrivateFrameworks/LowPowerMode.framework/LowPowerMode", RTLD_NOW);
+            });
+            Class lpmClass = objc_getClass("_PMLowPowerMode");
+            if (lpmClass) {
+                _PMLowPowerMode *lpm = [lpmClass sharedInstance];
+                if ([lpm respondsToSelector:@selector(setPowerMode:fromSource:)]) {
+                    BOOL result = [lpm setPowerMode:mode fromSource:@"SpringBoard"];
+                    SRLog(@"LPM %@ via _PMLowPowerMode. Result: %d", state ? @"Enabled" : @"Disabled", result);
+                    return;
+                }
+                if ([lpm respondsToSelector:@selector(setPowerMode:fromSource:withCompletion:)]) {
+                    [lpm setPowerMode:mode fromSource:@"SpringBoard" withCompletion:^(BOOL success, NSError *error) {
+                        SRLog(@"LPM %@ via _PMLowPowerMode. Result: %d", state ? @"Enabled" : @"Disabled", success);
+                    }];
+                    return;
+                }
+                SRLog(@"_PMLowPowerMode found, but without a known setPowerMode: method");
+            }
+
+            // iOS 14 and earlier
             Class BatterySaverClass = objc_getClass("_CDBatterySaver");
             if (!BatterySaverClass) {
                 SRLog(@"_CDBatterySaver class not found");
@@ -683,8 +717,7 @@ static void toggle_lpm(BOOL state) {
             }
             
             NSError *err = nil;
-            // Power mode: 0 = normal, 1 = low power
-            BOOL result = [saver setPowerMode:(state ? 1 : 0) error:&err];
+            BOOL result = [saver setPowerMode:mode error:&err];
             
             if (err) {
                 SRLog(@"Failed to set LPM: %@", err);
@@ -699,14 +732,7 @@ static void toggle_lpm(BOOL state) {
 
 // State detection helpers
 static BOOL get_lpm_state() {
-    Class BatterySaverClass = objc_getClass("_CDBatterySaver");
-    if (BatterySaverClass) {
-        id saver = [BatterySaverClass batterySaver];
-        if (saver && [saver respondsToSelector:@selector(getPowerMode)]) {
-            return [saver getPowerMode] != 0;
-        }
-    }
-    return NO;
+    return [[NSProcessInfo processInfo] isLowPowerModeEnabled];
 }
 
 static BOOL get_location_services_state() {
@@ -7768,6 +7794,20 @@ static NSString *handle_command(NSString *cmd) {
             }
         }
         return @"Error: BluetoothManager not found\n";
+    } else if ([cleanCmd isEqualToString:@"bluetooth-toggle"] || [cleanCmd isEqualToString:@"bt-toggle"] || [cleanCmd isEqualToString:@"bluetooth toggle"] || [cleanCmd isEqualToString:@"bt toggle"]) {
+        void *btHandle = dlopen("/System/Library/PrivateFrameworks/BluetoothManager.framework/BluetoothManager", RTLD_NOW);
+        if (btHandle) {
+            Class BluetoothManagerClass = objc_getClass("BluetoothManager");
+            if (BluetoothManagerClass) {
+                BluetoothManager *btManager = [BluetoothManagerClass sharedInstance];
+                BOOL current = [btManager powered];
+                [btManager setEnabled:!current];
+                [btManager setPowered:!current];
+                SRLog(@"Bluetooth toggled: %d -> %d", current, !current);
+                return [NSString stringWithFormat:@"Bluetooth Toggled: %@\n", !current ? @"ON" : @"OFF"];
+            }
+        }
+        return @"Error: BluetoothManager not found\n";
     } else if ([cleanCmd isEqualToString:@"bluetooth list"] || [cleanCmd isEqualToString:@"bt list"]) {
         NSMutableString *output = [NSMutableString string];
         void *btHandle = dlopen("/System/Library/PrivateFrameworks/BluetoothManager.framework/BluetoothManager", RTLD_NOW);
@@ -7873,6 +7913,15 @@ static NSString *handle_command(NSString *cmd) {
             [manager setWiFiEnabled:NO];
             SRLog(@"WiFi disabled");
             return @"WiFi Disabled\n";
+        }
+        return @"Error: SBWiFiManager not found\n";
+    } else if ([cleanCmd isEqualToString:@"wifi-toggle"] || [cleanCmd isEqualToString:@"wi-toggle"] || [cleanCmd isEqualToString:@"wifi toggle"]) {
+        SBWiFiManager *manager = [objc_getClass("SBWiFiManager") sharedInstance];
+        if (manager) {
+            BOOL current = [manager wiFiEnabled];
+            [manager setWiFiEnabled:!current];
+            SRLog(@"WiFi toggled: %d -> %d", current, !current);
+            return [NSString stringWithFormat:@"WiFi Toggled: %@\n", !current ? @"ON" : @"OFF"];
         }
         return @"Error: SBWiFiManager not found\n";
     } else if ([cleanCmd isEqualToString:@"cellular-on"] || [cleanCmd isEqualToString:@"cell-on"] || [cleanCmd isEqualToString:@"cellular on"] || [cleanCmd isEqualToString:@"cell on"]) {
