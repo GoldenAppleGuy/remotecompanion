@@ -86,13 +86,17 @@
     self.revealed = height;
     self.lastOffset = 0;
     [tableView addSubview:self];
-    [self scrollViewDidScroll:tableView];
+    [self layoutInScrollView:tableView];
+}
+
+// Scroll position measured from the top of the content (0 = scrolled to the top)
+- (CGFloat)offsetInScrollView:(UIScrollView *)scrollView {
+    return scrollView.contentOffset.y + scrollView.adjustedContentInset.top;
 }
 
 - (void)scrollViewDidScroll:(UIScrollView *)scrollView {
     CGFloat height = [RCCategoryBar barHeight];
-    CGFloat navBottom = scrollView.adjustedContentInset.top - height; // top of the visible area, below the nav bar
-    CGFloat offset = scrollView.contentOffset.y + scrollView.adjustedContentInset.top; // 0 = scrolled to the top
+    CGFloat offset = [self offsetInScrollView:scrollView];
     CGFloat maxOffset = MAX(0, scrollView.contentSize.height + scrollView.adjustedContentInset.top + scrollView.adjustedContentInset.bottom - scrollView.bounds.size.height);
     CGFloat delta = offset - self.lastOffset;
     self.lastOffset = offset;
@@ -104,7 +108,20 @@
         // bottom is ignored, so bouncing off the end doesn't flicker the bar.
         self.revealed = MIN(height, MAX(0, self.revealed - delta));
     }
+    [self positionInScrollView:scrollView offset:offset];
+}
 
+// Re-place the bar after a layout change, without treating the change as a scroll
+- (void)layoutInScrollView:(UIScrollView *)scrollView {
+    CGFloat offset = [self offsetInScrollView:scrollView];
+    self.lastOffset = offset;
+    if (offset <= 0) self.revealed = [RCCategoryBar barHeight];
+    [self positionInScrollView:scrollView offset:offset];
+}
+
+- (void)positionInScrollView:(UIScrollView *)scrollView offset:(CGFloat)offset {
+    CGFloat height = [RCCategoryBar barHeight];
+    CGFloat navBottom = scrollView.adjustedContentInset.top - height; // top of the visible area, below the nav bar
     CGRect frame = self.frame;
     frame.origin.x = 0;
     frame.size.width = scrollView.bounds.size.width;

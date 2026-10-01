@@ -693,6 +693,11 @@
     [self.categoryBar scrollViewDidScroll:scrollView];
 }
 
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self.categoryBar layoutInScrollView:self.tableView];
+}
+
 #pragma mark - Display model
 
 // The sections the table shows: all of them, or just the selected category

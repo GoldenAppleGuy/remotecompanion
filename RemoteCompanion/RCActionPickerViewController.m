@@ -322,6 +322,11 @@
     [self.categoryBar scrollViewDidScroll:scrollView];
 }
 
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self.categoryBar layoutInScrollView:self.tableView];
+}
+
 #pragma mark - Display model
 
 - (BOOL)isSearching {

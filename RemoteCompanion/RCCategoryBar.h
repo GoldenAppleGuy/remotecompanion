@@ -15,8 +15,11 @@
 - (void)setChipTitles:(NSArray<NSString *> *)chipTitles;
 
 // Floats the bar over the top of the table (insetting its content by the bar's height).
-// The table's scrollViewDidScroll: must forward to -scrollViewDidScroll:.
+// The screen must forward scrollViewDidScroll: to -scrollViewDidScroll:, and call
+// -layoutInScrollView: from viewDidLayoutSubviews (the table's size and insets aren't
+// known yet when the bar is attached, and change with rotation / the large title).
 - (void)attachToTableView:(UITableView *)tableView;
 - (void)scrollViewDidScroll:(UIScrollView *)scrollView;
+- (void)layoutInScrollView:(UIScrollView *)scrollView;
 
 @end
