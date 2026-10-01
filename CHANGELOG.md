@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [4.0.0] - Unreleased
+
+### Added
+- Auto-Lock action and condition support.
+- Configurable banners for action triggers.
+- Smaller relative volume steps with `volume up N` and `volume down N`.
+
+### Fixed
+- ANC actions now have selectable On, Off, Transparency, and Toggle controls.
+
 ## [3.7.0] - 2026-10-01
 
 ### Added
