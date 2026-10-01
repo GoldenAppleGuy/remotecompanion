@@ -1447,6 +1447,7 @@ static NSString *find_config_path() {
 
 static NSArray *g_blacklist = nil;
 static NSTimeInterval g_lastBlacklistLoad = 0;
+static BOOL g_rcIntentionalCCOpen = NO; // Bypass CC suppression when RC action opens it
 
 static void load_blacklist() {
     NSString *path = @"/var/mobile/Library/Preferences/com.saihgupr.remotecompanion.blacklist.plist";
@@ -12356,7 +12357,6 @@ static NSTimeInterval g_lastStatusBarDoubleTapTime = 0;
 
 // Bottom Bar Extended State
 static NSTimeInterval g_lastBottomSwipeTriggerTime = 0;
-static BOOL g_rcIntentionalCCOpen = NO; // Set by RC action to bypass swipe suppression
 
 static UIInterfaceOrientation get_current_interface_orientation() {
     UIInterfaceOrientation orientation = UIInterfaceOrientationPortrait;
