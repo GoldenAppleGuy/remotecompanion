@@ -1029,6 +1029,19 @@ static id g_actionClipboard = nil;
             ]
         },
         @{
+            @"key": @"autolock",
+            @"title": @"Auto-Lock",
+            @"values": @[
+                @{ @"value": @"30S", @"title": @"30 Seconds" },
+                @{ @"value": @"1M", @"title": @"1 Minute" },
+                @{ @"value": @"2M", @"title": @"2 Minutes" },
+                @{ @"value": @"3M", @"title": @"3 Minutes" },
+                @{ @"value": @"4M", @"title": @"4 Minutes" },
+                @{ @"value": @"5M", @"title": @"5 Minutes" },
+                @{ @"value": @"NEVER", @"title": @"Never" }
+            ]
+        },
+        @{
             @"key": @"player",
             @"title": @"Player Status",
             @"icon": @"play.circle",

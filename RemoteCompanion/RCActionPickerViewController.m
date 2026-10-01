@@ -185,7 +185,8 @@
             @{ @"name": @"Refresh Icon Cache (uicache)", @"command": @"uicache", @"icon": @"square.grid.2x2" },
             @{ @"name": @"Silent Vibration", @"command": @"vibration silent-toggle", @"icon": @"bell.slash" },
             @{ @"name": @"Ring Vibration", @"command": @"vibration ring-toggle", @"icon": @"bell" },
-            @{ @"name": @"Low Power Mode", @"command": @"low power toggle", @"icon": @"battery.25" }
+            @{ @"name": @"Low Power Mode", @"command": @"low power toggle", @"icon": @"battery.25" },
+            @{ @"name": @"Auto-Lock", @"command": @"autolock toggle", @"icon": @"timer" }
         ],
         // Integrations
         ({

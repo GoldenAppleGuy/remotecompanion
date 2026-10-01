@@ -1718,6 +1718,7 @@ static NSString *rc_status_command_for_condition_key(NSString *conditionKey) {
     if (![conditionKey isKindOfClass:[NSString class]]) return nil;
     NSDictionary *map = @{
         @"lock": @"lock status",
+        @"autolock": @"autolock status",
         @"player": @"player status",
         @"wifi": @"wifi status",
         @"cellular": @"cell status",
@@ -1744,6 +1745,14 @@ static NSString *rc_canonical_status_value_for_condition_key(NSString *condition
         if ([upper containsString:@"UNLOCKED"]) return @"UNLOCKED";
         if ([upper containsString:@"LOCKED"]) return @"LOCKED";
         return nil;
+    }
+    
+    if ([conditionKey isEqualToString:@"autolock"]) {
+        // "Never" / "30 Seconds" / "2 Minutes" -> NEVER / 30S / 2M
+        if ([upper containsString:@"NEVER"]) return @"NEVER";
+        NSInteger n = [upper integerValue];
+        if (n <= 0) return nil;
+        return [NSString stringWithFormat:@"%ld%@", (long)n, [upper containsString:@"MIN"] ? @"M" : @"S"];
     }
     
     if ([conditionKey isEqualToString:@"player"]) {
@@ -6205,6 +6214,72 @@ static NSString *rc_handle_snapper(NSString *arg) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Auto-Lock: the ManagedConfiguration "maxInactivity" setting, in seconds
+// (Settings > Display & Brightness > Auto-Lock). Never is stored as INT_MAX.
+// ---------------------------------------------------------------------------
+@interface MCProfileConnection : NSObject
++ (instancetype)sharedConnection;
+- (id)userValueForSetting:(NSString *)setting;
+- (void)setValue:(id)value forSetting:(NSString *)setting;
+@end
+
+static const int kRCAutoLockNever = INT_MAX;
+static NSString *const kRCStatePlistPath = @"/var/mobile/Library/Preferences/com.saihgupr.remotecompanion.state.plist";
+
+static NSString *rc_autolock_label(int seconds) {
+    if (seconds >= kRCAutoLockNever) return @"Never";
+    if (seconds % 60 == 0) return [NSString stringWithFormat:@"%d Minute%@", seconds / 60, seconds == 60 ? @"" : @"s"];
+    return [NSString stringWithFormat:@"%d Seconds", seconds];
+}
+
+// "30s", "30 sec", "2m", "2 min", "120", "never" -> seconds; -1 if unrecognized
+static int rc_autolock_parse(NSString *arg) {
+    NSString *a = [[arg lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([a isEqualToString:@"never"]) return kRCAutoLockNever;
+    NSScanner *scanner = [NSScanner scannerWithString:a];
+    int n = 0;
+    if (![scanner scanInt:&n] || n <= 0) return -1;
+    NSString *unit = [[a substringFromIndex:scanner.scanLocation] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if (unit.length == 0 || [unit hasPrefix:@"s"]) return n;
+    if ([unit hasPrefix:@"m"]) return n * 60;
+    return -1;
+}
+
+static NSString *rc_handle_autolock(NSString *arg) {
+    MCProfileConnection *mc = [objc_getClass("MCProfileConnection") sharedConnection];
+    if (!mc) return @"Error: MCProfileConnection not found\n";
+
+    // The user's own value - the effective one reads 30s while Low Power Mode forces it
+    int current = [[mc userValueForSetting:@"maxInactivity"] intValue];
+    NSString *a = [[arg lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+    if ([a isEqualToString:@"status"]) {
+        return [NSString stringWithFormat:@"%@\n", rc_autolock_label(current)];
+    }
+
+    int target;
+    if ([a isEqualToString:@"toggle"]) {
+        NSMutableDictionary *state = [NSMutableDictionary dictionaryWithContentsOfFile:kRCStatePlistPath] ?: [NSMutableDictionary dictionary];
+        if (current >= kRCAutoLockNever) {
+            // Back to what it was before we switched it to Never
+            int previous = [state[@"autoLockPrevious"] intValue];
+            target = (previous > 0 && previous < kRCAutoLockNever) ? previous : 30;
+        } else {
+            state[@"autoLockPrevious"] = @(current);
+            [state writeToFile:kRCStatePlistPath atomically:YES];
+            target = kRCAutoLockNever;
+        }
+    } else {
+        target = rc_autolock_parse(a);
+        if (target < 0) return [NSString stringWithFormat:@"Error: unknown Auto-Lock value '%@' (use 30s, 1m-5m, never, toggle or status)\n", arg];
+    }
+
+    [mc setValue:@(target) forSetting:@"maxInactivity"];
+    SRLog(@"[AutoLock] %@ -> %@ (%@)", rc_autolock_label(current), rc_autolock_label(target), a);
+    return [NSString stringWithFormat:@"Auto-Lock: %@\n", rc_autolock_label(target)];
+}
+
 static NSString *handle_command(NSString *cmd) {
     if (!cmd || ![cmd isKindOfClass:[NSString class]]) {
         SRLog(@"ERROR: handle_command received nil or invalid command string");
@@ -6241,6 +6316,8 @@ static NSString *handle_command(NSString *cmd) {
     if ([cleanCmd isEqualToString:@"log"]) {
         SRLog(@"Log request");
         return nil;
+    } else if ([[cleanCmd lowercaseString] hasPrefix:@"autolock "] || [[cleanCmd lowercaseString] hasPrefix:@"auto-lock "]) {
+        return rc_handle_autolock([cleanCmd substringFromIndex:[cleanCmd rangeOfString:@" "].location + 1]);
     } else if ([cleanCmd isEqualToString:@"proximity"] || [cleanCmd hasPrefix:@"proximity "]) {
         NSString *sub = nil;
         if ([cleanCmd hasPrefix:@"proximity "]) {
