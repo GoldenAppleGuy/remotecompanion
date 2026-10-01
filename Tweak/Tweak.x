@@ -1199,6 +1199,26 @@ static BOOL rc_step_volume(BOOL up) {
     return YES;
 }
 
+static NSString *rc_adjust_volume_percent(BOOL up, NSString *amountString) {
+    float amount = [amountString floatValue];
+    if (amount <= 0.0f || amount > 100.0f) return @"Error: volume step must be between 0 and 100\n";
+    Class controllerClass = objc_getClass("AVSystemController");
+    id controller = controllerClass ? [controllerClass sharedAVSystemController] : nil;
+    float current = 0.0f;
+    if (!controller || ![controller respondsToSelector:@selector(getVolume:forCategory:)] || ![controller getVolume:&current forCategory:@"Audio/Video"]) {
+        return @"Error: AVSystemController failed.\n";
+    }
+    float target = fmaxf(0.0f, fminf(1.0f, current + (up ? amount : -amount) / 100.0f));
+    if ([controller respondsToSelector:@selector(setActiveCategoryVolumeTo:)]) {
+        [controller setActiveCategoryVolumeTo:target];
+    } else if ([controller respondsToSelector:@selector(setVolumeTo:forCategory:)]) {
+        [controller setVolumeTo:target forCategory:@"Audio/Video"];
+    } else {
+        return @"Error: AVSystemController cannot set volume.\n";
+    }
+    return [NSString stringWithFormat:@"Volume: %.0f%%\n", target * 100.0f];
+}
+
 
 static void toggle_system_vibration(BOOL silentMode, BOOL enable) {
     NSString *key = silentMode ? @"silent-vibrate" : @"ring-vibrate";
@@ -7933,6 +7953,14 @@ static NSString *handle_command(NSString *cmd) {
         }
         
         return @"Error: AVSystemController failed. Cannot control media mute.\n";
+    } else if ([cleanCmd hasPrefix:@"volume up "] || [cleanCmd hasPrefix:@"vol up "]) {
+        NSString *amount = [cleanCmd substringFromIndex:[cleanCmd rangeOfString:@" "].location + 1];
+        amount = [amount substringFromIndex:[amount rangeOfString:@" "].location + 1];
+        return rc_adjust_volume_percent(YES, amount);
+    } else if ([cleanCmd hasPrefix:@"volume down "] || [cleanCmd hasPrefix:@"vol down "]) {
+        NSString *amount = [cleanCmd substringFromIndex:[cleanCmd rangeOfString:@" "].location + 1];
+        amount = [amount substringFromIndex:[amount rangeOfString:@" "].location + 1];
+        return rc_adjust_volume_percent(NO, amount);
     } else if ([cleanCmd isEqualToString:@"volume up"] || [cleanCmd isEqualToString:@"vol up"]) {
         if (!rc_step_volume(YES)) inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_VolumeIncrement, 0, 0);
         return @"OK\n";
