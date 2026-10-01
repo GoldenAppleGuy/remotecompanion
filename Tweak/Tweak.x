@@ -10277,27 +10277,20 @@ static void trigger_haptic() {
 
 static int g_lastRingerState = -1;
 
-%hook SBRingerControl
-
--(void)setRingerMuted:(BOOL)muted {
-    %orig;
-
+// Fires the ringer triggers when the muted state actually changes. Several SBRingerControl
+// methods can report the same change (see below), so this also de-duplicates them.
+static void rc_ringer_state_changed(BOOL muted, NSString *source) {
     if (g_lastRingerState == -1) {
-        // First initialization (respring/reboot) - just track state, don't fire
-        SRLog(@"SBRingerControl Initial State: %d", muted);
+        // First report after a respring/reboot - just track the state, don't fire
+        SRLog(@"[Ringer] Initial state: %d (%@)", muted, source);
         g_lastRingerState = (int)muted;
         return;
     }
+    if (g_lastRingerState == (int)muted) return; // no change
 
-    if (g_lastRingerState == (int)muted) {
-        // State hasn't changed, ignore
-        return;
-    }
-
-    // State changed
     g_lastRingerState = (int)muted;
-    SRLog(@"SBRingerControl setRingerMuted: %d", muted);
-    
+    SRLog(@"[Ringer] Muted -> %d (%@)", muted, source);
+
     // Fire generic toggle status
     RCExecuteTrigger(@"trigger_ringer_toggle");
 
@@ -10306,6 +10299,31 @@ static int g_lastRingerState = -1;
     } else {
         RCExecuteTrigger(@"trigger_ringer_unmute");
     }
+}
+
+%hook SBRingerControl
+
+// iOS 16 and earlier
+-(void)setRingerMuted:(BOOL)muted {
+    %orig;
+    rc_ringer_state_changed(muted, @"setRingerMuted:");
+}
+
+// iOS 17: setRingerMuted: is gone. The ringer state cache reports every change
+// (the switch included); the new setter and the startup call cover the rest.
+-(void)cache:(id)cache didUpdateRingerMuted:(BOOL)muted {
+    %orig;
+    rc_ringer_state_changed(muted, @"cache:didUpdateRingerMuted:");
+}
+
+-(void)setRingerMuted:(BOOL)muted withFeedback:(BOOL)feedback reason:(id)reason clientType:(unsigned int)clientType {
+    %orig;
+    rc_ringer_state_changed(muted, [NSString stringWithFormat:@"setRingerMuted:withFeedback:reason:%@", reason]);
+}
+
+-(void)completeSetupWithRingerMuted:(BOOL)muted {
+    %orig;
+    rc_ringer_state_changed(muted, @"completeSetupWithRingerMuted:");
 }
 
 %end
