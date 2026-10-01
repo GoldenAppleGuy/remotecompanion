@@ -1857,8 +1857,14 @@ static BOOL rc_condition_direct_match(NSString *key, NSString *expected, BOOL *h
             id sb = [UIApplication sharedApplication];
             if ([key isEqualToString:@"ringer"]) {
                 id ringer = [sb respondsToSelector:@selector(ringerControl)] ? [sb performSelector:@selector(ringerControl)] : nil;
-                if ([ringer respondsToSelector:@selector(_accessibilityIsRingerMuted)]) {
-                    actual = ((BOOL (*)(id, SEL))objc_msgSend)(ringer, @selector(_accessibilityIsRingerMuted)) ? @"SILENT" : @"RING";
+                SEL mutedSel = [ringer respondsToSelector:@selector(_accessibilityIsRingerMuted)] ? @selector(_accessibilityIsRingerMuted)
+                             : [ringer respondsToSelector:@selector(isRingerMuted)] ? @selector(isRingerMuted)
+                             : NULL;
+                if (mutedSel) {
+                    actual = ((BOOL (*)(id, SEL))objc_msgSend)(ringer, mutedSel) ? @"SILENT" : @"RING";
+                } else if ([sb respondsToSelector:@selector(ringerSwitchState)]) {
+                    // iOS 14: SpringBoard has no ringerControl, but reports the switch itself (0 = silent)
+                    actual = ((int (*)(id, SEL))objc_msgSend)(sb, @selector(ringerSwitchState)) == 0 ? @"SILENT" : @"RING";
                 }
             } else if ([key isEqualToString:@"rotation_lock"]) {
                 actual = [[objc_getClass("SBOrientationLockManager") sharedInstance] isUserLocked] ? @"LOCKED" : @"UNLOCKED";
