@@ -208,7 +208,7 @@ static NSString *RCDeviceIconName(NSString *name, RCDevicePickerKind kind) {
         NSString *title = [self extraRows][indexPath.row];
         cell.textLabel.text = title;
         cell.textLabel.textColor = self.view.tintColor;
-        cell.imageView.image = [UIImage systemImageNamed:[title isEqualToString:@"Other Name…"] ? @"character.cursor.ibeam" : @"arrow.clockwise"];
+        cell.imageView.image = [UIImage systemImageNamed:[title isEqualToString:@"Other Name…"] ? @"pencil" : @"arrow.clockwise"];
         cell.imageView.tintColor = self.view.tintColor;
         return cell;
     }
