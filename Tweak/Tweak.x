@@ -7094,7 +7094,9 @@ static NSString *handle_command(NSString *cmd) {
                     [controller dismissAnimated:YES];
                     opened = YES;
                 } else {
+                    g_rcIntentionalCCOpen = YES;
                     [controller presentAnimated:YES];
+                    g_rcIntentionalCCOpen = NO;
                     opened = YES;
                 }
             } else if (controller && [controller respondsToSelector:@selector(_presentControlCenterGestureBeganWithReason:)]) {
@@ -12354,6 +12356,7 @@ static NSTimeInterval g_lastStatusBarDoubleTapTime = 0;
 
 // Bottom Bar Extended State
 static NSTimeInterval g_lastBottomSwipeTriggerTime = 0;
+static BOOL g_rcIntentionalCCOpen = NO; // Set by RC action to bypass swipe suppression
 
 static UIInterfaceOrientation get_current_interface_orientation() {
     UIInterfaceOrientation orientation = UIInterfaceOrientationPortrait;
@@ -13341,7 +13344,7 @@ static void rc_camera_launched_notification_callback(CFNotificationCenterRef cen
 
 - (void)presentAnimated:(BOOL)animated {
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (now - g_lastBottomSwipeTriggerTime < 0.8 && has_any_bottom_swipe_trigger_enabled()) {
+    if (!g_rcIntentionalCCOpen && now - g_lastBottomSwipeTriggerTime < 0.8 && has_any_bottom_swipe_trigger_enabled()) {
         SRLog(@"[RCBottom] Suppressed Control Center presentAnimated within trigger window");
         return;
     }
@@ -13350,7 +13353,7 @@ static void rc_camera_launched_notification_callback(CFNotificationCenterRef cen
 
 - (void)presentAnimated:(BOOL)animated completion:(id)completion {
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (now - g_lastBottomSwipeTriggerTime < 0.8 && has_any_bottom_swipe_trigger_enabled()) {
+    if (!g_rcIntentionalCCOpen && now - g_lastBottomSwipeTriggerTime < 0.8 && has_any_bottom_swipe_trigger_enabled()) {
         SRLog(@"[RCBottom] Suppressed Control Center presentAnimated:completion: within trigger window");
         return;
     }
@@ -13358,7 +13361,7 @@ static void rc_camera_launched_notification_callback(CFNotificationCenterRef cen
 }
 
 - (BOOL)_canPresent {
-    if (g_bottomBarTouchActive && has_any_bottom_swipe_trigger_enabled()) {
+    if (!g_rcIntentionalCCOpen && g_bottomBarTouchActive && has_any_bottom_swipe_trigger_enabled()) {
         return NO;
     }
     return %orig;
