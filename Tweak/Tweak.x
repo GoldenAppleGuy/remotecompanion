@@ -10372,11 +10372,18 @@ static NSTimeInterval g_lastPowerVolComboFireTime = 0;
 // performDoublePressActions hooks use it to recognize that press's native
 // callbacks, which arrive after it was already handled.
 static BOOL g_powerPressIsCombo = NO;
-// A volume button went down during the current power press (either order). With no
-// power+volume action bound this is the native chord (Vol Up + Power = screenshot),
-// so the deferred press must not be counted as a click and replayed as a lock/sleep.
-// Reset by each real power press-down. Written from the HID listener thread too.
-static volatile BOOL g_volPressedDuringPower = NO;
+// iOS's own sleep gesture (-[SBLockHardwareButton singlePress:]) fired for the current
+// deferred press. iOS fires it only when it would itself sleep/wake for the press, not
+// when the press was part of one of its chords - and those differ by device: without a
+// Home button, Power + Volume Up takes a screenshot while Power + Volume Down still
+// sleeps; with one, Power + Home takes the screenshot and Power + either volume button
+// does nothing. So a lone deferred press is replayed only if this fired, which
+// reproduces stock behaviour on every device. Reset by each real press-down.
+static BOOL g_nativeSinglePressSeen = NO;
+// A lone deferred press is waiting on that gesture to decide whether to replay it
+// (see RC_CheckAndFirePower); the generation lets a stale timeout recognize itself.
+static BOOL g_replayAwaitingNativeSinglePress = NO;
+static NSUInteger g_replayAwaitGeneration = 0;
 
 static void RC_MarkPowerVolComboFired(void) {
     g_lastPowerVolComboFireTime = [[NSDate date] timeIntervalSince1970];
@@ -10756,7 +10763,6 @@ static BOOL g_isSwappingVolume = NO;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     g_volUpIsDown = YES;
     g_lastVolUpPressTime = now;
-    if (g_powerIsDown) g_volPressedDuringPower = YES;
 
     // 1. Check for Power + Volume Up combination
     if (g_powerIsDown) {
@@ -11010,7 +11016,6 @@ static BOOL g_isSwappingVolume = NO;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     g_volDownIsDown = YES;
     g_lastVolDownPressTime = now;
-    if (g_powerIsDown) g_volPressedDuringPower = YES;
 
     // 1. Check for Power + Volume Down combination
     if (g_powerIsDown) {
@@ -11031,8 +11036,10 @@ static BOOL g_isSwappingVolume = NO;
             return;
         }
 
-        // No custom combo is configured: restore the native Power + Volume Down
-        // behavior (normally a screenshot) instead of consuming the buttons.
+        // No custom combo is configured: hand the press to iOS instead of consuming
+        // it. With Power held, iOS usually takes it for its own power-off gesture
+        // rather than a volume step; whether the power press then sleeps the phone
+        // is decided the same way (see g_nativeSinglePressSeen).
         g_powerVolComboTriggered = NO;
         g_volIsReplaying = YES;
         [self volumeDecreasePressDownWithModifiers:arg1];
@@ -11436,6 +11443,21 @@ static void RC_CheckAndFirePower() {
         // outcome for these clicks, and replaying a click on top would spuriously
         // lock/wake the screen right after Wallet opens.
         if (!claimed && !walletReplayed && count >= 1 && g_powerHookAlive) {
+            // A lone press is replayed only if iOS treated it as one (see
+            // g_nativeSinglePressSeen). Its gesture normally fires before this
+            // timer; if not yet, wait a moment for it - the singlePress: hook
+            // replays the press if it arrives - and otherwise leave the press be,
+            // as iOS did (it was part of a chord: a screenshot, or nothing).
+            if (count == 1 && !g_nativeSinglePressSeen) {
+                g_replayAwaitingNativeSinglePress = YES;
+                NSUInteger generation = ++g_replayAwaitGeneration;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (!g_replayAwaitingNativeSinglePress || generation != g_replayAwaitGeneration) return;
+                    g_replayAwaitingNativeSinglePress = NO;
+                    SRLog(@"[Power] iOS didn't treat the press as a lone press (part of a chord) - not replaying it");
+                });
+                return;
+            }
             RC_ReplayPowerPress();
         }
     }];
@@ -11767,7 +11789,6 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
 
             if (mappedUsage == kHIDUsage_Csmr_VolumeIncrement) g_volUpIsDown = !!down;
             if (mappedUsage == kHIDUsage_Csmr_VolumeDecrement) g_volDownIsDown = !!down;
-            if (down && g_powerIsDown) g_volPressedDuringPower = YES;
             
             // Check for Power + Volume combination.
             // FALLBACK ONLY. volumeIncreasePressDownWithModifiers:/volumeDecreasePress-
@@ -11926,7 +11947,8 @@ static void setup_background_hid_listener() {
     g_powerDownAwaitingUp = YES;
     g_replayAwaitingSinglePress = NO; // a new real press; any unclaimed replay slot is stale
     g_powerPressIsCombo = NO;
-    g_volPressedDuringPower = (g_volUpIsDown || g_volDownIsDown);
+    g_nativeSinglePressSeen = NO;
+    g_replayAwaitingNativeSinglePress = NO;
     if (RC_TriggerIsActionable(@"power_volume_up")) RC_SetScreenshotRecognizerSuppressed(YES);
     
     // Check for simultaneous press if Volume is already down
@@ -12091,16 +12113,6 @@ static void setup_background_hid_listener() {
         // through to normal click counting, and replayed an extra, unwanted
         // lock/sleep on top of the combo action that had already fired.
         g_powerVolComboTriggered = NO;
-        g_powerSuppressPostUp = YES;
-        return;
-    }
-
-    // A deferred press with a volume button held (no combo action bound) is the
-    // native chord - iOS's own recognizer already handled it (Vol Up + Power takes
-    // the screenshot). Swallow it rather than count it as a click, which would
-    // replay a lone power press and lock/sleep the phone on top of the screenshot.
-    if (g_powerDeferActive && g_volPressedDuringPower) {
-        SRLog(@"Power pressed with a volume button (no combo action) - native chord, not counted as a click");
         g_powerSuppressPostUp = YES;
         return;
     }
@@ -12274,6 +12286,14 @@ static void setup_background_hid_listener() {
     // was left on the lit lock screen. Presses we don't defer (screen already
     // off, excluded app) pass through untouched.
     if (g_powerDeferActive && !RC_IsForegroundAppExcluded()) {
+        g_nativeSinglePressSeen = YES;
+        // The press's sequence already ended as a lone press and was waiting on this
+        if (g_replayAwaitingNativeSinglePress) {
+            g_replayAwaitingNativeSinglePress = NO;
+            SRLog(@"Suppressing native singlePress: for a deferred press - replaying the press now");
+            RC_ReplayPowerPress();
+            return;
+        }
         SRLog(@"Suppressing native singlePress: for a deferred press - its replay supplies its own");
         return;
     }
