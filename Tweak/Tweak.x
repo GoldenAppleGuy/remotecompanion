@@ -1835,8 +1835,14 @@ static BOOL rc_condition_direct_match(NSString *key, NSString *expected, BOOL *h
         NSInteger weekday = [[NSCalendar currentCalendar] component:NSCalendarUnitWeekday fromDate:[NSDate date]]; // 1 = Sunday
         if ([expected isEqualToString:@"WEEKDAYS"]) return weekday >= 2 && weekday <= 6;
         if ([expected isEqualToString:@"WEEKENDS"]) return weekday == 1 || weekday == 7;
+        // A list of days, e.g. "MON,WED,FRI" (Settings' multi-select)
         NSArray *names = @[@"SUN", @"MON", @"TUE", @"WED", @"THU", @"FRI", @"SAT"];
-        return [expected isEqualToString:names[weekday - 1]];
+        NSString *today = names[weekday - 1];
+        for (NSString *day in [expected componentsSeparatedByString:@","]) {
+            NSString *d = [day stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            if ([d isEqualToString:today]) return YES;
+        }
+        return NO;
     } else if ([key isEqualToString:@"bt_device"]) {
         // A connected device with this name (case-insensitive)
         dlopen("/System/Library/PrivateFrameworks/BluetoothManager.framework/BluetoothManager", RTLD_NOW);
