@@ -10089,6 +10089,10 @@ static BOOL g_isSwappingVolume = NO;
         load_trigger_config();
         BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
         BOOL enabled = masterEnabled && [g_triggerConfig[@"triggers"][@"power_volume_down"][@"enabled"] boolValue];
+        // A power + volume press must not leave the custom power-long-press timer
+        // running. Otherwise the combo action is followed by the long-power action.
+        if (g_lockButtonTimer) { [g_lockButtonTimer invalidate]; g_lockButtonTimer = nil; }
+        if (g_systemPowerOffTimer) { [g_systemPowerOffTimer invalidate]; g_systemPowerOffTimer = nil; }
         if (enabled) {
             SRLog(@"Power + Volume Down combo triggered (from Vol Down Hook)");
             g_powerVolComboTriggered = YES;
@@ -10098,6 +10102,14 @@ static BOOL g_isSwappingVolume = NO;
             RCExecuteTrigger(@"power_volume_down");
             return;
         }
+
+        // No custom combo is configured: restore the native Power + Volume Down
+        // behavior (normally a screenshot) instead of consuming the buttons.
+        g_powerVolComboTriggered = NO;
+        g_volIsReplaying = YES;
+        [self volumeDecreasePressDownWithModifiers:arg1];
+        g_volIsReplaying = NO;
+        return;
     }
 
     // 2. Check for pending Volume Up -> Volume Down sequence
@@ -10653,6 +10665,13 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
                                  if (g_volDownTimer) { [g_volDownTimer invalidate]; g_volDownTimer = nil; }
                                  trigger_haptic();
                                  RCExecuteTrigger(triggerKey);
+                            });
+                        } else if (!enabled) {
+                            // Let iOS handle the native Power + Volume behavior
+                            // (normally a screenshot) when no custom combo exists.
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                if (g_lockButtonTimer) { [g_lockButtonTimer invalidate]; g_lockButtonTimer = nil; }
+                                if (g_systemPowerOffTimer) { [g_systemPowerOffTimer invalidate]; g_systemPowerOffTimer = nil; }
                             });
                         }
                     }
