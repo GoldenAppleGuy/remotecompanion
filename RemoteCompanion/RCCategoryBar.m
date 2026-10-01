@@ -75,9 +75,13 @@
     CGFloat height = [RCCategoryBar barHeight];
     // Keeps the first section header's own spacing (no default table header gap)
     tableView.tableHeaderView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, CGFLOAT_MIN)];
+    BOOL atTop = (tableView.contentOffset.y + tableView.adjustedContentInset.top) <= 0.5;
     UIEdgeInsets inset = tableView.contentInset;
     inset.top += height;
     tableView.contentInset = inset;
+    // Growing the inset doesn't move the scroll position, which would leave the list
+    // "scrolled" 48pt into the new space, under the bar, until the first scroll
+    if (atTop) tableView.contentOffset = CGPointMake(tableView.contentOffset.x, -tableView.adjustedContentInset.top);
     if (@available(iOS 13.0, *)) {
         UIEdgeInsets indicators = tableView.verticalScrollIndicatorInsets;
         indicators.top += height;
