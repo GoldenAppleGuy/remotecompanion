@@ -23,3 +23,5 @@ NSString *RCTKHandleCommand(NSString *args);
 NSString *RCHandleCommand(NSString *cmd);
 NSDictionary *RCCopyTriggerConfig(void);
 void RCSetTriggerConfig(NSDictionary *config);
+BOOL RCEvaluateIfCondition(NSDictionary *ifAction);
+NSDictionary *RCEvaluateLuaCapturing(NSString *code); // {output, returns, error?}

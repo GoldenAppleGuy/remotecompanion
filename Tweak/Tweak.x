@@ -2506,6 +2506,10 @@ void RCSetTriggerConfig(NSDictionary *config) {
     save_trigger_config();
 }
 
+BOOL RCEvaluateIfCondition(NSDictionary *ifAction) {
+    return rc_evaluate_if_condition(ifAction);
+}
+
 void RCExecuteTrigger(NSString *triggerKey) {
     RCTKEvent(@"trigger", @{ @"key": triggerKey ?: @"" });
     if (RCTKCaptureTrigger(triggerKey)) return;
@@ -5134,6 +5138,57 @@ static NSString *evaluate_lua_code(NSString *code) {
     
     lua_close(L);
     return output;
+}
+
+// Test kit (RCTestKit.x): runs Lua and returns what it printed and returned - the
+// lua_eval command discards both. Lua states are separate, but print's buffer is shared,
+// so runs are serialized.
+static NSMutableString *g_rctkLuaOutput;
+
+static int rctk_lua_print(lua_State *L) {
+    int n = lua_gettop(L);
+    for (int i = 1; i <= n; i++) {
+        size_t len = 0;
+        const char *s = luaL_tolstring(L, i, &len);
+        if (i > 1) [g_rctkLuaOutput appendString:@"\t"];
+        [g_rctkLuaOutput appendString:[[NSString alloc] initWithBytes:s length:len encoding:NSUTF8StringEncoding] ?: @""];
+        lua_pop(L, 1);
+    }
+    [g_rctkLuaOutput appendString:@"\n"];
+    return 0;
+}
+
+NSDictionary *RCEvaluateLuaCapturing(NSString *code) {
+    static NSObject *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSObject new]; });
+    @synchronized (lock) {
+        lua_State *L = setup_lua_environment();
+        if (!L) return @{ @"error": @"Could not create Lua state" };
+        g_rctkLuaOutput = [NSMutableString string];
+        lua_pushcfunction(L, rctk_lua_print);
+        lua_setglobal(L, "print");
+        NSMutableArray *returns = [NSMutableArray array];
+        NSString *error = nil;
+        int base = lua_gettop(L);
+        if (luaL_loadstring(L, code.UTF8String) == LUA_OK && lua_pcall(L, 0, LUA_MULTRET, 0) == LUA_OK) {
+            for (int i = base + 1; i <= lua_gettop(L); i++) {
+                size_t len = 0;
+                const char *s = luaL_tolstring(L, i, &len);
+                [returns addObject:[[NSString alloc] initWithBytes:s length:len encoding:NSUTF8StringEncoding] ?: @""];
+                lua_pop(L, 1);
+            }
+        } else {
+            const char *message = lua_tostring(L, -1);
+            error = message ? @(message) : @"unknown error";
+        }
+        lua_close(L);
+        NSString *output = [g_rctkLuaOutput copy];
+        g_rctkLuaOutput = nil;
+        NSMutableDictionary *result = [@{ @"output": output ?: @"", @"returns": returns } mutableCopy];
+        if (error) result[@"error"] = error;
+        return result;
+    }
 }
 
 static NSArray* RCFetchAirPlayDeviceNames() {
@@ -11711,6 +11766,7 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
         
         // Home Button (Page 0x0C, Usage 0x40)
         if (usagePage == kHIDPage_Consumer && usage == kHIDUsage_Csmr_Menu) {
+            RCTKEvent(@"hid.home", @{ @"down": @((BOOL)(down != 0)) });
             NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
             
             if (down) {

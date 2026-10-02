@@ -13,6 +13,12 @@
 //   POST /api/testkit/capture?on=1|0    dry-run: triggers are recorded, actions don't run
 //   POST /api/testkit/snapshot          save device state and config
 //   POST /api/testkit/restore           put them back
+//   POST /api/testkit/lua               body (or ?code=): Lua; returns what it printed and returned
+//   GET  /api/testkit/suites            the test suites
+//   POST /api/testkit/suite/run?name=   run one (conditions, toggles, all); &wait=1 returns the
+//                                       report when done; &disruptive=1 adds Wi-Fi etc. toggles
+//   GET  /api/testkit/report[?id=]      the current/last run, or a saved one
+//   GET  /api/testkit/reports           saved report ids
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -132,7 +138,12 @@ static NSString *RCTKPackageVersion(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         for (NSString *path in @[@"/var/jb/var/lib/dpkg/status", @"/var/lib/dpkg/status"]) {
-            NSString *status = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+            // Rootful package databases are large and can hold descriptions that aren't valid
+            // UTF-8, which fails a strict read of the whole file - fall back to Latin-1
+            NSData *data = [NSData dataWithContentsOfFile:path];
+            if (!data) continue;
+            NSString *status = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]
+                ?: [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
             NSRange pkg = [status rangeOfString:@"Package: com.saihgupr.remotecompanion\n"];
             if (pkg.location == NSNotFound) continue;
             NSString *rest = [status substringFromIndex:pkg.location];
@@ -168,13 +179,14 @@ static NSDictionary *RCTKLatestPhoto(void) {
     return @{ @"file": latest, @"t": @([latestDate timeIntervalSince1970] * 1000.0) };
 }
 
-static NSDictionary *RCTKProbe(void) {
+// light: only the fast reads (for polling) - no device info, status commands, photos or config
+static NSDictionary *RCTKProbeWith(BOOL light) {
     NSMutableDictionary *probe = [NSMutableDictionary dictionary];
     probe[@"t"] = @(RCTKNowMs());
 
     struct utsname systemInfo;
     uname(&systemInfo);
-    probe[@"device"] = @{
+    if (!light) probe[@"device"] = @{
         @"model": @(systemInfo.machine),
         @"ios": [UIDevice currentDevice].systemVersion ?: @"",
         @"jailbreak": [[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"] ? @"rootless" : @"rootful",
@@ -234,6 +246,8 @@ static NSDictionary *RCTKProbe(void) {
         ? ((id (*)(id, SEL, NSString *))objc_msgSend)(mc, NSSelectorFromString(@"userValueForSetting:"), @"maxInactivity") : nil;
     if (maxInactivity) probe[@"autoLockSeconds"] = @([maxInactivity intValue]);
 
+    if (light) return probe;
+
     UIDevice *device = [UIDevice currentDevice];
     device.batteryMonitoringEnabled = YES;
     probe[@"battery"] = @{
@@ -258,6 +272,10 @@ static NSDictionary *RCTKProbe(void) {
         @"capture": @(g_tkCapture)
     };
     return probe;
+}
+
+static NSDictionary *RCTKProbe(void) {
+    return RCTKProbeWith(NO);
 }
 
 #pragma mark - Snapshot / restore
@@ -322,6 +340,382 @@ static NSDictionary *RCTKRestore(void) {
     return @{ @"restored": results };
 }
 
+
+#pragma mark - Suites
+
+// A suite run: started over HTTP (suite/run), executed on a background queue, results
+// recorded as they happen (report, and test.result events in the journal), saved as JSON
+// under kRCTKReportsDir when done.
+
+static NSString *const kRCTKReportsDir = @"/var/mobile/Documents/rc_testkit_reports";
+static NSMutableDictionary *g_tkRun; // the run in progress, or the last one
+
+static void RCTKRecordResult(NSMutableDictionary *run, NSString *testId, NSString *status, NSDictionary *detail, double ms) {
+    NSMutableDictionary *result = [@{ @"id": testId, @"status": status } mutableCopy];
+    if (detail.count) result[@"detail"] = detail;
+    if (ms >= 0) result[@"ms"] = @(round(ms));
+    @synchronized (run) { [run[@"tests"] addObject:result]; }
+    RCTKEvent(@"test.result", result);
+}
+
+static BOOL RCTKCondition(NSString *key, NSString *value) {
+    return RCEvaluateIfCondition(@{ @"conditionKey": key, @"expectedValue": value });
+}
+
+// "ON"/"OFF" from a probe boolean or a status line ("DND OFF"); nil if unknown
+static NSString *RCTKOnOff(id state) {
+    if (!state || state == [NSNull null]) return nil;
+    if ([state isKindOfClass:[NSString class]]) {
+        NSString *upper = [state uppercaseString];
+        if ([upper containsString:@"OFF"]) return @"OFF";
+        if ([upper containsString:@"ON"]) return @"ON";
+        return nil;
+    }
+    return [state boolValue] ? @"ON" : @"OFF";
+}
+
+// The cheap part of the probe, for polling while waiting on a change
+static NSDictionary *RCTKProbeLight(void) {
+    return RCTKProbeWith(YES);
+}
+
+#pragma mark Conditions suite
+
+// Every If condition, evaluated with the device left as it is: enumerated conditions must
+// read TRUE for exactly one value, and that value must match the device state where the
+// probe can read it independently
+static void RCTKSuiteConditions(NSMutableDictionary *run) {
+    NSDictionary *p = RCTKProbe();
+    NSDictionary *status = p[@"status"];
+
+    NSString *autolock = nil;
+    int seconds = [p[@"autoLockSeconds"] intValue];
+    if (p[@"autoLockSeconds"]) {
+        if (seconds >= INT_MAX) autolock = @"NEVER";
+        else if (seconds == 30) autolock = @"30S";
+        else if (seconds % 60 == 0 && seconds / 60 >= 1 && seconds / 60 <= 5) autolock = [NSString stringWithFormat:@"%dM", seconds / 60];
+    }
+    id none = [NSNull null];
+    NSString *(^yesNo)(id, NSString *, NSString *) = ^NSString *(id state, NSString *yes, NSString *no) {
+        if (!state || state == [NSNull null]) return nil;
+        return [state boolValue] ? yes : no;
+    };
+
+    // key, values, the value the device state says should be TRUE (or null if unreadable)
+    NSArray *specs = @[
+        @[@"lock", @[@"LOCKED", @"UNLOCKED"], yesNo(p[@"locked"], @"LOCKED", @"UNLOCKED") ?: none],
+        @[@"autolock", @[@"30S", @"1M", @"2M", @"3M", @"4M", @"5M", @"NEVER"], autolock ?: none],
+        @[@"player", @[@"PLAYING", @"PAUSED", @"STOPPED"], none],
+        @[@"wifi", @[@"ON", @"OFF"], RCTKOnOff(p[@"wifiEnabled"]) ?: none],
+        @[@"bluetooth", @[@"ON", @"OFF"], RCTKOnOff(p[@"bluetoothPowered"]) ?: none],
+        @[@"cellular", @[@"ON", @"OFF"], RCTKOnOff(status[@"cellular"]) ?: none],
+        @[@"location", @[@"ON", @"OFF"], RCTKOnOff(status[@"location"]) ?: none],
+        @[@"airplane", @[@"ON", @"OFF"], RCTKOnOff(status[@"airplane"]) ?: none],
+        @[@"dnd", @[@"ON", @"OFF"], RCTKOnOff(status[@"dnd"]) ?: none],
+        @[@"lpm", @[@"ON", @"OFF"], RCTKOnOff(p[@"lowPowerMode"]) ?: none],
+        @[@"ringer", @[@"SILENT", @"RING"], yesNo(p[@"ringerMuted"], @"SILENT", @"RING") ?: none],
+        @[@"silent_vibration", @[@"ON", @"OFF"], none],
+        @[@"ring_vibration", @[@"ON", @"OFF"], none],
+        @[@"orientation", @[@"PORTRAIT", @"LANDSCAPE"], none],
+        @[@"rotation_lock", @[@"LOCKED", @"UNLOCKED"], yesNo(p[@"rotationLocked"], @"LOCKED", @"UNLOCKED") ?: none],
+        @[@"appearance", @[@"DARK", @"LIGHT"], yesNo(p[@"darkMode"], @"DARK", @"LIGHT") ?: none],
+        @[@"flashlight", @[@"ON", @"OFF"], RCTKOnOff(p[@"flashlightOn"]) ?: none],
+        @[@"screenrecord", @[@"ACTIVE", @"INACTIVE"], none],
+        @[@"charging", @[@"CHARGING", @"NOT_CHARGING"], yesNo(p[@"battery"][@"charging"], @"CHARGING", @"NOT_CHARGING") ?: none],
+        @[@"proximity", @[@"NEAR", @"FAR"], none],
+        @[@"screen", @[@"ON", @"OFF"], RCTKOnOff(p[@"screenOn"]) ?: none],
+    ];
+
+    for (NSArray *spec in specs) {
+        NSString *key = spec[0];
+        NSArray *values = spec[1];
+        id truth = spec[2];
+        double start = RCTKNowMs();
+        NSMutableArray *trueValues = [NSMutableArray array];
+        for (NSString *value in values) {
+            if (RCTKCondition(key, value)) [trueValues addObject:value];
+        }
+        double ms = RCTKNowMs() - start;
+        // Auto-Lock can be set to a value the condition doesn't list (e.g. 10 minutes)
+        BOOL zeroAllowed = [key isEqualToString:@"autolock"] && truth == none;
+        BOOL exclusive = trueValues.count == 1 || (zeroAllowed && trueValues.count == 0);
+        RCTKRecordResult(run, [NSString stringWithFormat:@"conditions.%@.exclusive", key], exclusive ? @"pass" : @"fail",
+                         @{ @"true": trueValues, @"values": values }, ms);
+        if (truth != none) {
+            BOOL matches = trueValues.count == 1 && [trueValues[0] isEqualToString:truth];
+            RCTKRecordResult(run, [NSString stringWithFormat:@"conditions.%@.matchesState", key], matches ? @"pass" : @"fail",
+                             @{ @"state": truth, @"true": trueValues }, -1);
+        } else {
+            RCTKRecordResult(run, [NSString stringWithFormat:@"conditions.%@.matchesState", key], @"skip",
+                             @{ @"reason": @"the probe can't read this state" }, -1);
+        }
+    }
+
+    // One expectation: the condition with this value should read `expected`
+    void (^expect)(NSString *, NSString *, NSString *, BOOL) = ^(NSString *testId, NSString *key, NSString *value, BOOL expected) {
+        double start = RCTKNowMs();
+        BOOL got = RCTKCondition(key, value);
+        RCTKRecordResult(run, testId, got == expected ? @"pass" : @"fail",
+                         @{ @"condition": key, @"value": value, @"expected": @(expected), @"got": @(got) }, RCTKNowMs() - start);
+    };
+
+    // Day of week: today, tomorrow, the weekday/weekend groups, a list
+    NSArray *days = @[@"SUN", @"MON", @"TUE", @"WED", @"THU", @"FRI", @"SAT"];
+    NSInteger weekday = [[NSCalendar currentCalendar] component:NSCalendarUnitWeekday fromDate:[NSDate date]]; // 1 = Sunday
+    NSString *today = days[weekday - 1], *tomorrow = days[weekday % 7];
+    BOOL isWeekend = weekday == 1 || weekday == 7;
+    expect(@"conditions.day_of_week.today", @"day_of_week", today, YES);
+    expect(@"conditions.day_of_week.tomorrow", @"day_of_week", tomorrow, NO);
+    expect(@"conditions.day_of_week.weekdays", @"day_of_week", @"WEEKDAYS", !isWeekend);
+    expect(@"conditions.day_of_week.weekends", @"day_of_week", @"WEEKENDS", isWeekend);
+    expect(@"conditions.day_of_week.list", @"day_of_week", [NSString stringWithFormat:@"%@,%@", tomorrow, today], YES);
+
+    // Time of day: a range around now, and one starting an hour from now
+    NSDateComponents *now = [[NSCalendar currentCalendar] components:NSCalendarUnitHour | NSCalendarUnitMinute fromDate:[NSDate date]];
+    NSInteger minutes = now.hour * 60 + now.minute;
+    NSString *(^hhmm)(NSInteger) = ^NSString *(NSInteger m) {
+        m = ((m % 1440) + 1440) % 1440;
+        return [NSString stringWithFormat:@"%02ld:%02ld", (long)(m / 60), (long)(m % 60)];
+    };
+    expect(@"conditions.time_between.now", @"time_between", [NSString stringWithFormat:@"%@-%@", hhmm(minutes - 60), hhmm(minutes + 60)], YES);
+    expect(@"conditions.time_between.later", @"time_between", [NSString stringWithFormat:@"%@-%@", hhmm(minutes + 60), hhmm(minutes + 120)], NO);
+
+    // Thresholds around the current battery level and volume
+    double battery = [p[@"battery"][@"level"] doubleValue] * 100.0;
+    if (battery >= 10 && battery <= 90) {
+        expect(@"conditions.battery.above", @"battery", [NSString stringWithFormat:@"ABOVE %.0f", battery - 5], YES);
+        expect(@"conditions.battery.below", @"battery", [NSString stringWithFormat:@"BELOW %.0f", battery + 5], YES);
+        expect(@"conditions.battery.notAbove", @"battery", [NSString stringWithFormat:@"ABOVE %.0f", battery + 5], NO);
+    } else {
+        RCTKRecordResult(run, @"conditions.battery", @"skip", @{ @"reason": @"battery level too close to 0 or 100", @"level": @(battery) }, -1);
+    }
+    if (p[@"volume"]) {
+        double volume = [p[@"volume"] doubleValue] * 100.0;
+        if (volume >= 10 && volume <= 90) {
+            expect(@"conditions.volume.above", @"volume", [NSString stringWithFormat:@"ABOVE %.0f", volume - 5], YES);
+            expect(@"conditions.volume.below", @"volume", [NSString stringWithFormat:@"BELOW %.0f", volume + 5], YES);
+            expect(@"conditions.volume.notAbove", @"volume", [NSString stringWithFormat:@"ABOVE %.0f", volume + 5], NO);
+        } else {
+            RCTKRecordResult(run, @"conditions.volume", @"skip", @{ @"reason": @"volume too close to 0 or 100", @"level": @(volume) }, -1);
+        }
+    }
+
+    // Names: the current Wi-Fi network (exact and lowercase), and ones that don't exist
+    NSString *ssid = [p[@"wifiNetwork"] isKindOfClass:[NSString class]] ? p[@"wifiNetwork"] : nil;
+    if (ssid.length) {
+        expect(@"conditions.wifi_network.current", @"wifi_network", ssid, YES);
+        expect(@"conditions.wifi_network.caseInsensitive", @"wifi_network", ssid.lowercaseString, YES);
+    } else {
+        RCTKRecordResult(run, @"conditions.wifi_network.current", @"skip", @{ @"reason": @"not on Wi-Fi" }, -1);
+    }
+    expect(@"conditions.wifi_network.other", @"wifi_network", @"RCTK No Such Network", NO);
+    expect(@"conditions.bt_device.other", @"bt_device", @"RCTK No Such Device", NO);
+
+    NSString *front = p[@"frontApp"];
+    if (front.length && ![front isEqualToString:@"com.apple.springboard"]) {
+        expect(@"conditions.front_app.current", @"front_app", front, YES);
+    }
+    expect(@"conditions.front_app.other", @"front_app", @"com.example.rctk.none", NO);
+}
+
+#pragma mark Toggles suite
+
+// Waits until read() returns `want` (polling), up to timeout. Returns the ms it took, or -1.
+static double RCTKWaitFor(id (^read)(void), id want, double timeoutMs, id *last) {
+    double start = RCTKNowMs();
+    while (YES) {
+        id now = read();
+        if (last) *last = now;
+        if ([now isEqual:want]) return RCTKNowMs() - start;
+        if (RCTKNowMs() - start > timeoutMs) return -1;
+        [NSThread sleepForTimeInterval:0.1];
+    }
+}
+
+// Runs `command`, then waits for read() to report `want`; records the step and then whether
+// the matching If condition agrees with the new state
+static void RCTKToggleStep(NSMutableDictionary *run, NSString *testId, NSString *command, id (^read)(void), id want,
+                           NSString *conditionKey, NSString *conditionValue) {
+    NSString *output = [RCHandleCommand(command) stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] ?: @"";
+    id last = nil;
+    double ms = RCTKWaitFor(read, want, 3000, &last);
+    RCTKRecordResult(run, testId, ms >= 0 ? @"pass" : @"fail",
+                     @{ @"command": command, @"output": output, @"want": want ?: [NSNull null], @"got": last ?: [NSNull null] }, ms);
+    if (conditionKey && ms >= 0) {
+        BOOL holds = RCTKCondition(conditionKey, conditionValue);
+        RCTKRecordResult(run, [testId stringByAppendingString:@".condition"], holds ? @"pass" : @"fail",
+                         @{ @"condition": conditionKey, @"value": conditionValue, @"got": @(holds) }, -1);
+    }
+}
+
+// Each toggle: on/off commands, the toggle command, how to read it back, the matching
+// condition, and whether it disrupts connectivity or other apps (run only on request)
+static NSArray *RCTKToggleSpecs(void) {
+    id (^probeBool)(NSString *) = ^id(NSString *key) {
+        return ^id { return RCTKOnOff(RCTKProbeLight()[key]); };
+    };
+    id (^statusOnOff)(NSString *) = ^id(NSString *command) {
+        return ^id { return RCTKOnOff(RCTKStatus(command)); };
+    };
+    return @[
+        @{ @"name": @"lpm", @"on": @"lpm on", @"off": @"lpm off", @"toggle": @"lpm toggle", @"read": probeBool(@"lowPowerMode"), @"condition": @"lpm" },
+        @{ @"name": @"rotationLock", @"on": @"rotate lock", @"off": @"rotate unlock", @"toggle": @"rotate toggle", @"read": probeBool(@"rotationLocked"), @"condition": @"rotation_lock", @"conditionOn": @"LOCKED", @"conditionOff": @"UNLOCKED" },
+        @{ @"name": @"appearance", @"on": @"appearance dark", @"off": @"appearance light", @"toggle": @"appearance toggle", @"read": probeBool(@"darkMode"), @"condition": @"appearance", @"conditionOn": @"DARK", @"conditionOff": @"LIGHT" },
+        @{ @"name": @"flashlight", @"on": @"flashlight on", @"off": @"flashlight off", @"toggle": @"flashlight toggle", @"read": probeBool(@"flashlightOn"), @"condition": @"flashlight" },
+        @{ @"name": @"dnd", @"on": @"dnd on", @"off": @"dnd off", @"toggle": @"dnd toggle", @"read": statusOnOff(@"dnd status"), @"condition": @"dnd" },
+        @{ @"name": @"bluetooth", @"on": @"bluetooth on", @"off": @"bluetooth off", @"toggle": @"bluetooth toggle", @"read": probeBool(@"bluetoothPowered"), @"condition": @"bluetooth", @"disruptive": @YES },
+        @{ @"name": @"wifi", @"on": @"wifi on", @"off": @"wifi off", @"toggle": @"wifi toggle", @"read": probeBool(@"wifiEnabled"), @"condition": @"wifi", @"disruptive": @YES },
+        @{ @"name": @"location", @"on": @"location on", @"off": @"location off", @"toggle": @"location toggle", @"read": statusOnOff(@"location status"), @"condition": @"location", @"disruptive": @YES },
+        @{ @"name": @"cellular", @"on": @"cellular on", @"off": @"cellular off", @"read": statusOnOff(@"cell status"), @"condition": @"cellular", @"disruptive": @YES },
+        @{ @"name": @"airplane", @"on": @"airplane on", @"off": @"airplane off", @"read": statusOnOff(@"airplane status"), @"condition": @"airplane", @"disruptive": @YES },
+    ];
+}
+
+static void RCTKSuiteToggles(NSMutableDictionary *run, BOOL disruptive) {
+    for (NSDictionary *spec in RCTKToggleSpecs()) {
+        NSString *name = spec[@"name"];
+        if ([spec[@"disruptive"] boolValue] && !disruptive) {
+            RCTKRecordResult(run, [NSString stringWithFormat:@"toggles.%@", name], @"skip", @{ @"reason": @"disruptive - run with disruptive=1" }, -1);
+            continue;
+        }
+        id (^read)(void) = spec[@"read"];
+        NSString *initial = read();
+        if (!initial) {
+            RCTKRecordResult(run, [NSString stringWithFormat:@"toggles.%@", name], @"skip", @{ @"reason": @"state unreadable" }, -1);
+            continue;
+        }
+        NSString *other = [initial isEqualToString:@"ON"] ? @"OFF" : @"ON";
+        NSString *conditionOn = spec[@"conditionOn"] ?: @"ON", *conditionOff = spec[@"conditionOff"] ?: @"OFF";
+        NSString *(^conditionFor)(NSString *) = ^NSString *(NSString *state) {
+            return [state isEqualToString:@"ON"] ? conditionOn : conditionOff;
+        };
+        // Away from the starting state and back with on/off, then the same with toggle
+        for (NSString *target in @[other, initial]) {
+            NSString *command = [target isEqualToString:@"ON"] ? spec[@"on"] : spec[@"off"];
+            RCTKToggleStep(run, [NSString stringWithFormat:@"toggles.%@.%@", name, target.lowercaseString], command, read, target,
+                           spec[@"condition"], conditionFor(target));
+        }
+        if (spec[@"toggle"]) {
+            RCTKToggleStep(run, [NSString stringWithFormat:@"toggles.%@.toggle", name], spec[@"toggle"], read, other, spec[@"condition"], conditionFor(other));
+            RCTKToggleStep(run, [NSString stringWithFormat:@"toggles.%@.toggleBack", name], spec[@"toggle"], read, initial, spec[@"condition"], conditionFor(initial));
+        }
+    }
+
+    // Auto-Lock: three values, read back in seconds
+    id (^autoLock)(void) = ^id { return RCTKProbeLight()[@"autoLockSeconds"]; };
+    RCTKToggleStep(run, @"toggles.autolock.2m", @"autolock 2m", autoLock, @120, @"autolock", @"2M");
+    RCTKToggleStep(run, @"toggles.autolock.30s", @"autolock 30s", autoLock, @30, @"autolock", @"30S");
+    RCTKToggleStep(run, @"toggles.autolock.never", @"autolock never", autoLock, @(INT_MAX), @"autolock", @"NEVER");
+
+    // Volume: an absolute level, then one step up and back down (1/16 per step)
+    id (^volume)(void) = ^id {
+        id level = RCTKProbeLight()[@"volume"];
+        return level ? @(round([level doubleValue] * 1000) / 1000) : nil;
+    };
+    RCTKToggleStep(run, @"toggles.volume.set", @"set-vol 25", volume, @0.25, @"volume", @"ABOVE 20");
+    RCTKToggleStep(run, @"toggles.volume.up", @"volume up", volume, @0.313, @"volume", @"ABOVE 30");
+    RCTKToggleStep(run, @"toggles.volume.down", @"volume down", volume, @0.25, @"volume", @"BELOW 30");
+}
+
+#pragma mark Running
+
+static NSDictionary *RCTKSuites(void) {
+    return @{ @"suites": @[
+        @{ @"name": @"conditions", @"changesState": @NO, @"description": @"Every If condition: exactly one value TRUE, and it matches the device state" },
+        @{ @"name": @"toggles", @"changesState": @YES, @"description": @"Toggle actions switch and read back, and their conditions follow; state is snapshotted and restored. disruptive=1 adds Wi-Fi, Bluetooth, location, cellular and airplane mode" },
+        @{ @"name": @"all", @"changesState": @YES, @"description": @"conditions, then toggles" },
+    ] };
+}
+
+static NSDictionary *RCTKSummarize(NSMutableDictionary *run) {
+    NSMutableDictionary *report;
+    @synchronized (run) {
+        report = [run mutableCopy];
+        report[@"tests"] = [run[@"tests"] copy];
+    }
+    NSUInteger pass = 0, fail = 0, skip = 0;
+    for (NSDictionary *test in report[@"tests"]) {
+        NSString *status = test[@"status"];
+        if ([status isEqualToString:@"pass"]) pass++; else if ([status isEqualToString:@"fail"]) fail++; else skip++;
+    }
+    report[@"summary"] = @{ @"pass": @(pass), @"fail": @(fail), @"skip": @(skip), @"total": @(pass + fail + skip) };
+    return report;
+}
+
+static NSDictionary *RCTKRunSuite(NSString *name, BOOL disruptive, BOOL wait) {
+    if (![@[@"conditions", @"toggles", @"all"] containsObject:name ?: @""]) {
+        return @{ @"error": [NSString stringWithFormat:@"unknown suite '%@'", name ?: @""], @"suites": RCTKSuites()[@"suites"] };
+    }
+    NSMutableDictionary *run;
+    @synchronized (RCTKLock()) {
+        if ([g_tkRun[@"status"] isEqualToString:@"running"]) return @{ @"error": @"a run is in progress", @"id": g_tkRun[@"id"] };
+        NSDictionary *probe = RCTKProbe();
+        NSDateFormatter *formatter = [NSDateFormatter new];
+        formatter.dateFormat = @"yyyyMMdd-HHmmss";
+        run = [@{
+            @"id": [NSString stringWithFormat:@"%@-%@", [formatter stringFromDate:[NSDate date]], name],
+            @"suite": name, @"disruptive": @(disruptive), @"status": @"running",
+            @"started": @(RCTKNowMs()), @"device": probe[@"device"], @"session": g_tkSession ?: @"",
+            @"tests": [NSMutableArray array]
+        } mutableCopy];
+        g_tkRun = run;
+    }
+    RCTKEvent(@"suite.start", @{ @"id": run[@"id"], @"suite": name });
+
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        BOOL changesState = ![name isEqualToString:@"conditions"];
+        if (changesState) RCTKTakeSnapshot();
+        if ([name isEqualToString:@"conditions"] || [name isEqualToString:@"all"]) RCTKSuiteConditions(run);
+        if ([name isEqualToString:@"toggles"] || [name isEqualToString:@"all"]) RCTKSuiteToggles(run, disruptive);
+        if (changesState) {
+            NSDictionary *restored = RCTKRestore();
+            @synchronized (run) { run[@"restored"] = restored[@"restored"] ?: @[]; }
+        }
+        @synchronized (run) {
+            run[@"status"] = @"done";
+            run[@"finished"] = @(RCTKNowMs());
+            run[@"durationMs"] = @(round([run[@"finished"] doubleValue] - [run[@"started"] doubleValue]));
+        }
+        NSDictionary *report = RCTKSummarize(run);
+        [[NSFileManager defaultManager] createDirectoryAtPath:kRCTKReportsDir withIntermediateDirectories:YES attributes:nil error:nil];
+        NSData *json = [NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:nil];
+        [json writeToFile:[kRCTKReportsDir stringByAppendingPathComponent:[report[@"id"] stringByAppendingString:@".json"]] atomically:YES];
+        RCTKEvent(@"suite.end", @{ @"id": report[@"id"], @"summary": report[@"summary"] });
+        dispatch_semaphore_signal(done);
+    });
+
+    if (!wait) return @{ @"id": run[@"id"], @"status": @"running" };
+    dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(300 * NSEC_PER_SEC)));
+    return RCTKSummarize(run);
+}
+
+static NSDictionary *RCTKReport(NSString *reportId) {
+    if (!reportId.length) {
+        NSMutableDictionary *run = g_tkRun;
+        return run ? RCTKSummarize(run) : @{ @"error": @"no runs yet" };
+    }
+    NSData *data = [NSData dataWithContentsOfFile:[kRCTKReportsDir stringByAppendingPathComponent:[reportId stringByAppendingString:@".json"]]];
+    id report = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    return report ?: @{ @"error": [NSString stringWithFormat:@"no report '%@'", reportId] };
+}
+
+static NSDictionary *RCTKReports(void) {
+    NSArray *files = [[[NSFileManager defaultManager] contentsOfDirectoryAtPath:kRCTKReportsDir error:nil] sortedArrayUsingSelector:@selector(compare:)];
+    NSMutableArray *ids = [NSMutableArray array];
+    for (NSString *file in files) if ([file hasSuffix:@".json"]) [ids addObject:[file stringByDeletingPathExtension]];
+    return @{ @"reports": ids };
+}
+
+static NSDictionary *RCTKLua(NSString *code) {
+    if (!code.length) return @{ @"error": @"missing code" };
+    RCTKEvent(@"testkit.lua", nil);
+    __block NSDictionary *result;
+    void (^evaluate)(void) = ^{ result = RCEvaluateLuaCapturing(code); };
+    if ([NSThread isMainThread]) evaluate(); else dispatch_sync(dispatch_get_main_queue(), evaluate);
+    return result;
+}
+
 #pragma mark - Routing
 
 static NSDictionary *RCTKInfo(void) {
@@ -329,7 +723,8 @@ static NSDictionary *RCTKInfo(void) {
         @"testkit": @1,
         @"session": g_tkSession ?: @"",
         @"tweakVersion": RCTKPackageVersion(),
-        @"endpoints": @[@"info", @"probe", @"journal", @"journal/clear", @"mark", @"run", @"capture", @"snapshot", @"restore"]
+        @"endpoints": @[@"info", @"probe", @"journal", @"journal/clear", @"mark", @"run", @"lua", @"capture", @"snapshot", @"restore",
+                        @"suites", @"suite/run", @"report", @"reports"]
     };
 }
 
@@ -378,6 +773,14 @@ static NSDictionary *RCTKDispatch(NSString *endpoint, NSDictionary<NSString *, N
         return snapshot;
     }
     if ([endpoint isEqualToString:@"restore"]) return RCTKRestore();
+    if ([endpoint isEqualToString:@"lua"]) return RCTKLua(params[@"code"] ?: body);
+    if ([endpoint isEqualToString:@"suites"]) return RCTKSuites();
+    if ([endpoint isEqualToString:@"suite/run"]) {
+        NSString *name = params[@"name"] ?: body;
+        return RCTKRunSuite(name, [params[@"disruptive"] boolValue], [params[@"wait"] boolValue]);
+    }
+    if ([endpoint isEqualToString:@"report"]) return RCTKReport(params[@"id"]);
+    if ([endpoint isEqualToString:@"reports"]) return RCTKReports();
     *status = 404;
     return @{ @"error": [NSString stringWithFormat:@"unknown endpoint '%@'", endpoint], @"endpoints": RCTKInfo()[@"endpoints"] };
 }

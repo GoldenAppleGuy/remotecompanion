@@ -13,9 +13,9 @@ ENDPOINT="$1"; BODY="$2"
 case "$ENDPOINT" in /*) URL="http://$HOST:$PORT$ENDPOINT" ;; *) URL="http://$HOST:$PORT/api/testkit/$ENDPOINT" ;; esac
 METHOD="${TK_METHOD:-$([ -n "$BODY" ] && echo POST || echo GET)}"
 if [ -n "$BODY" ]; then
-  REPLY=$(curl -s -m 30 -X "$METHOD" --data-binary "$BODY" "$URL")
+  REPLY=$(curl -s -m "${TK_TIMEOUT:-30}" -X "$METHOD" --data-binary "$BODY" "$URL")
 else
-  REPLY=$(curl -s -m 30 -X "$METHOD" "$URL")
+  REPLY=$(curl -s -m "${TK_TIMEOUT:-30}" -X "$METHOD" "$URL")
 fi
 STATUS=$?
 PRETTY=$(printf '%s' "$REPLY" | python3 -m json.tool 2>/dev/null || printf '%s' "${REPLY:-(no reply, curl exit $STATUS)}")
