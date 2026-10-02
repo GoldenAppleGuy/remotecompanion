@@ -874,7 +874,10 @@ static NSArray<NSString *> *rc_parse_quoted_arguments(NSString *argString) {
     return arguments;
 }
 
-static void rc_show_hud_toast(NSString *title, NSString *subtitle, NSString *iconSymbol) {
+// hold: how long it stays before sliding away. passThrough: touches go through it to
+// whatever is underneath (the test kit's prompts, which sit over the status bar while the
+// status-bar gestures are being tested).
+static void rc_show_hud_toast_ex(NSString *title, NSString *subtitle, NSString *iconSymbol, NSTimeInterval hold, BOOL passThrough) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (g_rcHUDWindow) {
             [g_rcHUDWindow.layer removeAllAnimations];
@@ -956,6 +959,7 @@ static void rc_show_hud_toast(NSString *title, NSString *subtitle, NSString *ico
         CGFloat targetY = (!landscape && topInset > 24.0) ? topInset : 12.0;
 
         UIWindow *hudWindow = hudScene ? [[UIWindow alloc] initWithWindowScene:hudScene] : [[UIWindow alloc] init];
+        hudWindow.userInteractionEnabled = !passThrough;
         hudWindow.frame = CGRectMake(pillX, startY, pillWidth, pillHeight);
         g_rcHUDWindow = hudWindow;
         hudWindow.windowLevel = UIWindowLevelAlert + 3000.0;
@@ -1047,7 +1051,7 @@ static void rc_show_hud_toast(NSString *title, NSString *subtitle, NSString *ico
                                  return;
                              }
                              [UIView animateWithDuration:0.4
-                                                   delay:2.0
+                                                   delay:hold
                                                  options:UIViewAnimationOptionCurveEaseInOut
                                               animations:^{
                                                   hudWindow.frame = CGRectMake(pillX, startY, pillWidth, pillHeight);
@@ -1060,6 +1064,35 @@ static void rc_show_hud_toast(NSString *title, NSString *subtitle, NSString *ico
                                               }];
                          }];
     });
+}
+
+static void rc_show_hud_toast(NSString *title, NSString *subtitle, NSString *iconSymbol) {
+    rc_show_hud_toast_ex(title, subtitle, iconSymbol, 2.0, NO);
+}
+
+// Slides the current toast away
+static void rc_hide_hud_toast(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *hudWindow = g_rcHUDWindow;
+        if (!hudWindow) return;
+        g_rcHUDWindow = nil;
+        [hudWindow.layer removeAllAnimations];
+        CGRect frame = hudWindow.frame;
+        [UIView animateWithDuration:0.3 animations:^{
+            hudWindow.frame = CGRectMake(frame.origin.x, -frame.size.height - 20.0, frame.size.width, frame.size.height);
+        } completion:^(BOOL finished) {
+            hudWindow.hidden = YES;
+        }];
+    });
+}
+
+// Test kit (RCTestKit.x): prompts that stay up for `hold` seconds and let touches through
+void RCShowPrompt(NSString *title, NSString *subtitle, NSString *iconSymbol, NSTimeInterval hold) {
+    rc_show_hud_toast_ex(title, subtitle, iconSymbol, hold, YES);
+}
+
+void RCHidePrompt(void) {
+    rc_hide_hud_toast();
 }
 
 // Settings > Banners switches for actions that show a banner of their own (defined below)

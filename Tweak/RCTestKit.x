@@ -15,8 +15,9 @@
 //   POST /api/testkit/restore           put them back
 //   POST /api/testkit/lua               body (or ?code=): Lua; returns what it printed and returned
 //   GET  /api/testkit/suites            the test suites
-//   POST /api/testkit/suite/run?name=   run one (conditions, toggles, all); &wait=1 returns the
+//   POST /api/testkit/suite/run?name=   run one (conditions, toggles, all, guided); &wait=1 returns the
 //                                       report when done; &disruptive=1 adds Wi-Fi etc. toggles
+//   POST /api/testkit/suite/skip        skip the current guided step; suite/stop ends the run
 //   GET  /api/testkit/report[?id=]      the current/last run, or a saved one
 //   GET  /api/testkit/reports           saved report ids
 
@@ -617,6 +618,168 @@ static void RCTKSuiteToggles(NSMutableDictionary *run, BOOL disruptive) {
     RCTKToggleStep(run, @"toggles.volume.down", @"volume down", volume, @0.25, @"volume", @"BELOW 30");
 }
 
+
+#pragma mark Guided suite
+
+// Button and gesture triggers, asked for one at a time with a banner prompt. Every trigger in
+// RCTKGuidedTriggerKeys is bound in a temporary config with capture on, so detection is
+// tested without running anyone's actions. A step passes if exactly its expected triggers
+// fired, once each, and no other button/gesture trigger did.
+
+static volatile BOOL g_tkSkipStep = NO;
+static volatile BOOL g_tkStopRun = NO;
+
+static NSArray<NSString *> *RCTKGuidedTriggerKeys(void) {
+    return @[@"volume_up_hold", @"volume_down_hold", @"volume_both_press", @"volume_up_then_down", @"volume_down_then_up",
+             @"power_double_tap", @"power_long_press", @"power_triple_click", @"power_quadruple_click",
+             @"power_volume_up", @"power_volume_down",
+             @"trigger_statusbar_left_hold", @"trigger_statusbar_center_hold", @"trigger_statusbar_right_hold",
+             @"trigger_statusbar_swipe_left", @"trigger_statusbar_swipe_right", @"trigger_statusbar_double_tap",
+             @"trigger_home_double_click", @"trigger_home_triple_click", @"trigger_home_quadruple_click",
+             @"trigger_ringer_mute", @"trigger_ringer_unmute", @"trigger_ringer_toggle"];
+}
+
+static BOOL RCTKHasHomeButton(void) {
+    __block long type = -1;
+    void (^read)(void) = ^{
+        id lockButton = RCTKSend([UIApplication sharedApplication], @"lockHardwareButton");
+        NSNumber *value = RCTKSendLong(lockButton, @"homeButtonType");
+        if (value) type = value.longValue;
+    };
+    if ([NSThread isMainThread]) read(); else dispatch_sync(dispatch_get_main_queue(), read);
+    return type != 2; // 2: no Home button (Face ID); 1: solid-state Home button
+}
+
+// id, prompt, expected trigger keys, and optionally: oneOf (exactly one of these must fire too),
+// home (YES: Home-button phones only, NO: phones without one)
+static NSArray<NSDictionary *> *RCTKGuidedSteps(BOOL hasHome) {
+    NSMutableArray *steps = [NSMutableArray arrayWithArray:@[
+        @{ @"id": @"volume_up_hold", @"prompt": @"Hold Volume Up for a second", @"expect": @[@"volume_up_hold"] },
+        @{ @"id": @"volume_down_hold", @"prompt": @"Hold Volume Down for a second", @"expect": @[@"volume_down_hold"] },
+        @{ @"id": @"volume_both_press", @"prompt": @"Press Volume Up + Down together", @"expect": @[@"volume_both_press"] },
+        @{ @"id": @"volume_up_then_down", @"prompt": @"Press Volume Up, then Volume Down", @"expect": @[@"volume_up_then_down"] },
+        @{ @"id": @"volume_down_then_up", @"prompt": @"Press Volume Down, then Volume Up", @"expect": @[@"volume_down_then_up"] },
+        @{ @"id": @"power_double_tap", @"prompt": @"Double-press Power", @"expect": @[@"power_double_tap"] },
+        @{ @"id": @"power_triple_click", @"prompt": @"Triple-press Power", @"expect": @[@"power_triple_click"] },
+        @{ @"id": @"power_quadruple_click", @"prompt": @"Press Power 4 times", @"expect": @[@"power_quadruple_click"] },
+        @{ @"id": @"power_long_press", @"prompt": @"Hold Power for a second, then let go", @"expect": @[@"power_long_press"] },
+        @{ @"id": @"power_volume_up", @"prompt": @"Press Power + Volume Up together", @"expect": @[@"power_volume_up"] },
+        @{ @"id": @"power_volume_down", @"prompt": @"Press Power + Volume Down together", @"expect": @[@"power_volume_down"] },
+        @{ @"id": @"ringer_flip", @"prompt": @"Flip the ring/silent switch", @"expect": @[@"trigger_ringer_toggle"], @"oneOf": @[@"trigger_ringer_mute", @"trigger_ringer_unmute"] },
+        @{ @"id": @"ringer_flip_back", @"prompt": @"Flip the ring/silent switch back", @"expect": @[@"trigger_ringer_toggle"], @"oneOf": @[@"trigger_ringer_mute", @"trigger_ringer_unmute"] },
+        @{ @"id": @"statusbar_left_hold", @"prompt": @"Touch and hold the top-left corner", @"expect": @[@"trigger_statusbar_left_hold"] },
+        @{ @"id": @"statusbar_center_hold", @"prompt": @"Touch and hold the top-center", @"expect": @[@"trigger_statusbar_center_hold"] },
+        @{ @"id": @"statusbar_right_hold", @"prompt": @"Touch and hold the top-right corner", @"expect": @[@"trigger_statusbar_right_hold"] },
+        @{ @"id": @"statusbar_double_tap", @"prompt": @"Double-tap the status bar", @"expect": @[@"trigger_statusbar_double_tap"] },
+        @{ @"id": @"statusbar_swipe_left", @"prompt": @"Swipe left along the status bar", @"expect": @[@"trigger_statusbar_swipe_left"] },
+        @{ @"id": @"statusbar_swipe_right", @"prompt": @"Swipe right along the status bar", @"expect": @[@"trigger_statusbar_swipe_right"] },
+        @{ @"id": @"home_double_click", @"prompt": @"Double-click Home", @"expect": @[@"trigger_home_double_click"], @"home": @YES },
+        @{ @"id": @"home_triple_click", @"prompt": @"Triple-click Home", @"expect": @[@"trigger_home_triple_click"], @"home": @YES },
+        @{ @"id": @"home_quadruple_click", @"prompt": @"Click Home 4 times", @"expect": @[@"trigger_home_quadruple_click"], @"home": @YES },
+    ]];
+    NSIndexSet *wrongDevice = [steps indexesOfObjectsPassingTest:^BOOL(NSDictionary *step, NSUInteger idx, BOOL *stop) {
+        return step[@"home"] && [step[@"home"] boolValue] != hasHome;
+    }];
+    [steps removeObjectsAtIndexes:wrongDevice];
+    return steps;
+}
+
+// Trigger keys captured (dry-run) after journal seq `since`
+static NSArray<NSString *> *RCTKCapturedSince(unsigned long long since) {
+    NSMutableArray *keys = [NSMutableArray array];
+    for (NSDictionary *event in RCTKJournal(since, @"trigger.captured", 0)[@"events"]) {
+        [keys addObject:event[@"key"] ?: @""];
+    }
+    return keys;
+}
+
+static void RCTKSuiteGuided(NSMutableDictionary *run) {
+    BOOL hasHome = RCTKHasHomeButton();
+    NSArray *steps = RCTKGuidedSteps(hasHome);
+    NSSet *buttonKeys = [NSSet setWithArray:RCTKGuidedTriggerKeys()];
+    @synchronized (run) { run[@"homeButton"] = @(hasHome); }
+
+    // Bind every button/gesture trigger to a placeholder action, and record instead of running
+    NSMutableDictionary *config = [RCCopyTriggerConfig() mutableCopy] ?: [NSMutableDictionary dictionary];
+    NSMutableDictionary *triggers = [config[@"triggers"] mutableCopy] ?: [NSMutableDictionary dictionary];
+    for (NSString *key in RCTKGuidedTriggerKeys()) {
+        NSMutableDictionary *trigger = [triggers[key] mutableCopy] ?: [NSMutableDictionary dictionary];
+        trigger[@"enabled"] = @YES;
+        trigger[@"actions"] = @[@"testkit noop"];
+        triggers[key] = trigger;
+    }
+    config[@"triggers"] = triggers;
+    config[@"masterEnabled"] = @YES;
+    RCSetTriggerConfig(config);
+    g_tkCapture = YES;
+    RCTKEvent(@"testkit.capture", @{ @"on": @YES });
+
+    RCShowPrompt(@"RemoteCompanion Test", [NSString stringWithFormat:@"%lu steps - starting...", (unsigned long)steps.count], @"checklist", 3.0);
+    [NSThread sleepForTimeInterval:3.5];
+
+    NSUInteger index = 0, passed = 0;
+    for (NSDictionary *step in steps) {
+        index++;
+        if (g_tkStopRun) break;
+        g_tkSkipStep = NO;
+        NSString *testId = [@"guided." stringByAppendingString:step[@"id"]];
+        NSString *title = [NSString stringWithFormat:@"Step %lu of %lu", (unsigned long)index, (unsigned long)steps.count];
+        unsigned long long since = RCTKRecord(@"mark", @{ @"label": testId });
+        RCShowPrompt(title, step[@"prompt"], @"hand.point.up.left", 60.0);
+
+        NSArray *expect = step[@"expect"];
+        NSArray *oneOf = step[@"oneOf"];
+        double start = RCTKNowMs(), firstAt = -1;
+        BOOL timedOut = NO;
+        while (YES) {
+            NSArray *got = RCTKCapturedSince(since);
+            BOOL allExpected = YES;
+            for (NSString *key in expect) if (![got containsObject:key]) allExpected = NO;
+            if (got.count && firstAt < 0) firstAt = RCTKNowMs();
+            if (allExpected) break;
+            if (g_tkSkipStep || g_tkStopRun) break;
+            if (RCTKNowMs() - start > 20000) { timedOut = YES; break; }
+            [NSThread sleepForTimeInterval:0.05];
+        }
+        if (g_tkSkipStep || g_tkStopRun || timedOut) {
+            NSString *reason = timedOut ? @"timed out - no input detected" : (g_tkStopRun ? @"run stopped" : @"skipped");
+            RCTKRecordResult(run, testId, @"skip", @{ @"reason": reason, @"got": RCTKCapturedSince(since) }, -1);
+            RCShowPrompt(title, timedOut ? @"Skipped (timed out)" : @"Skipped", @"forward.fill", 1.5);
+            [NSThread sleepForTimeInterval:2.0];
+            continue;
+        }
+        double detected = RCTKNowMs() - start;
+        [NSThread sleepForTimeInterval:1.2]; // anything that fires a moment later counts too
+
+        NSMutableArray *got = [NSMutableArray array];
+        for (NSString *key in RCTKCapturedSince(since)) if ([buttonKeys containsObject:key]) [got addObject:key];
+        NSMutableArray *problems = [NSMutableArray array];
+        NSCountedSet *counts = [[NSCountedSet alloc] initWithArray:got];
+        for (NSString *key in expect) {
+            if ([counts countForObject:key] != 1) [problems addObject:[NSString stringWithFormat:@"%@ fired %lu times", key, (unsigned long)[counts countForObject:key]]];
+        }
+        NSUInteger oneOfCount = 0;
+        for (NSString *key in oneOf) oneOfCount += [counts countForObject:key];
+        if (oneOf && oneOfCount != 1) [problems addObject:[NSString stringWithFormat:@"expected one of %@, got %lu", [oneOf componentsJoinedByString:@"/"], (unsigned long)oneOfCount]];
+        for (NSString *key in counts) {
+            if (![expect containsObject:key] && ![oneOf containsObject:key]) [problems addObject:[NSString stringWithFormat:@"unexpected %@", key]];
+        }
+        BOOL pass = problems.count == 0;
+        if (pass) passed++;
+        NSMutableDictionary *detail = [@{ @"expected": expect, @"got": got } mutableCopy];
+        if (problems.count) detail[@"problems"] = problems;
+        RCTKRecordResult(run, testId, pass ? @"pass" : @"fail", detail, detected);
+        RCShowPrompt(title, pass ? @"Passed" : [@"Failed: " stringByAppendingString:problems.firstObject],
+                     pass ? @"checkmark.circle.fill" : @"xmark.circle.fill", 1.5);
+        [NSThread sleepForTimeInterval:2.0];
+    }
+
+    g_tkCapture = NO;
+    RCTKEvent(@"testkit.capture", @{ @"on": @NO });
+    RCShowPrompt(@"RemoteCompanion Test", [NSString stringWithFormat:@"Done: %lu of %lu passed", (unsigned long)passed, (unsigned long)steps.count],
+                 @"flag.checkered", 3.0);
+}
+
 #pragma mark Running
 
 static NSDictionary *RCTKSuites(void) {
@@ -624,6 +787,7 @@ static NSDictionary *RCTKSuites(void) {
         @{ @"name": @"conditions", @"changesState": @NO, @"description": @"Every If condition: exactly one value TRUE, and it matches the device state" },
         @{ @"name": @"toggles", @"changesState": @YES, @"description": @"Toggle actions switch and read back, and their conditions follow; state is snapshotted and restored. disruptive=1 adds Wi-Fi, Bluetooth, location, cellular and airplane mode" },
         @{ @"name": @"all", @"changesState": @YES, @"description": @"conditions, then toggles" },
+        @{ @"name": @"guided", @"changesState": @YES, @"description": @"Banner prompts for each button and gesture trigger; passes when exactly that trigger fires. Your config is swapped for a test one (with capture on) and restored. suite/skip skips a step, suite/stop ends the run" },
     ] };
 }
 
@@ -643,7 +807,7 @@ static NSDictionary *RCTKSummarize(NSMutableDictionary *run) {
 }
 
 static NSDictionary *RCTKRunSuite(NSString *name, BOOL disruptive, BOOL wait) {
-    if (![@[@"conditions", @"toggles", @"all"] containsObject:name ?: @""]) {
+    if (![@[@"conditions", @"toggles", @"all", @"guided"] containsObject:name ?: @""]) {
         return @{ @"error": [NSString stringWithFormat:@"unknown suite '%@'", name ?: @""], @"suites": RCTKSuites()[@"suites"] };
     }
     NSMutableDictionary *run;
@@ -659,6 +823,8 @@ static NSDictionary *RCTKRunSuite(NSString *name, BOOL disruptive, BOOL wait) {
             @"tests": [NSMutableArray array]
         } mutableCopy];
         g_tkRun = run;
+        g_tkStopRun = NO;
+        g_tkSkipStep = NO;
     }
     RCTKEvent(@"suite.start", @{ @"id": run[@"id"], @"suite": name });
 
@@ -668,6 +834,7 @@ static NSDictionary *RCTKRunSuite(NSString *name, BOOL disruptive, BOOL wait) {
         if (changesState) RCTKTakeSnapshot();
         if ([name isEqualToString:@"conditions"] || [name isEqualToString:@"all"]) RCTKSuiteConditions(run);
         if ([name isEqualToString:@"toggles"] || [name isEqualToString:@"all"]) RCTKSuiteToggles(run, disruptive);
+        if ([name isEqualToString:@"guided"]) RCTKSuiteGuided(run);
         if (changesState) {
             NSDictionary *restored = RCTKRestore();
             @synchronized (run) { run[@"restored"] = restored[@"restored"] ?: @[]; }
@@ -724,7 +891,7 @@ static NSDictionary *RCTKInfo(void) {
         @"session": g_tkSession ?: @"",
         @"tweakVersion": RCTKPackageVersion(),
         @"endpoints": @[@"info", @"probe", @"journal", @"journal/clear", @"mark", @"run", @"lua", @"capture", @"snapshot", @"restore",
-                        @"suites", @"suite/run", @"report", @"reports"]
+                        @"suites", @"suite/run", @"suite/skip", @"suite/stop", @"report", @"reports"]
     };
 }
 
@@ -779,6 +946,8 @@ static NSDictionary *RCTKDispatch(NSString *endpoint, NSDictionary<NSString *, N
         NSString *name = params[@"name"] ?: body;
         return RCTKRunSuite(name, [params[@"disruptive"] boolValue], [params[@"wait"] boolValue]);
     }
+    if ([endpoint isEqualToString:@"suite/skip"]) { g_tkSkipStep = YES; return @{ @"skip": @YES }; }
+    if ([endpoint isEqualToString:@"suite/stop"]) { g_tkStopRun = YES; return @{ @"stop": @YES }; }
     if ([endpoint isEqualToString:@"report"]) return RCTKReport(params[@"id"]);
     if ([endpoint isEqualToString:@"reports"]) return RCTKReports();
     *status = 404;
