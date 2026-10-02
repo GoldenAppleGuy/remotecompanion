@@ -21,6 +21,7 @@
 #import <mach/mach_host.h>
 #import <GraphicsServices/GraphicsServices.h>
 #import "native_curl.h"
+#import "RCTestKit.h"
 #import <CoreFoundation/CoreFoundation.h>
 #import <CoreLocation/CoreLocation.h>
 #import <objc/message.h>
@@ -2323,6 +2324,7 @@ static void rc_execute_action_sequence(NSArray *actions, NSString *triggerKey, B
         if ([actionItem isKindOfClass:[NSString class]]) {
             NSString *action = (NSString *)actionItem;
             SRLog(@"[%@] -> %@", triggerKey, action);
+            RCTKEvent(@"action", @{ @"trigger": triggerKey ?: @"", @"command": action });
             handle_command(action);
             rc_maybe_show_action_banner(action);
             usleep(simulationMode ? 50000 : 10000);
@@ -2340,6 +2342,7 @@ static void rc_execute_action_sequence(NSArray *actions, NSString *triggerKey, B
         if ([type isEqualToString:@"if"]) {
             BOOL shouldRunBlock = rc_evaluate_if_condition(dictAction);
             SRLog(@"[%@] If %@ == %@ -> %@", triggerKey, dictAction[@"conditionKey"], dictAction[@"expectedValue"], shouldRunBlock ? @"TRUE" : @"FALSE");
+            RCTKEvent(@"condition", @{ @"key": [dictAction[@"conditionKey"] description] ?: @"", @"expected": [dictAction[@"expectedValue"] description] ?: @"", @"result": @(shouldRunBlock) });
             
             if (shouldRunBlock) {
                 // TRUE branch: just continue to next item. 
@@ -2363,6 +2366,7 @@ static void rc_execute_action_sequence(NSArray *actions, NSString *triggerKey, B
                             NSDictionary *elseIfDict = (NSDictionary *)item;
                             BOOL elseIfVal = rc_evaluate_if_condition(elseIfDict);
                             SRLog(@"[%@] Else If %@ == %@ -> %@", triggerKey, elseIfDict[@"conditionKey"], elseIfDict[@"expectedValue"], elseIfVal ? @"TRUE" : @"FALSE");
+                            RCTKEvent(@"condition", @{ @"key": [elseIfDict[@"conditionKey"] description] ?: @"", @"expected": [elseIfDict[@"expectedValue"] description] ?: @"", @"result": @(elseIfVal), @"elseIf": @YES });
                             if (elseIfVal) {
                                 idx = skipIdx;
                                 foundNextBranch = YES;
@@ -2487,7 +2491,25 @@ static void register_simulation_observers() {
 }
 
 // Execute all actions for a trigger
+// Test kit access (RCTestKit.x)
+NSString *RCHandleCommand(NSString *cmd) {
+    return handle_command(cmd);
+}
+
+NSDictionary *RCCopyTriggerConfig(void) {
+    load_trigger_config();
+    return [g_triggerConfig copy];
+}
+
+void RCSetTriggerConfig(NSDictionary *config) {
+    g_triggerConfig = [config mutableCopy];
+    save_trigger_config();
+}
+
 void RCExecuteTrigger(NSString *triggerKey) {
+    RCTKEvent(@"trigger", @{ @"key": triggerKey ?: @"" });
+    if (RCTKCaptureTrigger(triggerKey)) return;
+
     // Check for foreground exclusions (Safety/Blacklist)
     if (RC_IsForegroundAppExcluded()) {
         SRLog(@"Triggers SUPPRESSED for frontmost application (Excluded/Blacklisted)");
@@ -2533,6 +2555,7 @@ void RCExecuteTrigger(NSString *triggerKey) {
     }
     
     SRLog(@"TRIGGER FIRED: '%@' -> Executing %lu actions", triggerKey, (unsigned long)actions.count);
+    RCTKEvent(@"trigger.fired", @{ @"key": triggerKey, @"actions": @(actions.count) });
     
     // Execute on background queue to allow for delays and blocking operations
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -6583,6 +6606,8 @@ static NSString *handle_command(NSString *cmd) {
     if ([cleanCmd isEqualToString:@"log"]) {
         SRLog(@"Log request");
         return nil;
+    } else if ([cleanCmd isEqualToString:@"testkit"] || [cleanCmd hasPrefix:@"testkit "]) {
+        return RCTKHandleCommand([cleanCmd substringFromIndex:7]);
     } else if ([[cleanCmd lowercaseString] hasPrefix:@"autolock "] || [[cleanCmd lowercaseString] hasPrefix:@"auto-lock "]) {
         return rc_handle_autolock([cleanCmd substringFromIndex:[cleanCmd rangeOfString:@" "].location + 1]);
     } else if ([cleanCmd isEqualToString:@"proximity"] || [cleanCmd hasPrefix:@"proximity "]) {
@@ -10115,6 +10140,13 @@ static void start_web_server() {
                                 // Remove backslash escaping for forward slashes
                                 jsonStr = [jsonStr stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"];
                                 responseString = [NSString stringWithFormat:@"HTTP/1.1 200 OK\r\n%@Content-Type: application/json\r\nContent-Length: %lu\r\n\r\n%@", cors, (unsigned long)[jsonStr lengthOfBytesUsingEncoding:NSUTF8StringEncoding], jsonStr];
+                            } else if ([path hasPrefix:@"/api/testkit/"]) {
+                                load_trigger_config();
+                                if (![g_triggerConfig[@"webUIEnabled"] boolValue]) {
+                                    responseString = [NSString stringWithFormat:@"HTTP/1.1 403 Forbidden\r\n%@Content-Length: 17\r\n\r\nWeb UI is disabled", cors];
+                                } else {
+                                    responseString = RCTKHandleHTTP(new_socket, buffer, (long)valread, method, path, cors);
+                                }
                             } else if ([path hasPrefix:@"/api/command"]) {
                                 load_trigger_config();
                                 if (![g_triggerConfig[@"webUIEnabled"] boolValue]) {
@@ -10563,6 +10595,7 @@ static BOOL RC_ShouldDeferPowerPress(void) {
 static void RC_ReplayPowerPress(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         SRLog(@"[Power] ▶️ Replaying system power press (HID injection)");
+        RCTKEvent(@"replay.inject", nil);
         NSUInteger generation = ++g_replayGeneration;
         g_powerIsReplaying = YES;
         g_replayDownAwaitingUp = NO;
@@ -11453,6 +11486,7 @@ static void RC_CheckAndFirePower() {
         int count = g_powerClickCount;
         g_powerClickCount = 0;
         SRLog(@"POWER SEQUENCE ENDED. Final count: %d", count);
+        RCTKEvent(@"power.sequence", @{ @"count": @(count), @"iosSinglePresses": @(g_nativeSinglePressCount) });
 
         NSString *triggerKey = nil;
 
@@ -11509,13 +11543,16 @@ static void RC_CheckAndFirePower() {
                     NSUInteger presses = MIN(g_nativeSinglePressCount, (NSUInteger)count);
                     if (presses == 0) {
                         SRLog(@"[Power] iOS treated none of the %d press(es) as presses of their own (a chord or gesture) - not replaying", count);
+                        RCTKEvent(@"power.notReplayed", @{ @"count": @(count) });
                         return;
                     }
                     SRLog(@"[Power] iOS treated %lu of %d presses as presses of their own - replaying those", (unsigned long)presses, count);
+                    RCTKEvent(@"power.replaying", @{ @"presses": @(presses), @"count": @(count) });
                     RC_ReplayPowerPresses(presses);
                 });
                 return;
             }
+            RCTKEvent(@"power.replaying", @{ @"presses": @(count), @"count": @(count) });
             RC_ReplayPowerPresses(count);
         }
     }];
@@ -11720,6 +11757,7 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
             // processes it normally for the actual lock/sleep effect.
             if (g_powerIsReplaying) {
                 SRLog(@"[HID] (replay) Power %@ seen on the HID bus", down ? @"DOWN" : @"UP");
+                RCTKEvent(@"hid.power", @{ @"down": @((BOOL)(down != 0)), @"replay": @YES });
                 if (down) g_replayDownAwaitingUp = YES;
                 return;
             }
@@ -11741,6 +11779,7 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
                     g_powerIsDown = YES;
                     lastPowerDownTime = now;
                     SRLog(@"[HID] ⚡️ Power DOWN");
+                    RCTKEvent(@"hid.power", @{ @"down": @YES });
                     
                     // SUPPRESS TOUCH ID HOLD (on Power Wake/Press):
                     // If user is pressing power, they might be waking to unlock.
@@ -11789,6 +11828,7 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
                     }
                 }
             } else { // UP
+                RCTKEvent(@"hid.power", @{ @"down": @NO });
                 // Power is up, so the screenshot gesture can no longer fire.
                 dispatch_async(dispatch_get_main_queue(), ^{
                     RC_SetScreenshotRecognizerSuppressed(NO);
@@ -11846,6 +11886,7 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
             }
 
             if (mappedUsage == kHIDUsage_Csmr_VolumeIncrement) g_volUpIsDown = !!down;
+            RCTKEvent(@"hid.volume", @{ @"button": mappedUsage == kHIDUsage_Csmr_VolumeIncrement ? @"up" : @"down", @"down": @((BOOL)(down != 0)) });
             if (mappedUsage == kHIDUsage_Csmr_VolumeDecrement) g_volDownIsDown = !!down;
             
             // Check for Power + Volume combination.
@@ -12107,6 +12148,7 @@ static void setup_background_hid_listener() {
             // The injected press's own release: hand it through, and the
             // replay is complete.
             SRLog(@"[Power] Replay: injected release reached performButtonUpPreActions - replay complete");
+            RCTKEvent(@"replay.complete", nil);
             g_replayAwaitingSinglePress = YES;
             g_replayDownAwaitingUp = NO;
             g_powerIsReplaying = NO;
@@ -12186,6 +12228,7 @@ static void setup_background_hid_listener() {
     // listener entirely - the count and the %orig decision can no longer disagree.
     if (g_powerDeferActive) {
         g_powerClickCount++;
+        RCTKEvent(@"power.click", @{ @"count": @(g_powerClickCount) });
         // Timed at the release: iOS doesn't deliver a quick second press-down here at
         // all, but every release arrives, and the gaps between them match the presses'
         if (g_sequencePressCount < RC_MAX_SEQUENCE_PRESSES) {
@@ -12226,6 +12269,7 @@ static void setup_background_hid_listener() {
 
 - (void)performLongPressActions {
     SRLog(@"performLongPressActions called - g_lockButtonTriggered=%d, force=%d", g_lockButtonTriggered, g_forceSystemLongPress);
+    RCTKEvent(@"ios.longPress", nil);
     
     if (g_forceSystemLongPress) {
         SRLog(@"Allowing System Power Off (Stage 2)");
@@ -12283,6 +12327,7 @@ static void setup_background_hid_listener() {
     }
 
     SRLog(@"performDoublePressActions called (System)");
+    RCTKEvent(@"ios.doublePress", nil);
     // We handle double press manually in performButtonUpPreActions to support Triple/Quad clicks.
     // So we do NOT fire "power_double_tap" here to avoid duplicates - our manual
     // counter fires it independently if configured.
@@ -12338,6 +12383,7 @@ static void setup_background_hid_listener() {
     if (g_replayAwaitingSinglePress) {
         g_replayAwaitingSinglePress = NO;
         SRLog(@"[Power] Native singlePress: fired for the replayed press");
+        RCTKEvent(@"ios.singlePress", @{ @"press": @"replayed" });
         %orig;
         return;
     }
@@ -12345,6 +12391,7 @@ static void setup_background_hid_listener() {
     // this one waits on) also frees it to fire sooner during the combo.
     if (g_powerPressIsCombo && !RC_IsForegroundAppExcluded()) {
         SRLog(@"Suppressing native singlePress: - a Power + Volume combo consumed this press");
+        RCTKEvent(@"ios.singlePress", @{ @"press": @"combo" });
         return;
     }
     // The real press's own singlePress: is usually a visible no-op, but on the
@@ -12355,6 +12402,7 @@ static void setup_background_hid_listener() {
     // off, excluded app) pass through untouched.
     if (g_powerDeferActive && !RC_IsForegroundAppExcluded()) {
         g_nativeSinglePressCount++;
+        RCTKEvent(@"ios.singlePress", @{ @"press": @"heldBack", @"count": @(g_nativeSinglePressCount) });
         // The press's sequence already ended and was waiting on this
         if (g_replayAwaitingSequenceCount && g_nativeSinglePressCount >= g_replayAwaitingSequenceCount) {
             NSUInteger presses = g_replayAwaitingSequenceCount;
@@ -12367,6 +12415,7 @@ static void setup_background_hid_listener() {
         return;
     }
     SRLog(@"[Power] Native singlePress: fired");
+    RCTKEvent(@"ios.singlePress", @{ @"press": @"passed" });
     %orig;
 }
 
@@ -13173,6 +13222,7 @@ static void rc_camera_launched_notification_callback(CFNotificationCenterRef cen
                     s_last_camera_app_trigger = [[NSDate date] timeIntervalSince1970];
                 }
                 SRLog(@"[AppLaunch] App became Active: %@", effectiveBundleId);
+                RCTKEvent(@"app.foreground", @{ @"bundle": effectiveBundleId ?: @"" });
                 NSString *triggerKey = [NSString stringWithFormat:@"app_launch_%@", effectiveBundleId];
                 RCExecuteTrigger(triggerKey);
             }
