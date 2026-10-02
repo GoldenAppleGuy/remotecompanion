@@ -925,6 +925,16 @@ static void rc_show_hud_toast_ex(NSString *title, NSString *subtitle, NSString *
         // Determine height based on whether we have a subtitle
         BOOL hasSubtitle = (subtitle && ![subtitle isEqualToString:@""]);
         CGFloat pillHeight = hasSubtitle ? 50.0 : 40.0;
+        // A prompt's instruction wraps instead of being cut off, clear of the icon
+        CGFloat subtitleHeight = 16.0;
+        BOOL wrapSubtitle = passThrough && hasSubtitle;
+        if (wrapSubtitle) {
+            CGRect needed = [subtitle boundingRectWithSize:CGSizeMake(pillWidth - 2 * leftMargin, CGFLOAT_MAX)
+                                                   options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                                attributes:@{NSFontAttributeName: subtitleFont} context:nil];
+            subtitleHeight = MAX(16.0, ceil(needed.size.height));
+            pillHeight += subtitleHeight - 16.0;
+        }
         
         CGFloat pillX = (screenWidth - pillWidth) / 2.0;
         CGFloat startY = -pillHeight - 20.0;
@@ -987,7 +997,7 @@ static void rc_show_hud_toast_ex(NSString *title, NSString *subtitle, NSString *
         UIBlurEffect *blurEffect = [UIBlurEffect effectWithStyle:blurStyle];
         UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:blurEffect];
         blurView.frame = CGRectMake(0, 0, pillWidth, pillHeight);
-        blurView.layer.cornerRadius = pillHeight / 2.0;
+        blurView.layer.cornerRadius = MIN(pillHeight, 50.0) / 2.0;
         blurView.layer.masksToBounds = YES;
         [rootVC.view addSubview:blurView];
         
@@ -1020,7 +1030,9 @@ static void rc_show_hud_toast_ex(NSString *title, NSString *subtitle, NSString *
             titleLabel.textAlignment = alignment;
             [rootVC.view addSubview:titleLabel];
             
-            UILabel *subLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 26.0, pillWidth, 16.0)];
+            UILabel *subLabel = [[UILabel alloc] initWithFrame:wrapSubtitle ? CGRectMake(leftMargin, 26.0, pillWidth - 2 * leftMargin, subtitleHeight)
+                                                                            : CGRectMake(0, 26.0, pillWidth, 16.0)];
+            subLabel.numberOfLines = wrapSubtitle ? 0 : 1;
             subLabel.text = subtitle;
             subLabel.textColor = subColor;
             subLabel.font = subtitleFont;

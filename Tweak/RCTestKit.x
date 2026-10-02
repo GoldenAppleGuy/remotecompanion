@@ -16,7 +16,8 @@
 //   POST /api/testkit/lua               body (or ?code=): Lua; returns what it printed and returned
 //   GET  /api/testkit/suites            the test suites
 //   POST /api/testkit/suite/run?name=   run one (conditions, toggles, all, guided, differential); &wait=1 returns the
-//                                       report when done; &disruptive=1 adds Wi-Fi etc. toggles
+//                                       report when done; &disruptive=1 adds Wi-Fi etc. toggles;
+//                                       differential: &steps=id,id runs only those, &repeat=N each N times
 //   POST /api/testkit/suite/skip        skip the current guided step; suite/stop ends the run
 //   GET  /api/testkit/report[?id=]      the current/last run, or a saved one
 //   GET  /api/testkit/reports           saved report ids
@@ -796,10 +797,17 @@ static NSArray<NSDictionary *> *RCTKDifferentialSteps(BOOL hasHome) {
         @{ @"id": @"power_double", @"buttons": @[@"power"], @"prompt": @"Double-press Power" },
         @{ @"id": @"power_triple", @"buttons": @[@"power"], @"prompt": @"Triple-press Power" },
         @{ @"id": @"power_volume_up", @"buttons": @[@"power", @"volumeUp"], @"prompt": @"Press Power + Volume Up together" },
-        // Stock iOS sleeps or not depending on which is released last. "ordered": the
-        // passes are comparable only if the buttons went down and up in the same order.
-        @{ @"id": @"power_volume_down_hold", @"buttons": @[@"power", @"volumeDown"], @"prompt": @"Hold Volume Down, click Power, then let go of Volume Down", @"ordered": @YES },
-        @{ @"id": @"power_volume_down_inside", @"buttons": @[@"power", @"volumeDown"], @"prompt": @"Hold Power, click Volume Down, then let go of Power (quickly)", @"ordered": @YES },
+        // Stock iOS sleeps or not depending on which is released last. "ordered": a pass
+        // counts only if the buttons went down in "order" and "releasedLast" was let go
+        // clearly last (15 ms or more after the other) - what the prompt asks for.
+        @{ @"id": @"power_volume_down_hold", @"buttons": @[@"power", @"volumeDown"], @"ordered": @YES,
+           @"order": @[@"volumeDown", @"power"], @"releasedLast": @"volumeDown",
+           @"prompt": @"Hold Volume Down, click Power, keep holding Volume Down a moment, then let go",
+           @"hint": @"Press Volume Down first, and let go of it clearly after Power - count one beat" },
+        @{ @"id": @"power_volume_down_inside", @"buttons": @[@"power", @"volumeDown"], @"ordered": @YES,
+           @"order": @[@"power", @"volumeDown"], @"releasedLast": @"power",
+           @"prompt": @"Hold Power, click Volume Down, then let go of Power (keep it under half a second)",
+           @"hint": @"Press Power first, and let go of Volume Down before Power" },
         @{ @"id": @"home_power", @"buttons": @[@"home", @"power"], @"prompt": @"Press Home + Power together", @"home": @YES },
         @{ @"id": @"volume_up", @"buttons": @[@"volumeUp"], @"prompt": @"Press Volume Up once" },
         @{ @"id": @"volume_both", @"buttons": @[@"volumeUp", @"volumeDown"], @"prompt": @"Press Volume Up + Down together" },
@@ -952,7 +960,22 @@ static const NSUInteger kRCTKDifferentialAttempts = 3; // an inconclusive step i
 
 static void RCTKSuiteDifferential(NSMutableDictionary *run) {
     BOOL hasHome = RCTKHasHomeButton();
-    NSArray *steps = RCTKDifferentialSteps(hasHome);
+    // steps=id,id runs only those; repeat=N runs each N times in a row (ids get #2, #3...)
+    NSMutableArray *steps = [NSMutableArray array];
+    NSArray *only = [run[@"steps"] length] ? [run[@"steps"] componentsSeparatedByString:@","] : nil;
+    NSUInteger repeat = MIN(10, MAX(1, [run[@"repeat"] unsignedIntegerValue]));
+    for (NSDictionary *step in RCTKDifferentialSteps(hasHome)) {
+        if (only && ![only containsObject:step[@"id"]]) continue;
+        for (NSUInteger i = 1; i <= repeat; i++) {
+            NSMutableDictionary *copy = [step mutableCopy];
+            if (i > 1) copy[@"id"] = [NSString stringWithFormat:@"%@#%lu", step[@"id"], (unsigned long)i];
+            [steps addObject:copy];
+        }
+    }
+    if (!steps.count) {
+        RCTKRecordResult(run, @"differential", @"skip", @{ @"reason": [NSString stringWithFormat:@"no steps match '%@'", run[@"steps"]] }, -1);
+        return;
+    }
     NSDictionary *base = RCCopyTriggerConfig();
     NSDictionary *stockConfig = RCTKConfigWith(base, NO, NO);
     NSDictionary *tweakConfig = RCTKConfigWith(base, YES, YES);
@@ -1011,6 +1034,13 @@ static void RCTKSuiteDifferential(NSMutableDictionary *run) {
                 status = @"skip";
                 detail[@"reason"] = @"not the requested input - Power was held long enough for iOS's long press (over 0.5 s)";
                 retryHint = @"Power was held too long - keep it quick";
+            } else if ([step[@"ordered"] boolValue] &&
+                       (![stockInputs[@"order"] isEqual:step[@"order"]] || ![tweakInputs[@"order"] isEqual:step[@"order"]] ||
+                        ![stockInputs[@"releasedLast"] isEqual:step[@"releasedLast"]] || ![tweakInputs[@"releasedLast"] isEqual:step[@"releasedLast"]])) {
+                status = @"skip";
+                detail[@"reason"] = [NSString stringWithFormat:@"not the requested input - wanted %@ down first and %@ released last",
+                                     [step[@"order"] firstObject], step[@"releasedLast"]];
+                retryHint = step[@"hint"];
             } else if (![stockInputs isEqual:tweakInputs]) {
                 status = @"skip";
                 detail[@"reason"] = @"inconclusive - the presses (or their order) differed between the two passes";
@@ -1076,7 +1106,8 @@ static NSDictionary *RCTKSummarize(NSMutableDictionary *run) {
     return report;
 }
 
-static NSDictionary *RCTKRunSuite(NSString *name, BOOL disruptive, BOOL wait) {
+static NSDictionary *RCTKRunSuite(NSString *name, NSDictionary *params) {
+    BOOL disruptive = [params[@"disruptive"] boolValue], wait = [params[@"wait"] boolValue];
     if (![@[@"conditions", @"toggles", @"all", @"guided", @"differential"] containsObject:name ?: @""]) {
         return @{ @"error": [NSString stringWithFormat:@"unknown suite '%@'", name ?: @""], @"suites": RCTKSuites()[@"suites"] };
     }
@@ -1090,6 +1121,7 @@ static NSDictionary *RCTKRunSuite(NSString *name, BOOL disruptive, BOOL wait) {
             @"id": [NSString stringWithFormat:@"%@-%@", [formatter stringFromDate:[NSDate date]], name],
             @"suite": name, @"disruptive": @(disruptive), @"status": @"running",
             @"started": @(RCTKNowMs()), @"device": probe[@"device"], @"session": g_tkSession ?: @"",
+            @"steps": params[@"steps"] ?: @"", @"repeat": @(MAX(1, [params[@"repeat"] integerValue])),
             @"tests": [NSMutableArray array]
         } mutableCopy];
         g_tkRun = run;
@@ -1215,7 +1247,7 @@ static NSDictionary *RCTKDispatch(NSString *endpoint, NSDictionary<NSString *, N
     if ([endpoint isEqualToString:@"suites"]) return RCTKSuites();
     if ([endpoint isEqualToString:@"suite/run"]) {
         NSString *name = params[@"name"] ?: body;
-        return RCTKRunSuite(name, [params[@"disruptive"] boolValue], [params[@"wait"] boolValue]);
+        return RCTKRunSuite(name, params);
     }
     if ([endpoint isEqualToString:@"suite/skip"]) { g_tkSkipStep = YES; return @{ @"skip": @YES }; }
     if ([endpoint isEqualToString:@"suite/stop"]) { g_tkStopRun = YES; return @{ @"stop": @YES }; }
