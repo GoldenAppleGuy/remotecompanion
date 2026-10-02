@@ -11701,6 +11701,11 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
     }
     
     if (type == 29) { // Biometric Event (Finger on sensor)
+        // The event's first fields (event type, level, ...), to tell a finger landing from a
+        // lift or a finished scan
+        NSMutableArray *fields = [NSMutableArray array];
+        for (int field = 0; field < 6; field++) [fields addObject:@(IOHIDEventGetIntegerValue(event, (29 << 16) | field))];
+        RCTKEvent(@"hid.biometric", @{ @"fields": fields });
         // Toggle Logic for "Hold" (Fire by itself after 1.0s)
         // Assumption: Sensor sends event on DOWN ... (Silence) ... and UP.
         

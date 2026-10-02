@@ -17,10 +17,14 @@
 //   GET  /api/testkit/suites            the test suites
 //   POST /api/testkit/suite/run?name=   run one (conditions, toggles, all, guided, differential); &wait=1 returns the
 //                                       report when done; &disruptive=1 adds Wi-Fi etc. toggles;
-//                                       differential: &steps=id,id runs only those, &repeat=N each N times
+//                                       guided / differential: &steps=id,id runs only those;
+//                                       differential: &repeat=N runs each N times
 //   POST /api/testkit/suite/skip        skip the current guided step; suite/stop ends the run
-//   GET  /api/testkit/report[?id=]      the current/last run, or a saved one
-//   GET  /api/testkit/reports           saved report ids
+//   GET  /api/testkit/report[?id=]      the current/last run, or a saved one; &redact=1 replaces personal
+//                                       values (Wi-Fi / Bluetooth names, third-party app ids) with placeholders
+//                                       and adds "redacted": true if there were any
+//   GET  /api/testkit/reports           saved reports: ids, and a summary of each
+//   POST /api/testkit/report/delete?id= delete a saved report
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -205,6 +209,10 @@ static NSDictionary *RCTKProbeWith(BOOL light) {
         ui[@"frontApp"] = RCTKSend(frontApp, @"bundleIdentifier") ?: @"com.apple.springboard";
         ui[@"siriVisible"] = RCTKSendBool(NSClassFromString(@"SBAssistantController"), @"isVisible") ?: [NSNull null];
         ui[@"controlCenterVisible"] = RCTKSendBool(RCTKShared(@"SBControlCenterController", @"sharedInstanceIfExists"), @"isVisible") ?: @NO;
+        // Spotlight (a swipe down on the home screen), and the Today view / App Library
+        id iconController = RCTKShared(@"SBIconController", @"sharedInstance");
+        ui[@"spotlightVisible"] = RCTKSendBool(iconController, @"isAnySearchVisibleOrTransitioning") ?: @NO;
+        ui[@"homeOverlayVisible"] = RCTKSendBool(iconController, @"isShowingHomeScreenOverlay") ?: @NO;
         id switcher = RCTKShared(@"SBMainSwitcherViewController", @"sharedInstanceIfExists");
         ui[@"switcherVisible"] = RCTKSendBool(switcher, @"isMainSwitcherVisible") ?: RCTKSendBool(RCTKShared(@"SBMainSwitcherControllerCoordinator", @"sharedInstance"), @"isAnySwitcherVisible") ?: [NSNull null];
         ui[@"rotationLocked"] = RCTKSendBool(RCTKShared(@"SBOrientationLockManager", @"sharedInstance"), @"isUserLocked") ?: [NSNull null];
@@ -637,7 +645,18 @@ static NSArray<NSString *> *RCTKGuidedTriggerKeys(void) {
              @"trigger_statusbar_left_hold", @"trigger_statusbar_center_hold", @"trigger_statusbar_right_hold",
              @"trigger_statusbar_swipe_left", @"trigger_statusbar_swipe_right", @"trigger_statusbar_double_tap",
              @"trigger_home_double_click", @"trigger_home_triple_click", @"trigger_home_quadruple_click",
-             @"trigger_ringer_mute", @"trigger_ringer_unmute", @"trigger_ringer_toggle"];
+             @"trigger_ringer_mute", @"trigger_ringer_unmute", @"trigger_ringer_toggle",
+             @"shake", @"trigger_edge_left_swipe_up", @"trigger_edge_left_swipe_down", @"trigger_edge_right_swipe_up", @"trigger_edge_right_swipe_down",
+             @"trigger_bottombar_swipe_left", @"trigger_bottombar_swipe_right",
+             @"trigger_bottom_swipe_up_left", @"trigger_bottom_swipe_up_center", @"trigger_bottom_swipe_up_right",
+             @"touchid_tap", @"touchid_hold",
+             @"trigger_device_lock", @"trigger_device_unlock", @"trigger_power_connect", @"trigger_power_disconnect"];
+}
+
+// State-change triggers that other steps can set off along the way (a Power press that
+// locks the phone): they count in their own steps, and are ignored in the rest
+static NSSet<NSString *> *RCTKAmbientTriggerKeys(void) {
+    return [NSSet setWithArray:@[@"trigger_device_lock", @"trigger_device_unlock", @"trigger_power_connect", @"trigger_power_disconnect"]];
 }
 
 static BOOL RCTKHasHomeButton(void) {
@@ -677,6 +696,23 @@ static NSArray<NSDictionary *> *RCTKGuidedSteps(BOOL hasHome) {
         @{ @"id": @"home_double_click", @"prompt": @"Double-click Home", @"expect": @[@"trigger_home_double_click"], @"home": @YES },
         @{ @"id": @"home_triple_click", @"prompt": @"Triple-click Home", @"expect": @[@"trigger_home_triple_click"], @"home": @YES },
         @{ @"id": @"home_quadruple_click", @"prompt": @"Click Home 4 times", @"expect": @[@"trigger_home_quadruple_click"], @"home": @YES },
+        @{ @"id": @"edge_left_swipe_up", @"prompt": @"Put a finger on the left edge of the screen and slide it up", @"expect": @[@"trigger_edge_left_swipe_up"] },
+        @{ @"id": @"edge_left_swipe_down", @"prompt": @"Put a finger on the left edge of the screen and slide it down", @"expect": @[@"trigger_edge_left_swipe_down"] },
+        @{ @"id": @"edge_right_swipe_up", @"prompt": @"Put a finger on the right edge of the screen and slide it up", @"expect": @[@"trigger_edge_right_swipe_up"] },
+        @{ @"id": @"edge_right_swipe_down", @"prompt": @"Put a finger on the right edge of the screen and slide it down", @"expect": @[@"trigger_edge_right_swipe_down"] },
+        @{ @"id": @"bottombar_swipe_left", @"prompt": @"Swipe left along the very bottom of the screen", @"expect": @[@"trigger_bottombar_swipe_left"] },
+        @{ @"id": @"bottombar_swipe_right", @"prompt": @"Swipe right along the very bottom of the screen", @"expect": @[@"trigger_bottombar_swipe_right"] },
+        @{ @"id": @"bottom_swipe_up_left", @"prompt": @"Swipe up from the bottom-left corner", @"expect": @[@"trigger_bottom_swipe_up_left"], @"enable": @[@"trigger_bottom_swipe_up_left"] },
+        @{ @"id": @"bottom_swipe_up_center", @"prompt": @"Swipe up from the bottom-center", @"expect": @[@"trigger_bottom_swipe_up_center"], @"enable": @[@"trigger_bottom_swipe_up_center"] },
+        @{ @"id": @"bottom_swipe_up_right", @"prompt": @"Swipe up from the bottom-right corner", @"expect": @[@"trigger_bottom_swipe_up_right"], @"enable": @[@"trigger_bottom_swipe_up_right"] },
+        @{ @"id": @"shake", @"prompt": @"Shake the phone", @"expect": @[@"shake"] },
+        @{ @"id": @"touchid_tap", @"prompt": @"Touch the Home button lightly, without pressing it", @"expect": @[@"touchid_tap"], @"home": @YES },
+        @{ @"id": @"touchid_hold", @"prompt": @"Rest a finger on the Home button for a second, without pressing it", @"expect": @[@"touchid_hold"], @"home": @YES },
+        // Last: they leave the phone locked or need a cable
+        @{ @"id": @"device_lock", @"prompt": @"Lock the phone with the Power button", @"expect": @[@"trigger_device_lock"] },
+        @{ @"id": @"device_unlock", @"prompt": @"Unlock the phone", @"expect": @[@"trigger_device_unlock"], @"keepScreen": @YES },
+        @{ @"id": @"power_connect", @"prompt": @"Plug in a charger (or wait 15 s to skip)", @"expect": @[@"trigger_power_connect"], @"optional": @YES },
+        @{ @"id": @"power_disconnect", @"prompt": @"Unplug the charger (or wait 15 s to skip)", @"expect": @[@"trigger_power_disconnect"], @"optional": @YES },
     ]];
     NSIndexSet *wrongDevice = [steps indexesOfObjectsPassingTest:^BOOL(NSDictionary *step, NSUInteger idx, BOOL *stop) {
         return step[@"home"] && [step[@"home"] boolValue] != hasHome;
@@ -694,37 +730,180 @@ static NSArray<NSString *> *RCTKCapturedSince(unsigned long long since) {
     return keys;
 }
 
+// What a run is doing now, for anyone following it (the app shows it): phase "ready"
+// (waiting for the start press) or "step", and step x of y
+static void RCTKSetProgress(NSMutableDictionary *run, NSString *phase, NSUInteger step, NSUInteger of, NSString *title) {
+    @synchronized (run) {
+        run[@"progress"] = @{ @"phase": phase, @"step": @(step), @"of": @(of), @"title": title ?: @"" };
+    }
+}
+
+// What's covering the home screen right now (an app, the switcher, Control Center, Siri,
+// Spotlight, the Today view or App Library),
+// or nil if it's showing. Nothing is reported while the phone is locked.
+static NSString *RCTKOffHomeScreen(NSDictionary *probe) {
+    if ([probe[@"locked"] boolValue]) return nil;
+    if ([probe[@"controlCenterVisible"] boolValue]) return @"controlCenter";
+    if ([probe[@"switcherVisible"] boolValue]) return @"switcher";
+    if ([probe[@"siriVisible"] boolValue]) return @"siri";
+    if ([probe[@"spotlightVisible"] boolValue]) return @"spotlight";
+    if ([probe[@"homeOverlayVisible"] boolValue]) return @"todayOrLibrary";
+    NSString *front = probe[@"frontApp"];
+    if (front.length && ![front isEqualToString:@"com.apple.springboard"]) return front;
+    return nil;
+}
+
+// SpringBoard's own home action for an app or Siri in front - the handler a Home press
+// reaches, so it's no Home button event the HID listener would count. Its name differs:
+// iOS 15+ takes the window scene.
+static void RCTKHomeAction(void) {
+    id ui = RCTKShared(@"SBUIController", @"sharedInstance");
+    SEL forScene = NSSelectorFromString(@"handleHomeButtonSinglePressUpForWindowScene:");
+    if ([ui respondsToSelector:forScene]) {
+        id manager = RCTKSend([UIApplication sharedApplication], @"windowSceneManager");
+        id scene = RCTKSend(manager, @"embeddedDisplayWindowScene");
+        ((BOOL (*)(id, SEL, id))objc_msgSend)(ui, forScene, scene);
+        return;
+    }
+    for (NSString *name in @[@"handleHomeButtonSinglePressUp", @"handleHomeButtonTap", @"clickedMenuButton"]) {
+        if (![ui respondsToSelector:NSSelectorFromString(name)]) continue;
+        ((void (*)(id, SEL))objc_msgSend)(ui, NSSelectorFromString(name));
+        return;
+    }
+}
+
+// Puts the home screen back before a guided step, so whatever the last one opened (a
+// swipe can bring up Spotlight, Control Center or another app; a Home double-click the
+// switcher) doesn't get in the way. Closing one thing can reveal another (the switcher
+// goes back to the app behind it), so it repeats a few times. Returns what it closed.
+static NSString *RCTKReturnHome(void) {
+    NSMutableArray *closed = [NSMutableArray array];
+    for (int attempt = 0; attempt < 3; attempt++) {
+        NSString *covering = RCTKOffHomeScreen(RCTKProbeLight());
+        if (!covering) break;
+        [closed addObject:covering];
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            id icons = RCTKShared(@"SBIconController", @"sharedInstance");
+            if ([covering isEqualToString:@"controlCenter"]) {
+                id controlCenter = RCTKShared(@"SBControlCenterController", @"sharedInstanceIfExists");
+                if ([controlCenter respondsToSelector:@selector(dismissAnimated:)]) ((void (*)(id, SEL, BOOL))objc_msgSend)(controlCenter, @selector(dismissAnimated:), YES);
+            } else if ([covering isEqualToString:@"switcher"]) {
+                // iOS 15+ / iOS 14
+                id switcher = RCTKShared(@"SBMainSwitcherControllerCoordinator", @"sharedInstance") ?: RCTKShared(@"SBMainSwitcherViewController", @"sharedInstance");
+                SEL dismiss = NSSelectorFromString(@"dismissMainSwitcherNoninteractivelyAnimated:");
+                // Then the home action, which is what a Home press does in the switcher
+                if (attempt == 0 && [switcher respondsToSelector:dismiss]) ((BOOL (*)(id, SEL, BOOL))objc_msgSend)(switcher, dismiss, YES);
+                else RCTKHomeAction();
+            } else if ([covering isEqualToString:@"spotlight"] && [icons respondsToSelector:@selector(dismissSearchView)]) {
+                ((void (*)(id, SEL))objc_msgSend)(icons, @selector(dismissSearchView));
+            } else if ([covering isEqualToString:@"todayOrLibrary"]) {
+                // iOS 15+ / iOS 14 names
+                for (NSString *name in @[@"dismissHomeScreenOverlaysAnimated:", @"dismissHomeScreenOverlayAnimated:"]) {
+                    if (![icons respondsToSelector:NSSelectorFromString(name)]) continue;
+                    ((void (*)(id, SEL, BOOL))objc_msgSend)(icons, NSSelectorFromString(name), YES);
+                    break;
+                }
+            } else {
+                RCTKHomeAction(); // an app, or Siri
+            }
+        });
+        double start = RCTKNowMs();
+        while ([covering isEqual:RCTKOffHomeScreen(RCTKProbeLight())] && RCTKNowMs() - start < 1500) [NSThread sleepForTimeInterval:0.1];
+    }
+    if (!closed.count) return nil;
+    RCTKEvent(@"testkit.returnHome", @{ @"closed": closed, @"home": @(RCTKOffHomeScreen(RCTKProbeLight()) == nil) });
+    [NSThread sleepForTimeInterval:0.5];
+    return [closed componentsJoinedByString:@", "];
+}
+
+// Suites that need the user's hands start only once they're on the home screen and press
+// Volume Up - a run started from the app or the API would otherwise begin before they're
+// at the phone, and some triggers (the status bar's) only work on the home screen. Capture
+// is on by then, so the press doesn't run any trigger. Returns NO if the run was stopped
+// or nobody started it within two minutes.
+static BOOL RCTKWaitForReady(NSMutableDictionary *run, NSString *title, NSUInteger steps) {
+    RCTKSetProgress(run, @"ready", 0, steps, title);
+    NSString *prompt = @"Go to the home screen, then press Volume Up to start";
+    RCShowPrompt(title, prompt, @"play.circle", 120.0);
+    unsigned long long since = RCTKRecord(@"mark", @{ @"label": @"ready?" });
+    double start = RCTKNowMs();
+    while (!g_tkStopRun && RCTKNowMs() - start < 120000) {
+        NSArray *presses = RCTKJournal(since, @"hid.volume", 0)[@"events"];
+        for (NSDictionary *event in presses) {
+            since = [event[@"seq"] unsignedLongLongValue];
+            if (![event[@"button"] isEqualToString:@"up"] || ![event[@"down"] boolValue]) continue;
+            if ([RCTKProbeLight()[@"frontApp"] isEqualToString:@"com.apple.springboard"]) {
+                RCShowPrompt(title, [NSString stringWithFormat:@"%lu steps - starting...", (unsigned long)steps], @"checklist", 2.5);
+                [NSThread sleepForTimeInterval:3.0];
+                return YES;
+            }
+            RCShowPrompt(title, @"Go to the home screen first, then press Volume Up", @"house", 120.0);
+        }
+        [NSThread sleepForTimeInterval:0.1];
+    }
+    RCHidePrompt();
+    RCTKRecordResult(run, [run[@"suite"] stringByAppendingString:@".start"], @"skip",
+                     @{ @"reason": g_tkStopRun ? @"run stopped" : @"not started - nobody pressed Volume Up on the home screen" }, -1);
+    return NO;
+}
+
 static void RCTKSuiteGuided(NSMutableDictionary *run) {
     BOOL hasHome = RCTKHasHomeButton();
     NSArray *steps = RCTKGuidedSteps(hasHome);
+    // steps=id,id runs only those
+    if ([run[@"steps"] length]) {
+        NSArray *only = [run[@"steps"] componentsSeparatedByString:@","];
+        steps = [steps filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"id IN %@", only]];
+        if (!steps.count) {
+            RCTKRecordResult(run, @"guided", @"skip", @{ @"reason": [NSString stringWithFormat:@"no steps match '%@'", run[@"steps"]] }, -1);
+            return;
+        }
+    }
     NSSet *buttonKeys = [NSSet setWithArray:RCTKGuidedTriggerKeys()];
     @synchronized (run) { run[@"homeButton"] = @(hasHome); }
 
     // Bind every button/gesture trigger to a placeholder action, and record instead of running
     NSMutableDictionary *config = [RCCopyTriggerConfig() mutableCopy] ?: [NSMutableDictionary dictionary];
     NSMutableDictionary *triggers = [config[@"triggers"] mutableCopy] ?: [NSMutableDictionary dictionary];
+    // Triggers a step lists under "enable" are on only during that step: the bottom swipe-up
+    // zones take the bottom edge from iOS while on, which blocks swiping up to unlock or go home
+    NSMutableSet *stepOnly = [NSMutableSet set];
+    for (NSDictionary *step in steps) [stepOnly addObjectsFromArray:step[@"enable"] ?: @[]];
     for (NSString *key in RCTKGuidedTriggerKeys()) {
         NSMutableDictionary *trigger = [triggers[key] mutableCopy] ?: [NSMutableDictionary dictionary];
-        trigger[@"enabled"] = @YES;
+        trigger[@"enabled"] = @(![stepOnly containsObject:key]);
         trigger[@"actions"] = @[@"testkit noop"];
         triggers[key] = trigger;
     }
     config[@"triggers"] = triggers;
     config[@"masterEnabled"] = @YES;
     RCSetTriggerConfig(config);
+    NSDictionary *(^configEnabling)(NSArray *) = ^NSDictionary *(NSArray *keys) {
+        NSMutableDictionary *withKeys = [config mutableCopy];
+        NSMutableDictionary *stepTriggers = [config[@"triggers"] mutableCopy];
+        for (NSString *key in keys) {
+            NSMutableDictionary *trigger = [stepTriggers[key] mutableCopy];
+            trigger[@"enabled"] = @YES;
+            stepTriggers[key] = trigger;
+        }
+        withKeys[@"triggers"] = stepTriggers;
+        return withKeys;
+    };
     g_tkCapture = YES;
     RCTKEvent(@"testkit.capture", @{ @"on": @YES });
 
-    RCShowPrompt(@"RemoteCompanion Test", [NSString stringWithFormat:@"%lu steps - starting...", (unsigned long)steps.count], @"checklist", 3.0);
-    [NSThread sleepForTimeInterval:3.5];
+    BOOL started = RCTKWaitForReady(run, @"RemoteCompanion Test", steps.count);
 
     NSUInteger index = 0, passed = 0;
-    for (NSDictionary *step in steps) {
+    for (NSDictionary *step in started ? steps : @[]) {
         index++;
         if (g_tkStopRun) break;
         g_tkSkipStep = NO;
         NSString *testId = [@"guided." stringByAppendingString:step[@"id"]];
         NSString *title = [NSString stringWithFormat:@"Step %lu of %lu", (unsigned long)index, (unsigned long)steps.count];
+        RCTKSetProgress(run, @"step", index, steps.count, step[@"prompt"]);
+        if (![step[@"keepScreen"] boolValue]) RCTKReturnHome();
+        if ([step[@"enable"] count]) RCSetTriggerConfig(configEnabling(step[@"enable"]));
         unsigned long long since = RCTKRecord(@"mark", @{ @"label": testId });
         RCShowPrompt(title, step[@"prompt"], @"hand.point.up.left", 60.0);
 
@@ -739,12 +918,13 @@ static void RCTKSuiteGuided(NSMutableDictionary *run) {
             if (got.count && firstAt < 0) firstAt = RCTKNowMs();
             if (allExpected) break;
             if (g_tkSkipStep || g_tkStopRun) break;
-            if (RCTKNowMs() - start > 20000) { timedOut = YES; break; }
+            if (RCTKNowMs() - start > ([step[@"optional"] boolValue] ? 15000 : 20000)) { timedOut = YES; break; }
             [NSThread sleepForTimeInterval:0.05];
         }
         if (g_tkSkipStep || g_tkStopRun || timedOut) {
             NSString *reason = timedOut ? @"timed out - no input detected" : (g_tkStopRun ? @"run stopped" : @"skipped");
             RCTKRecordResult(run, testId, @"skip", @{ @"reason": reason, @"got": RCTKCapturedSince(since) }, -1);
+            if ([step[@"enable"] count]) RCSetTriggerConfig(config);
             RCShowPrompt(title, timedOut ? @"Skipped (timed out)" : @"Skipped", @"forward.fill", 1.5);
             [NSThread sleepForTimeInterval:2.0];
             continue;
@@ -753,7 +933,12 @@ static void RCTKSuiteGuided(NSMutableDictionary *run) {
         [NSThread sleepForTimeInterval:1.2]; // anything that fires a moment later counts too
 
         NSMutableArray *got = [NSMutableArray array];
-        for (NSString *key in RCTKCapturedSince(since)) if ([buttonKeys containsObject:key]) [got addObject:key];
+        NSSet *ambient = RCTKAmbientTriggerKeys();
+        for (NSString *key in RCTKCapturedSince(since)) {
+            if (![buttonKeys containsObject:key]) continue;
+            if ([ambient containsObject:key] && ![expect containsObject:key]) continue;
+            [got addObject:key];
+        }
         NSMutableArray *problems = [NSMutableArray array];
         NSCountedSet *counts = [[NSCountedSet alloc] initWithArray:got];
         for (NSString *key in expect) {
@@ -769,7 +954,11 @@ static void RCTKSuiteGuided(NSMutableDictionary *run) {
         if (pass) passed++;
         NSMutableDictionary *detail = [@{ @"expected": expect, @"got": got } mutableCopy];
         if (problems.count) detail[@"problems"] = problems;
+        // iOS's own response to the same gesture, if it opened something (Control Center, an app)
+        NSString *leftOpen = RCTKOffHomeScreen(RCTKProbeLight());
+        if (leftOpen) detail[@"leftOpen"] = leftOpen;
         RCTKRecordResult(run, testId, pass ? @"pass" : @"fail", detail, detected);
+        if ([step[@"enable"] count]) RCSetTriggerConfig(config);
         RCShowPrompt(title, pass ? @"Passed" : [@"Failed: " stringByAppendingString:problems.firstObject],
                      pass ? @"checkmark.circle.fill" : @"xmark.circle.fill", 1.5);
         [NSThread sleepForTimeInterval:2.0];
@@ -777,7 +966,7 @@ static void RCTKSuiteGuided(NSMutableDictionary *run) {
 
     g_tkCapture = NO;
     RCTKEvent(@"testkit.capture", @{ @"on": @NO });
-    RCShowPrompt(@"RemoteCompanion Test", [NSString stringWithFormat:@"Done: %lu of %lu passed", (unsigned long)passed, (unsigned long)steps.count],
+    if (started) RCShowPrompt(@"RemoteCompanion Test", [NSString stringWithFormat:@"Done: %lu of %lu passed", (unsigned long)passed, (unsigned long)steps.count],
                  @"flag.checkered", 3.0);
 }
 
@@ -983,14 +1172,14 @@ static void RCTKSuiteDifferential(NSMutableDictionary *run) {
     g_tkCapture = YES;
     RCTKEvent(@"testkit.capture", @{ @"on": @YES });
 
-    RCShowPrompt(@"Stock vs tweak test", [NSString stringWithFormat:@"%lu inputs, each twice - starting...", (unsigned long)steps.count], @"square.split.2x1", 3.0);
-    [NSThread sleepForTimeInterval:3.5];
+    BOOL started = RCTKWaitForReady(run, @"Stock vs tweak test", steps.count);
 
     NSUInteger index = 0, same = 0;
-    for (NSDictionary *step in steps) {
+    for (NSDictionary *step in started ? steps : @[]) {
         index++;
         if (g_tkStopRun) break;
         g_tkSkipStep = NO;
+        RCTKSetProgress(run, @"step", index, steps.count, step[@"prompt"]);
         NSString *testId = [@"differential." stringByAppendingString:step[@"id"]];
         // An inconclusive attempt (the input wasn't the same both times, or wasn't the one
         // asked for) is redone, up to kRCTKDifferentialAttempts in all; earlier attempts
@@ -1075,7 +1264,7 @@ static void RCTKSuiteDifferential(NSMutableDictionary *run) {
 
     g_tkCapture = NO;
     RCTKEvent(@"testkit.capture", @{ @"on": @NO });
-    RCShowPrompt(@"Stock vs tweak test", [NSString stringWithFormat:@"Done: %lu of %lu same as stock", (unsigned long)same, (unsigned long)steps.count],
+    if (started) RCShowPrompt(@"Stock vs tweak test", [NSString stringWithFormat:@"Done: %lu of %lu same as stock", (unsigned long)same, (unsigned long)steps.count],
                  @"flag.checkered", 3.0);
 }
 
@@ -1170,11 +1359,85 @@ static NSDictionary *RCTKReport(NSString *reportId) {
     return report ?: @{ @"error": [NSString stringWithFormat:@"no report '%@'", reportId] };
 }
 
+// Saved reports: their ids (oldest first), and newest first a summary of each for a list
 static NSDictionary *RCTKReports(void) {
     NSArray *files = [[[NSFileManager defaultManager] contentsOfDirectoryAtPath:kRCTKReportsDir error:nil] sortedArrayUsingSelector:@selector(compare:)];
-    NSMutableArray *ids = [NSMutableArray array];
-    for (NSString *file in files) if ([file hasSuffix:@".json"]) [ids addObject:[file stringByDeletingPathExtension]];
-    return @{ @"reports": ids };
+    NSMutableArray *ids = [NSMutableArray array], *items = [NSMutableArray array];
+    for (NSString *file in files) {
+        if (![file hasSuffix:@".json"]) continue;
+        NSString *reportId = [file stringByDeletingPathExtension];
+        [ids addObject:reportId];
+        NSData *data = [NSData dataWithContentsOfFile:[kRCTKReportsDir stringByAppendingPathComponent:file]];
+        NSDictionary *report = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        if (![report isKindOfClass:[NSDictionary class]]) continue;
+        NSMutableDictionary *item = [@{ @"id": reportId } mutableCopy];
+        for (NSString *key in @[@"suite", @"summary", @"started", @"finished", @"status", @"device"]) {
+            if (report[key]) item[key] = report[key];
+        }
+        [items insertObject:item atIndex:0];
+    }
+    return @{ @"reports": ids, @"items": items };
+}
+
+static NSDictionary *RCTKDeleteReport(NSString *reportId) {
+    if (!reportId.length || [reportId containsString:@"/"] || [reportId hasPrefix:@"."]) return @{ @"error": @"missing or invalid id" };
+    NSString *path = [kRCTKReportsDir stringByAppendingPathComponent:[reportId stringByAppendingString:@".json"]];
+    NSError *error = nil;
+    BOOL deleted = [[NSFileManager defaultManager] removeItemAtPath:path error:&error];
+    return deleted ? @{ @"deleted": reportId } : @{ @"error": error.localizedDescription ?: @"not deleted" };
+}
+
+// A copy of a report with personal values replaced, for sharing: Wi-Fi network names
+// (the current one, and any a condition test used), Bluetooth / AirPlay device names, and
+// third-party app bundle ids (which say what's installed). Apple apps and the test kit's
+// own made-up names are kept.
+static NSString *RCTKRedactString(NSString *string, NSArray<NSArray<NSString *> *> *names) {
+    for (NSArray<NSString *> *name in names) {
+        string = [string stringByReplacingOccurrencesOfString:name[0] withString:name[1] options:NSCaseInsensitiveSearch range:NSMakeRange(0, string.length)];
+    }
+    return string;
+}
+
+static BOOL RCTKIsPrivateAppId(id value) {
+    return [value isKindOfClass:[NSString class]] && [value containsString:@"."] && ![value hasPrefix:@"com.apple."] && ![value hasPrefix:@"com.example.rctk."];
+}
+
+static id RCTKRedactObject(id object, NSArray *names) {
+    if ([object isKindOfClass:[NSString class]]) return RCTKRedactString(object, names);
+    if ([object isKindOfClass:[NSArray class]]) {
+        NSMutableArray *copy = [NSMutableArray array];
+        for (id item in object) [copy addObject:RCTKRedactObject(item, names)];
+        return copy;
+    }
+    if (![object isKindOfClass:[NSDictionary class]]) return object;
+    NSMutableDictionary *copy = [NSMutableDictionary dictionary];
+    BOOL appCondition = [object[@"condition"] isEqual:@"front_app"];
+    [(NSDictionary *)object enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
+        BOOL appId = [key isEqual:@"frontApp"] || (appCondition && [key isEqual:@"value"]);
+        copy[key] = appId && RCTKIsPrivateAppId(value) ? @"<app>" : RCTKRedactObject(value, names);
+    }];
+    return copy;
+}
+
+static NSDictionary *RCTKRedact(NSDictionary *report) {
+    if (report[@"error"]) return report;
+    NSMutableArray *names = [NSMutableArray array];
+    void (^add)(id, NSString *) = ^(id name, NSString *placeholder) {
+        if ([name isKindOfClass:[NSString class]] && [name length] >= 2 && ![name hasPrefix:@"RCTK "]) [names addObject:@[name, placeholder]];
+    };
+    add(RCTKProbeLight()[@"wifiNetwork"], @"<Wi-Fi network>");
+    NSDictionary *placeholders = @{ @"wifi_network": @"<Wi-Fi network>", @"bt_device": @"<Bluetooth device>", @"airplay": @"<AirPlay device>" };
+    for (NSDictionary *test in report[@"tests"]) {
+        NSString *placeholder = placeholders[test[@"detail"][@"condition"] ?: @""];
+        if (placeholder) add(test[@"detail"][@"value"], placeholder);
+    }
+    // Longest first, so a name containing another is replaced whole
+    [names sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) { return [@([b[0] length]) compare:@([a[0] length])]; }];
+    // "redacted" only when something was replaced, so a report with nothing personal in it
+    // can be shared without asking
+    NSMutableDictionary *redacted = [RCTKRedactObject(report, names) mutableCopy];
+    if (![redacted isEqual:report]) redacted[@"redacted"] = @YES;
+    return redacted;
 }
 
 static NSDictionary *RCTKLua(NSString *code) {
@@ -1194,7 +1457,7 @@ static NSDictionary *RCTKInfo(void) {
         @"session": g_tkSession ?: @"",
         @"tweakVersion": RCTKPackageVersion(),
         @"endpoints": @[@"info", @"probe", @"journal", @"journal/clear", @"mark", @"run", @"lua", @"capture", @"snapshot", @"restore",
-                        @"suites", @"suite/run", @"suite/skip", @"suite/stop", @"report", @"reports"]
+                        @"suites", @"suite/run", @"suite/skip", @"suite/stop", @"report", @"reports", @"report/delete"]
     };
 }
 
@@ -1251,8 +1514,12 @@ static NSDictionary *RCTKDispatch(NSString *endpoint, NSDictionary<NSString *, N
     }
     if ([endpoint isEqualToString:@"suite/skip"]) { g_tkSkipStep = YES; return @{ @"skip": @YES }; }
     if ([endpoint isEqualToString:@"suite/stop"]) { g_tkStopRun = YES; return @{ @"stop": @YES }; }
-    if ([endpoint isEqualToString:@"report"]) return RCTKReport(params[@"id"]);
+    if ([endpoint isEqualToString:@"report"]) {
+        NSDictionary *report = RCTKReport(params[@"id"]);
+        return [params[@"redact"] boolValue] ? RCTKRedact(report) : report;
+    }
     if ([endpoint isEqualToString:@"reports"]) return RCTKReports();
+    if ([endpoint isEqualToString:@"report/delete"]) return RCTKDeleteReport(params[@"id"] ?: body);
     *status = 404;
     return @{ @"error": [NSString stringWithFormat:@"unknown endpoint '%@'", endpoint], @"endpoints": RCTKInfo()[@"endpoints"] };
 }
@@ -1302,7 +1569,17 @@ NSString *RCTKHandleCommand(NSString *args) {
     NSString *endpoint = space.location == NSNotFound ? trimmed : [trimmed substringToIndex:space.location];
     NSString *rest = space.location == NSNotFound ? nil : [trimmed substringFromIndex:space.location + 1];
     NSMutableDictionary *params = [NSMutableDictionary dictionary];
-    if ([endpoint isEqualToString:@"journal"] && rest) params[@"since"] = rest;
+    // "testkit suite/run name=guided&steps=a,b" - options as a query string, like the HTTP API's
+    if (rest && [rest rangeOfString:@"="].location != NSNotFound && [rest rangeOfString:@" "].location == NSNotFound) {
+        NSURLComponents *components = [NSURLComponents new];
+        components.percentEncodedQuery = rest;
+        for (NSURLQueryItem *item in components.queryItems) {
+            if (item.value) params[item.name] = item.value;
+        }
+        rest = nil;
+    } else if ([endpoint isEqualToString:@"journal"] && rest) {
+        params[@"since"] = rest;
+    }
     int status = 200;
     return [RCTKJSON(RCTKDispatch(endpoint.length ? endpoint : @"info", params, rest, &status)) stringByAppendingString:@"\n"];
 }
