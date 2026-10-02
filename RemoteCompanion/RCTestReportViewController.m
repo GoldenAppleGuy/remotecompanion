@@ -63,12 +63,20 @@ static NSString *RCTestSummary(NSDictionary *test) {
     if (!d) return nil;
     if ([d[@"reason"] isKindOfClass:[NSString class]]) return d[@"reason"];
     if ([d[@"problems"] isKindOfClass:[NSArray class]] && [d[@"problems"] count]) return [d[@"problems"] componentsJoinedByString:@"; "];
+    NSDictionary *defined = [d[@"defined"] isKindOfClass:[NSDictionary class]] ? d[@"defined"] : nil;
     if ([d[@"differs"] isKindOfClass:[NSArray class]]) {
         NSMutableArray *parts = [NSMutableArray array];
         for (NSString *key in d[@"differs"]) {
-            [parts addObject:[NSString stringWithFormat:@"%@: stock %@, tweak %@", key,
-                              RCDescribeValue(d[@"stock"][@"outcome"][key]), RCDescribeValue(d[@"tweak"][@"outcome"][key])]];
+            if (defined[key]) [parts addObject:[NSString stringWithFormat:@"%@: should be %@, tweak %@", key, RCDescribeValue(defined[key]), RCDescribeValue(d[@"tweak"][@"outcome"][key])]];
+            else [parts addObject:[NSString stringWithFormat:@"%@: stock %@, tweak %@", key,
+                                   RCDescribeValue(d[@"stock"][@"outcome"][key]), RCDescribeValue(d[@"tweak"][@"outcome"][key])]];
         }
+        return [parts componentsJoinedByString:@"; "];
+    }
+    // A defined behaviour that stock didn't show this time
+    if (defined && [d[@"stockDiffers"] isKindOfClass:[NSArray class]]) {
+        NSMutableArray *parts = [NSMutableArray array];
+        for (NSString *key in d[@"stockDiffers"]) [parts addObject:[NSString stringWithFormat:@"%@ %@ as defined (stock: %@)", key, RCDescribeValue(defined[key]), RCDescribeValue(d[@"stock"][@"outcome"][key])]];
         return [parts componentsJoinedByString:@"; "];
     }
     if (d[@"stock"] && d[@"tweak"]) return [NSString stringWithFormat:@"stock and tweak: %@", RCDescribeValue(d[@"stock"][@"outcome"][@"screen"])];

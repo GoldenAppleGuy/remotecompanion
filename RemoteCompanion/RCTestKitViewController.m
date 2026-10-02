@@ -1,5 +1,6 @@
 #import "RCTestKitViewController.h"
 #import "RCTestReportViewController.h"
+#import "RCTestKitSetupViewController.h"
 #import "RCServerClient.h"
 #import "RCConfigManager.h"
 
@@ -170,13 +171,15 @@ static NSString *RCSuiteIcon(NSString *suite) {
             [self startSuite:suite options:@"&disruptive=1"];
         }]];
     } else if ([suite isEqualToString:@"guided"] || [suite isEqualToString:@"differential"]) {
-        NSString *message = [suite isEqualToString:@"guided"]
-            ? @"Banners will ask you to press buttons and swipe the status bar. Your triggers are swapped for test ones during the run - their actions don't run - and restored after.\n\nTo begin, go to the home screen and press Volume Up."
-            : @"Each button press is done twice: stock (triggers off), then with the tweak. Presses may put the phone to sleep or take real screenshots.\n\nTo begin, go to the home screen and press Volume Up.";
-        alert = [UIAlertController alertControllerWithTitle:name message:message preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Start" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            [self startSuite:suite options:nil];
-        }]];
+        // Choose the steps and how many times first
+        RCTestKitSetupViewController *setup = [[RCTestKitSetupViewController alloc] initWithSuite:suite];
+        __weak typeof(self) weakSelf = self;
+        setup.onStart = ^(NSString *options) {
+            [weakSelf.navigationController popToViewController:weakSelf animated:YES];
+            [weakSelf startSuite:suite options:options];
+        };
+        [self.navigationController pushViewController:setup animated:YES];
+        return;
     } else {
         [self startSuite:suite options:nil];
         return;

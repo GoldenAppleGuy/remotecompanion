@@ -10534,11 +10534,12 @@ static BOOL g_powerPressIsCombo = NO;
 // as this counted, which reproduces stock behaviour. Reset when a new sequence starts.
 static NSUInteger g_nativeSinglePressCount = 0;
 // Volume Down was still held when the current Power press was released. iOS (14 and 17)
-// fires singlePress: for that press anyway but doesn't sleep - a replay would come after
-// Volume Down is released, and sleep - so such a press isn't counted. (Volume Down
-// clicked and released inside the Power press is different: iOS 17 sleeps for it, and
-// iOS 14 doesn't fire singlePress: at all.) Within ~10 ms of each other the two releases
-// race in stock iOS too.
+// fires singlePress: for that press anyway and usually doesn't sleep - but not always: in
+// safe mode, on iOS 17, the same press stayed awake twice and then slept. So rather than
+// follow iOS, such a press never sleeps the phone: it isn't counted for a replay (which
+// would come after Volume Down is released, and sleep), and when it isn't held back its
+// singlePress: is swallowed. (Volume Down clicked and released inside the Power press is
+// different, and left to iOS: iOS 17 sleeps for it, and iOS 14 doesn't fire singlePress:.)
 static BOOL g_powerReleasedWithVolumeDown = NO;
 // Volume Down as the hardware reports it, from the HID listener only. g_volDownIsDown
 // isn't enough here: on iOS 14 SpringBoard ends its Volume Down press itself (the
@@ -11243,9 +11244,8 @@ static BOOL g_isSwappingVolume = NO;
         }
 
         // No custom combo is configured: hand the press to iOS instead of consuming
-        // it. With Power held, iOS usually takes it for its own power-off gesture
-        // rather than a volume step; whether the power press then sleeps the phone
-        // is decided the same way (see g_nativeSinglePressCount).
+        // it (it still steps the volume). Whether the power press then sleeps the
+        // phone is decided in the singlePress: hook (see g_powerReleasedWithVolumeDown).
         g_powerVolComboTriggered = NO;
         g_volIsReplaying = YES;
         [self volumeDecreasePressDownWithModifiers:arg1];
@@ -12533,6 +12533,19 @@ static void setup_background_hid_listener() {
         RCTKEvent(@"ios.singlePress", @{ @"press": @"combo" });
         return;
     }
+    // Volume Down still held when this press was released: it never sleeps the phone (see
+    // g_powerReleasedWithVolumeDown). A held-back press returns here uncounted, so it isn't
+    // replayed; any other has iOS's sleep swallowed. After the replay check, so a replay of an
+    // earlier press in the same sequence still goes through; a press that wakes the phone, and
+    // everything while the master switch is off, are left to iOS.
+    if (g_powerReleasedWithVolumeDown && RC_ScreenIsOn() && !RC_IsForegroundAppExcluded()) {
+        load_trigger_config();
+        if ([g_triggerConfig[@"masterEnabled"] boolValue]) {
+            SRLog(@"Suppressing native singlePress: - Volume Down was still held at its release, so it doesn't sleep");
+            RCTKEvent(@"ios.singlePress", @{ @"press": @"volumeDownHeld" });
+            return;
+        }
+    }
     // The real press's own singlePress: is usually a visible no-op, but on the
     // first press after a respring it starts the sleep itself (confirmed in
     // the field: backlight change right after it, before the replay began),
@@ -12540,11 +12553,6 @@ static void setup_background_hid_listener() {
     // was left on the lit lock screen. Presses we don't defer (screen already
     // off, excluded app) pass through untouched.
     if (g_powerDeferActive && !RC_IsForegroundAppExcluded()) {
-        if (g_powerReleasedWithVolumeDown) {
-            SRLog(@"Suppressing native singlePress: for a deferred press - Volume Down was still held at its release, so stock doesn't sleep for it");
-            RCTKEvent(@"ios.singlePress", @{ @"press": @"volumeDownChord" });
-            return;
-        }
         g_nativeSinglePressCount++;
         RCTKEvent(@"ios.singlePress", @{ @"press": @"heldBack", @"count": @(g_nativeSinglePressCount) });
         // The press's sequence already ended and was waiting on this

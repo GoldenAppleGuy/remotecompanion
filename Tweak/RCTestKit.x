@@ -17,8 +17,10 @@
 //   GET  /api/testkit/suites            the test suites
 //   POST /api/testkit/suite/run?name=   run one (conditions, toggles, all, guided, differential); &wait=1 returns the
 //                                       report when done; &disruptive=1 adds Wi-Fi etc. toggles;
-//                                       guided / differential: &steps=id,id runs only those;
-//                                       differential: &repeat=N runs each N times
+//                                       guided / differential: &steps=id,id:3 runs only those, each the
+//                                       given number of times (default 1, or &repeat=N) - guided in
+//                                       rounds, differential each step in a row
+//   GET  /api/testkit/suite/steps?name= the steps of guided / differential on this device, grouped
 //   POST /api/testkit/suite/skip        skip the current guided step; suite/stop ends the run
 //   GET  /api/testkit/report[?id=]      the current/last run, or a saved one; &redact=1 replaces personal
 //                                       values (Wi-Fi / Bluetooth names, third-party app ids) with placeholders
@@ -683,8 +685,9 @@ static NSArray<NSDictionary *> *RCTKGuidedSteps(BOOL hasHome) {
         @{ @"id": @"power_triple_click", @"prompt": @"Triple-press Power", @"expect": @[@"power_triple_click"] },
         @{ @"id": @"power_quadruple_click", @"prompt": @"Press Power 4 times", @"expect": @[@"power_quadruple_click"] },
         @{ @"id": @"power_long_press", @"prompt": @"Hold Power for a second, then let go", @"expect": @[@"power_long_press"] },
-        @{ @"id": @"power_volume_up", @"prompt": @"Press Power + Volume Up together", @"expect": @[@"power_volume_up"] },
-        @{ @"id": @"power_volume_down", @"prompt": @"Press Power + Volume Down together", @"expect": @[@"power_volume_down"] },
+        // "quiet": the combo is the trigger's, so iOS's own response (a screenshot, sleeping) mustn't happen too
+        @{ @"id": @"power_volume_up", @"prompt": @"Press Power + Volume Up together", @"expect": @[@"power_volume_up"], @"quiet": @YES },
+        @{ @"id": @"power_volume_down", @"prompt": @"Press Power + Volume Down together", @"expect": @[@"power_volume_down"], @"quiet": @YES },
         @{ @"id": @"ringer_flip", @"prompt": @"Flip the ring/silent switch", @"expect": @[@"trigger_ringer_toggle"], @"oneOf": @[@"trigger_ringer_mute", @"trigger_ringer_unmute"] },
         @{ @"id": @"ringer_flip_back", @"prompt": @"Flip the ring/silent switch back", @"expect": @[@"trigger_ringer_toggle"], @"oneOf": @[@"trigger_ringer_mute", @"trigger_ringer_unmute"] },
         @{ @"id": @"statusbar_left_hold", @"prompt": @"Touch and hold the top-left corner", @"expect": @[@"trigger_statusbar_left_hold"] },
@@ -728,6 +731,65 @@ static NSArray<NSString *> *RCTKCapturedSince(unsigned long long since) {
         [keys addObject:event[@"key"] ?: @""];
     }
     return keys;
+}
+
+// The group a guided or stock-vs-tweak step is listed under (the app's step picker)
+static NSString *RCTKStepGroup(NSString *stepId) {
+    NSArray *groups = @[
+        @[@"power_connect", @"Charger"], @[@"power_disconnect", @"Charger"], @[@"power_volume", @"Power"],
+        @[@"home_power", @"Home Button"], @[@"volume", @"Volume"], @[@"power", @"Power"], @[@"ringer", @"Ring/Silent Switch"],
+        @[@"statusbar", @"Status Bar"], @[@"home", @"Home Button"], @[@"edge", @"Screen Edges"], @[@"bottom", @"Bottom Edge"],
+        @[@"touchid", @"Touch ID"], @[@"shake", @"Motion"], @[@"device_", @"Lock"],
+    ];
+    for (NSArray *group in groups) if ([stepId hasPrefix:group[0]]) return group[1];
+    return @"Other";
+}
+
+// The steps a run does. steps=id,id:3,... keeps only those, each done the given number of
+// times (1 if none is given; repeat=N sets the default). With `rounds` the list is gone
+// through in rounds - round 2 has the steps chosen 2 or more times, and so on - which keeps
+// steps that depend on each other (lock, then unlock) together; otherwise each step's
+// repeats come in a row. Repeats get #2, #3... ids. Records a skip and returns nil if
+// nothing is left.
+static NSArray<NSDictionary *> *RCTKSelectSteps(NSArray<NSDictionary *> *all, NSMutableDictionary *run, BOOL rounds) {
+    NSUInteger defaultCount = MIN(10, MAX(1, [run[@"repeat"] unsignedIntegerValue]));
+    NSMutableDictionary<NSString *, NSNumber *> *counts = nil;
+    if ([run[@"steps"] length]) {
+        counts = [NSMutableDictionary dictionary];
+        for (NSString *item in [run[@"steps"] componentsSeparatedByString:@","]) {
+            NSArray *parts = [item componentsSeparatedByString:@":"];
+            NSUInteger count = parts.count > 1 ? (NSUInteger)MAX(0, [parts[1] integerValue]) : defaultCount;
+            counts[parts[0]] = @(MIN(10, count));
+        }
+    }
+    NSMutableArray *chosen = [NSMutableArray array];
+    NSUInteger most = 0;
+    for (NSDictionary *step in all) {
+        NSUInteger count = counts ? [counts[step[@"id"]] unsignedIntegerValue] : defaultCount;
+        if (!count) continue;
+        [chosen addObject:@[step, @(count)]];
+        most = MAX(most, count);
+    }
+    NSMutableArray *steps = [NSMutableArray array];
+    void (^add)(NSDictionary *, NSUInteger) = ^(NSDictionary *step, NSUInteger time) {
+        NSMutableDictionary *copy = [step mutableCopy];
+        if (time > 1) copy[@"id"] = [NSString stringWithFormat:@"%@#%lu", step[@"id"], (unsigned long)time];
+        [steps addObject:copy];
+    };
+    if (rounds) {
+        for (NSUInteger round = 1; round <= most; round++) {
+            for (NSArray *entry in chosen) if ([entry[1] unsignedIntegerValue] >= round) add(entry[0], round);
+        }
+    } else {
+        for (NSArray *entry in chosen) {
+            for (NSUInteger time = 1; time <= [entry[1] unsignedIntegerValue]; time++) add(entry[0], time);
+        }
+    }
+    if (!steps.count) {
+        RCTKRecordResult(run, run[@"suite"], @"skip", @{ @"reason": [NSString stringWithFormat:@"no steps match '%@'", run[@"steps"]] }, -1);
+        return nil;
+    }
+    return steps;
 }
 
 // What a run is doing now, for anyone following it (the app shows it): phase "ready"
@@ -849,16 +911,8 @@ static BOOL RCTKWaitForReady(NSMutableDictionary *run, NSString *title, NSUInteg
 
 static void RCTKSuiteGuided(NSMutableDictionary *run) {
     BOOL hasHome = RCTKHasHomeButton();
-    NSArray *steps = RCTKGuidedSteps(hasHome);
-    // steps=id,id runs only those
-    if ([run[@"steps"] length]) {
-        NSArray *only = [run[@"steps"] componentsSeparatedByString:@","];
-        steps = [steps filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"id IN %@", only]];
-        if (!steps.count) {
-            RCTKRecordResult(run, @"guided", @"skip", @{ @"reason": [NSString stringWithFormat:@"no steps match '%@'", run[@"steps"]] }, -1);
-            return;
-        }
-    }
+    NSArray *steps = RCTKSelectSteps(RCTKGuidedSteps(hasHome), run, YES);
+    if (!steps) return;
     NSSet *buttonKeys = [NSSet setWithArray:RCTKGuidedTriggerKeys()];
     @synchronized (run) { run[@"homeButton"] = @(hasHome); }
 
@@ -867,8 +921,9 @@ static void RCTKSuiteGuided(NSMutableDictionary *run) {
     NSMutableDictionary *triggers = [config[@"triggers"] mutableCopy] ?: [NSMutableDictionary dictionary];
     // Triggers a step lists under "enable" are on only during that step: the bottom swipe-up
     // zones take the bottom edge from iOS while on, which blocks swiping up to unlock or go home
+    // (from every step, not just the chosen ones - a run without those steps keeps them off)
     NSMutableSet *stepOnly = [NSMutableSet set];
-    for (NSDictionary *step in steps) [stepOnly addObjectsFromArray:step[@"enable"] ?: @[]];
+    for (NSDictionary *step in RCTKGuidedSteps(hasHome)) [stepOnly addObjectsFromArray:step[@"enable"] ?: @[]];
     for (NSString *key in RCTKGuidedTriggerKeys()) {
         NSMutableDictionary *trigger = [triggers[key] mutableCopy] ?: [NSMutableDictionary dictionary];
         trigger[@"enabled"] = @(![stepOnly containsObject:key]);
@@ -904,6 +959,7 @@ static void RCTKSuiteGuided(NSMutableDictionary *run) {
         RCTKSetProgress(run, @"step", index, steps.count, step[@"prompt"]);
         if (![step[@"keepScreen"] boolValue]) RCTKReturnHome();
         if ([step[@"enable"] count]) RCSetTriggerConfig(configEnabling(step[@"enable"]));
+        NSDictionary *before = [step[@"quiet"] boolValue] ? RCTKProbe() : nil; // for its latest photo
         unsigned long long since = RCTKRecord(@"mark", @{ @"label": testId });
         RCShowPrompt(title, step[@"prompt"], @"hand.point.up.left", 60.0);
 
@@ -950,6 +1006,13 @@ static void RCTKSuiteGuided(NSMutableDictionary *run) {
         for (NSString *key in counts) {
             if (![expect containsObject:key] && ![oneOf containsObject:key]) [problems addObject:[NSString stringWithFormat:@"unexpected %@", key]];
         }
+        if (before) {
+            NSString *photoBefore = before[@"latestPhoto"][@"file"], *photoAfter = RCTKProbe()[@"latestPhoto"][@"file"];
+            if (photoAfter.length && ![photoAfter isEqualToString:photoBefore ?: @""]) [problems addObject:@"iOS also took a screenshot"];
+            for (NSDictionary *event in RCTKJournal(since, @"screen", 0)[@"events"]) {
+                if (![event[@"on"] boolValue]) { [problems addObject:@"the phone also slept"]; break; }
+            }
+        }
         BOOL pass = problems.count == 0;
         if (pass) passed++;
         NSMutableDictionary *detail = [@{ @"expected": expect, @"got": got } mutableCopy];
@@ -989,14 +1052,25 @@ static NSArray<NSDictionary *> *RCTKDifferentialSteps(BOOL hasHome) {
         // Stock iOS sleeps or not depending on which is released last. "ordered": a pass
         // counts only if the buttons went down in "order" and "releasedLast" was let go
         // clearly last (15 ms or more after the other) - what the prompt asks for.
+        // With Volume Down still held when Power is released, stock iOS usually stays awake but
+        // sometimes sleeps (in safe mode too), so the tweak defines it: never sleep. "defined":
+        // the tweak pass must give these values whatever stock did (other values still have to
+        // match, except the volume steps, which follow how long Volume Down was held). The
+        // "plain" one arms no multi-click trigger, so the press isn't held back at all.
         @{ @"id": @"power_volume_down_hold", @"buttons": @[@"power", @"volumeDown"], @"ordered": @YES,
-           @"order": @[@"volumeDown", @"power"], @"releasedLast": @"volumeDown",
-           @"prompt": @"Hold Volume Down, click Power, keep holding Volume Down a moment, then let go",
-           @"hint": @"Press Volume Down first, and let go of it clearly after Power - count one beat" },
+           @"order": @[@"volumeDown", @"power"], @"releasedLast": @"volumeDown", @"defined": @{ @"screen": @"stayed on" },
+           @"prompt": @"Quickly press both, Volume Down first, then let go of Power first",
+           @"note": @"Held back: a multi-click trigger is armed",
+           @"hint": @"Volume Down first, and let go of Power first" },
+        @{ @"id": @"power_volume_down_hold_plain", @"buttons": @[@"power", @"volumeDown"], @"ordered": @YES, @"plain": @YES,
+           @"order": @[@"volumeDown", @"power"], @"releasedLast": @"volumeDown", @"defined": @{ @"screen": @"stayed on" },
+           @"prompt": @"Quickly press both, Volume Down first, then let go of Power first",
+           @"note": @"Passed straight through: nothing armed",
+           @"hint": @"Volume Down first, and let go of Power first" },
         @{ @"id": @"power_volume_down_inside", @"buttons": @[@"power", @"volumeDown"], @"ordered": @YES,
            @"order": @[@"power", @"volumeDown"], @"releasedLast": @"power",
-           @"prompt": @"Hold Power, click Volume Down, then let go of Power (keep it under half a second)",
-           @"hint": @"Press Power first, and let go of Volume Down before Power" },
+           @"prompt": @"Quickly press both, Power first, then let go of Volume Down first",
+           @"hint": @"Power first, and let go of Volume Down first" },
         @{ @"id": @"home_power", @"buttons": @[@"home", @"power"], @"prompt": @"Press Home + Power together", @"home": @YES },
         @{ @"id": @"volume_up", @"buttons": @[@"volumeUp"], @"prompt": @"Press Volume Up once" },
         @{ @"id": @"volume_both", @"buttons": @[@"volumeUp", @"volumeDown"], @"prompt": @"Press Volume Up + Down together" },
@@ -1029,11 +1103,15 @@ static NSDictionary *RCTKConfigWith(NSDictionary *base, BOOL master, BOOL armed)
 // 15 ms), which can change what iOS does with a chord. Only presses up to journal entry
 // `until` (0: no limit) of the step's `buttons` count: after the first of them, a press of
 // any other button (Home to wake an iPhone 8, say) ends the input, and its entry is
-// returned in *foreignAt.
+// returned in *foreignAt. A release only counts if it ends a press-down seen here: a
+// replayed press's release is sometimes journaled without its replay mark (SpringBoard
+// clears the flag on the main thread before the HID listener records the release), and it
+// mustn't read as Power held for a long time, or change which button was released last.
 static NSDictionary *RCTKInputsSince(unsigned long long since, unsigned long long until, NSArray *buttons,
                                      double *lastInputAt, unsigned long long *foreignAt) {
     NSMutableDictionary *counts = [NSMutableDictionary dictionary];
     NSMutableArray *order = [NSMutableArray array];
+    NSMutableSet *held = [NSMutableSet set]; // pressed here and not released yet
     NSString *lastUp = nil, *previousUp = nil;
     double lastUpAt = 0, previousUpAt = 0, powerDownAt = 0;
     for (NSDictionary *event in RCTKJournal(since, @"hid.", 0)[@"events"]) {
@@ -1048,13 +1126,16 @@ static NSDictionary *RCTKInputsSince(unsigned long long since, unsigned long lon
             if (foreignAt) *foreignAt = [event[@"seq"] unsignedLongLongValue];
             break;
         }
+        BOOL isDown = [event[@"down"] boolValue];
+        if (!isDown && ![held containsObject:button]) continue; // no press-down of its own (see above)
+        if (isDown) [held addObject:button]; else [held removeObject:button];
         if (lastInputAt) *lastInputAt = MAX(*lastInputAt, [event[@"t"] doubleValue]);
         if ([button isEqualToString:@"power"]) {
             // Held long enough for iOS's own long press (Siri, power-off): a different input
-            if ([event[@"down"] boolValue]) powerDownAt = [event[@"t"] doubleValue];
+            if (isDown) powerDownAt = [event[@"t"] doubleValue];
             else if (powerDownAt && [event[@"t"] doubleValue] - powerDownAt > 500) counts[@"powerHeldLong"] = @YES;
         }
-        if (![event[@"down"] boolValue]) {
+        if (!isDown) {
             if (![button isEqualToString:lastUp]) { previousUp = lastUp; previousUpAt = lastUpAt; }
             lastUp = button; lastUpAt = [event[@"t"] doubleValue];
             continue;
@@ -1149,25 +1230,12 @@ static const NSUInteger kRCTKDifferentialAttempts = 3; // an inconclusive step i
 
 static void RCTKSuiteDifferential(NSMutableDictionary *run) {
     BOOL hasHome = RCTKHasHomeButton();
-    // steps=id,id runs only those; repeat=N runs each N times in a row (ids get #2, #3...)
-    NSMutableArray *steps = [NSMutableArray array];
-    NSArray *only = [run[@"steps"] length] ? [run[@"steps"] componentsSeparatedByString:@","] : nil;
-    NSUInteger repeat = MIN(10, MAX(1, [run[@"repeat"] unsignedIntegerValue]));
-    for (NSDictionary *step in RCTKDifferentialSteps(hasHome)) {
-        if (only && ![only containsObject:step[@"id"]]) continue;
-        for (NSUInteger i = 1; i <= repeat; i++) {
-            NSMutableDictionary *copy = [step mutableCopy];
-            if (i > 1) copy[@"id"] = [NSString stringWithFormat:@"%@#%lu", step[@"id"], (unsigned long)i];
-            [steps addObject:copy];
-        }
-    }
-    if (!steps.count) {
-        RCTKRecordResult(run, @"differential", @"skip", @{ @"reason": [NSString stringWithFormat:@"no steps match '%@'", run[@"steps"]] }, -1);
-        return;
-    }
+    NSArray *steps = RCTKSelectSteps(RCTKDifferentialSteps(hasHome), run, NO);
+    if (!steps) return;
     NSDictionary *base = RCCopyTriggerConfig();
     NSDictionary *stockConfig = RCTKConfigWith(base, NO, NO);
     NSDictionary *tweakConfig = RCTKConfigWith(base, YES, YES);
+    NSDictionary *tweakPlainConfig = RCTKConfigWith(base, YES, NO); // for "plain" steps
     @synchronized (run) { run[@"homeButton"] = @(hasHome); }
     g_tkCapture = YES;
     RCTKEvent(@"testkit.capture", @{ @"on": @YES });
@@ -1196,7 +1264,7 @@ static void RCTKSuiteDifferential(NSMutableDictionary *run) {
             }
             NSMutableDictionary *passes = [NSMutableDictionary dictionary];
             for (NSString *pass in @[@"stock", @"tweak"]) {
-                RCSetTriggerConfig([pass isEqualToString:@"stock"] ? stockConfig : tweakConfig);
+                RCSetTriggerConfig([pass isEqualToString:@"stock"] ? stockConfig : [step[@"plain"] boolValue] ? tweakPlainConfig : tweakConfig);
                 [NSThread sleepForTimeInterval:0.5];
                 NSString *title = [NSString stringWithFormat:@"Step %lu of %lu - %@", (unsigned long)index, (unsigned long)steps.count,
                                    [pass isEqualToString:@"stock"] ? @"stock" : @"with tweak"];
@@ -1222,7 +1290,7 @@ static void RCTKSuiteDifferential(NSMutableDictionary *run) {
             if (stockInputs[@"powerHeldLong"] || tweakInputs[@"powerHeldLong"]) {
                 status = @"skip";
                 detail[@"reason"] = @"not the requested input - Power was held long enough for iOS's long press (over 0.5 s)";
-                retryHint = @"Power was held too long - keep it quick";
+                retryHint = @"Power was down for over half a second - tap it quicker";
             } else if ([step[@"ordered"] boolValue] &&
                        (![stockInputs[@"order"] isEqual:step[@"order"]] || ![tweakInputs[@"order"] isEqual:step[@"order"]] ||
                         ![stockInputs[@"releasedLast"] isEqual:step[@"releasedLast"]] || ![tweakInputs[@"releasedLast"] isEqual:step[@"releasedLast"]])) {
@@ -1235,6 +1303,22 @@ static void RCTKSuiteDifferential(NSMutableDictionary *run) {
                 detail[@"reason"] = @"inconclusive - the presses (or their order) differed between the two passes";
                 retryHint = [step[@"ordered"] boolValue] ? @"The presses differed - same order both times, and release the last button clearly after"
                                                          : @"The presses differed - do exactly the same thing both times";
+            } else if (step[@"defined"]) {
+                NSDictionary *defined = step[@"defined"];
+                NSMutableArray *differs = [NSMutableArray array], *stockDiffers = [NSMutableArray array];
+                NSMutableSet *keys = [NSMutableSet setWithArray:[stock[@"outcome"] allKeys]];
+                [keys addObjectsFromArray:[tweak[@"outcome"] allKeys]];
+                for (NSString *key in keys) {
+                    if ([key isEqualToString:@"volumeSteps"]) continue;
+                    id want = defined[key] ?: stock[@"outcome"][key];
+                    if (![want isEqual:tweak[@"outcome"][key]]) [differs addObject:key];
+                    if (defined[key] && ![defined[key] isEqual:stock[@"outcome"][key]]) [stockDiffers addObject:key];
+                }
+                detail[@"defined"] = defined;
+                if (stockDiffers.count) detail[@"stockDiffers"] = stockDiffers; // stock didn't do what's defined this time
+                status = differs.count ? @"fail" : @"pass";
+                if (differs.count) detail[@"differs"] = differs;
+                break;
             } else if ([stock[@"outcome"] isEqual:tweak[@"outcome"]]) {
                 status = @"pass";
                 break;
@@ -1254,8 +1338,8 @@ static void RCTKSuiteDifferential(NSMutableDictionary *run) {
         if (earlier.count) detail[@"earlierAttempts"] = earlier;
         if ([status isEqualToString:@"pass"]) same++;
         RCTKRecordResult(run, testId, status, detail, -1);
-        NSString *verdict = [status isEqualToString:@"pass"] ? @"Same as stock"
-                          : [status isEqualToString:@"fail"] ? [@"Differs: " stringByAppendingString:[detail[@"differs"] componentsJoinedByString:@", "]]
+        NSString *verdict = [status isEqualToString:@"pass"] ? (detail[@"defined"] ? (detail[@"stockDiffers"] ? @"As defined (stock didn't do it this time)" : @"As defined, and same as stock") : @"Same as stock")
+                          : [status isEqualToString:@"fail"] ? [(detail[@"defined"] ? @"Not as defined: " : @"Differs: ") stringByAppendingString:[detail[@"differs"] componentsJoinedByString:@", "]]
                           : @"Inconclusive - the input wasn't the same both times";
         RCShowPrompt([NSString stringWithFormat:@"Step %lu of %lu", (unsigned long)index, (unsigned long)steps.count], verdict,
                      [status isEqualToString:@"pass"] ? @"checkmark.circle.fill" : @"exclamationmark.circle.fill", 1.5);
@@ -1457,7 +1541,7 @@ static NSDictionary *RCTKInfo(void) {
         @"session": g_tkSession ?: @"",
         @"tweakVersion": RCTKPackageVersion(),
         @"endpoints": @[@"info", @"probe", @"journal", @"journal/clear", @"mark", @"run", @"lua", @"capture", @"snapshot", @"restore",
-                        @"suites", @"suite/run", @"suite/skip", @"suite/stop", @"report", @"reports", @"report/delete"]
+                        @"suites", @"suite/steps", @"suite/run", @"suite/skip", @"suite/stop", @"report", @"reports", @"report/delete"]
     };
 }
 
@@ -1511,6 +1595,18 @@ static NSDictionary *RCTKDispatch(NSString *endpoint, NSDictionary<NSString *, N
     if ([endpoint isEqualToString:@"suite/run"]) {
         NSString *name = params[@"name"] ?: body;
         return RCTKRunSuite(name, params);
+    }
+    if ([endpoint isEqualToString:@"suite/steps"]) {
+        NSString *name = params[@"name"] ?: body;
+        BOOL hasHome = RCTKHasHomeButton();
+        NSArray *all = [name isEqualToString:@"guided"] ? RCTKGuidedSteps(hasHome) : [name isEqualToString:@"differential"] ? RCTKDifferentialSteps(hasHome) : nil;
+        if (!all) return @{ @"error": @"steps are listed for guided and differential" };
+        NSMutableArray *steps = [NSMutableArray array];
+        for (NSDictionary *step in all) {
+            [steps addObject:@{ @"id": step[@"id"], @"prompt": step[@"prompt"], @"group": RCTKStepGroup(step[@"id"]),
+                                @"optional": @([step[@"optional"] boolValue]), @"note": step[@"note"] ?: @"" }];
+        }
+        return @{ @"suite": name, @"steps": steps };
     }
     if ([endpoint isEqualToString:@"suite/skip"]) { g_tkSkipStep = YES; return @{ @"skip": @YES }; }
     if ([endpoint isEqualToString:@"suite/stop"]) { g_tkStopRun = YES; return @{ @"stop": @YES }; }
