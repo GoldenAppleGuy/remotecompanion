@@ -10373,14 +10373,25 @@ static NSTimeInterval g_lastPowerVolComboFireTime = 0;
 // callbacks, which arrive after it was already handled.
 static BOOL g_powerPressIsCombo = NO;
 // How many times iOS's own sleep gesture (-[SBLockHardwareButton singlePress:]) fired
-// during the current deferred click sequence. iOS fires it only for a press it would
-// itself sleep/wake for, not one that was part of one of its chords or gestures - and
-// those differ by device: without a Home button, Power + Volume Up takes a screenshot
-// while Power + Volume Down still sleeps; with one, Power + Home takes the screenshot
-// and Power + either volume button does nothing; a triple-click can be the
-// Accessibility Shortcut. So an unclaimed sequence replays only as many presses as
-// this counted, which reproduces stock behaviour. Reset when a new sequence starts.
+// during the current deferred click sequence. iOS doesn't fire it for a press that was
+// part of one of its chords or gestures - and those differ by device: without a Home
+// button, Power + Volume Up takes a screenshot; with one, Power + Home takes the
+// screenshot and Power + Volume Up does nothing; a triple-click can be the
+// Accessibility Shortcut. (Power + Volume Down is an exception - see
+// g_powerReleasedWithVolumeDown.) So an unclaimed sequence replays only as many presses
+// as this counted, which reproduces stock behaviour. Reset when a new sequence starts.
 static NSUInteger g_nativeSinglePressCount = 0;
+// Volume Down was still held when the current Power press was released. iOS (14 and 17)
+// fires singlePress: for that press anyway but doesn't sleep - a replay would come after
+// Volume Down is released, and sleep - so such a press isn't counted. (Volume Down
+// clicked and released inside the Power press is different: iOS 17 sleeps for it, and
+// iOS 14 doesn't fire singlePress: at all.) Within ~10 ms of each other the two releases
+// race in stock iOS too.
+static BOOL g_powerReleasedWithVolumeDown = NO;
+// Volume Down as the hardware reports it, from the HID listener only. g_volDownIsDown
+// isn't enough here: on iOS 14 SpringBoard ends its Volume Down press itself (the
+// volumeDecreasePressUp hook runs) as soon as Power goes down, while it's still held.
+static BOOL g_volDownHeldOnHID = NO;
 // An unclaimed sequence of this many presses is waiting on more of those gestures
 // before replaying (see RC_CheckAndFirePower); 0 when not waiting. The generation
 // lets a stale timeout recognize itself.
@@ -11789,6 +11800,7 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
                     }
                 }
             } else { // UP
+                g_powerReleasedWithVolumeDown = g_volDownHeldOnHID;
                 // Power is up, so the screenshot gesture can no longer fire.
                 dispatch_async(dispatch_get_main_queue(), ^{
                     RC_SetScreenshotRecognizerSuppressed(NO);
@@ -11846,7 +11858,7 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
             }
 
             if (mappedUsage == kHIDUsage_Csmr_VolumeIncrement) g_volUpIsDown = !!down;
-            if (mappedUsage == kHIDUsage_Csmr_VolumeDecrement) g_volDownIsDown = !!down;
+            if (mappedUsage == kHIDUsage_Csmr_VolumeDecrement) g_volDownIsDown = g_volDownHeldOnHID = !!down;
             
             // Check for Power + Volume combination.
             // FALLBACK ONLY. volumeIncreasePressDownWithModifiers:/volumeDecreasePress-
@@ -12005,6 +12017,7 @@ static void setup_background_hid_listener() {
     g_powerDownAwaitingUp = YES;
     g_replayAwaitingSinglePress = NO; // a new real press; any unclaimed replay slot is stale
     g_powerPressIsCombo = NO;
+    g_powerReleasedWithVolumeDown = NO;
     if (g_powerClickCount == 0) { // a new click sequence
         g_nativeSinglePressCount = 0;
         g_sequencePressCount = 0;
@@ -12354,6 +12367,10 @@ static void setup_background_hid_listener() {
     // was left on the lit lock screen. Presses we don't defer (screen already
     // off, excluded app) pass through untouched.
     if (g_powerDeferActive && !RC_IsForegroundAppExcluded()) {
+        if (g_powerReleasedWithVolumeDown) {
+            SRLog(@"Suppressing native singlePress: for a deferred press - Volume Down was still held at its release, so stock doesn't sleep for it");
+            return;
+        }
         g_nativeSinglePressCount++;
         // The press's sequence already ended and was waiting on this
         if (g_replayAwaitingSequenceCount && g_nativeSinglePressCount >= g_replayAwaitingSequenceCount) {
