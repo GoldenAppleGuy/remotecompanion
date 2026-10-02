@@ -2535,14 +2535,28 @@ NSString *RCHandleCommand(NSString *cmd) {
     return handle_command(cmd);
 }
 
+// g_triggerConfig belongs to the main thread: it's replaced there by load_trigger_config()
+// (every button press, and the reload a save posts), which frees the old dictionary, so the
+// test kit's runner thread must not read or save it directly.
+static void RCOnMainThreadSync(dispatch_block_t block) {
+    if ([NSThread isMainThread]) block();
+    else dispatch_sync(dispatch_get_main_queue(), block);
+}
+
 NSDictionary *RCCopyTriggerConfig(void) {
-    load_trigger_config();
-    return [g_triggerConfig copy];
+    __block NSDictionary *config = nil;
+    RCOnMainThreadSync(^{
+        load_trigger_config();
+        config = [g_triggerConfig copy];
+    });
+    return config;
 }
 
 void RCSetTriggerConfig(NSDictionary *config) {
-    g_triggerConfig = [config mutableCopy];
-    save_trigger_config();
+    RCOnMainThreadSync(^{
+        g_triggerConfig = [config mutableCopy];
+        save_trigger_config();
+    });
 }
 
 BOOL RCEvaluateIfCondition(NSDictionary *ifAction) {
@@ -12511,6 +12525,7 @@ static void setup_background_hid_listener() {
     if (g_powerDeferActive && !RC_IsForegroundAppExcluded()) {
         if (g_powerReleasedWithVolumeDown) {
             SRLog(@"Suppressing native singlePress: for a deferred press - Volume Down was still held at its release, so stock doesn't sleep for it");
+            RCTKEvent(@"ios.singlePress", @{ @"press": @"volumeDownChord" });
             return;
         }
         g_nativeSinglePressCount++;

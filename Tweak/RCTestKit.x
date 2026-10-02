@@ -15,7 +15,7 @@
 //   POST /api/testkit/restore           put them back
 //   POST /api/testkit/lua               body (or ?code=): Lua; returns what it printed and returned
 //   GET  /api/testkit/suites            the test suites
-//   POST /api/testkit/suite/run?name=   run one (conditions, toggles, all, guided); &wait=1 returns the
+//   POST /api/testkit/suite/run?name=   run one (conditions, toggles, all, guided, differential); &wait=1 returns the
 //                                       report when done; &disruptive=1 adds Wi-Fi etc. toggles
 //   POST /api/testkit/suite/skip        skip the current guided step; suite/stop ends the run
 //   GET  /api/testkit/report[?id=]      the current/last run, or a saved one
@@ -780,6 +780,275 @@ static void RCTKSuiteGuided(NSMutableDictionary *run) {
                  @"flag.checkered", 3.0);
 }
 
+
+#pragma mark Differential suite (stock vs tweak)
+
+// Each physical input twice: once with RemoteCompanion's master switch off (stock iOS),
+// once with the tweak armed but not claiming the input - every button trigger unbound except
+// a placeholder quadruple-click, which arms the Power hold-back-and-replay machinery. The
+// outcome (screen on/off sequence, screenshot saved, volume change, Siri, switcher, front
+// app) must be the same. If the presses themselves differed between the passes, the step is
+// inconclusive rather than failed.
+
+static NSArray<NSDictionary *> *RCTKDifferentialSteps(BOOL hasHome) {
+    NSMutableArray *steps = [NSMutableArray arrayWithArray:@[
+        @{ @"id": @"power_single", @"buttons": @[@"power"], @"prompt": @"Press Power once" },
+        @{ @"id": @"power_double", @"buttons": @[@"power"], @"prompt": @"Double-press Power" },
+        @{ @"id": @"power_triple", @"buttons": @[@"power"], @"prompt": @"Triple-press Power" },
+        @{ @"id": @"power_volume_up", @"buttons": @[@"power", @"volumeUp"], @"prompt": @"Press Power + Volume Up together" },
+        // Stock iOS sleeps or not depending on which is released last. "ordered": the
+        // passes are comparable only if the buttons went down and up in the same order.
+        @{ @"id": @"power_volume_down_hold", @"buttons": @[@"power", @"volumeDown"], @"prompt": @"Hold Volume Down, click Power, then let go of Volume Down", @"ordered": @YES },
+        @{ @"id": @"power_volume_down_inside", @"buttons": @[@"power", @"volumeDown"], @"prompt": @"Hold Power, click Volume Down, then let go of Power (quickly)", @"ordered": @YES },
+        @{ @"id": @"home_power", @"buttons": @[@"home", @"power"], @"prompt": @"Press Home + Power together", @"home": @YES },
+        @{ @"id": @"volume_up", @"buttons": @[@"volumeUp"], @"prompt": @"Press Volume Up once" },
+        @{ @"id": @"volume_both", @"buttons": @[@"volumeUp", @"volumeDown"], @"prompt": @"Press Volume Up + Down together" },
+    ]];
+    NSIndexSet *wrongDevice = [steps indexesOfObjectsPassingTest:^BOOL(NSDictionary *step, NSUInteger idx, BOOL *stop) {
+        return step[@"home"] && [step[@"home"] boolValue] != hasHome;
+    }];
+    [steps removeObjectsAtIndexes:wrongDevice];
+    return steps;
+}
+
+static NSDictionary *RCTKConfigWith(NSDictionary *base, BOOL master, BOOL armed) {
+    NSMutableDictionary *config = [base mutableCopy] ?: [NSMutableDictionary dictionary];
+    NSMutableDictionary *triggers = [config[@"triggers"] mutableCopy] ?: [NSMutableDictionary dictionary];
+    for (NSString *key in RCTKGuidedTriggerKeys()) {
+        NSMutableDictionary *trigger = [triggers[key] mutableCopy];
+        if (!trigger) continue;
+        trigger[@"enabled"] = @NO;
+        triggers[key] = trigger;
+    }
+    if (armed) triggers[@"power_quadruple_click"] = @{ @"enabled": @YES, @"actions": @[@"testkit noop"], @"name": @"Test kit placeholder" };
+    config[@"triggers"] = triggers;
+    config[@"masterEnabled"] = @(master);
+    return config;
+}
+
+// The real (not replayed) button presses after `since`: e.g. @{ @"power": @2, @"volumeUp": @1 }
+// Real presses since `since`: a count per button, plus - when more than one button was
+// used - the order they first went down and which was released last ("together" within
+// 15 ms), which can change what iOS does with a chord. Only presses up to journal entry
+// `until` (0: no limit) of the step's `buttons` count: after the first of them, a press of
+// any other button (Home to wake an iPhone 8, say) ends the input, and its entry is
+// returned in *foreignAt.
+static NSDictionary *RCTKInputsSince(unsigned long long since, unsigned long long until, NSArray *buttons,
+                                     double *lastInputAt, unsigned long long *foreignAt) {
+    NSMutableDictionary *counts = [NSMutableDictionary dictionary];
+    NSMutableArray *order = [NSMutableArray array];
+    NSString *lastUp = nil, *previousUp = nil;
+    double lastUpAt = 0, previousUpAt = 0, powerDownAt = 0;
+    for (NSDictionary *event in RCTKJournal(since, @"hid.", 0)[@"events"]) {
+        if (until && [event[@"seq"] unsignedLongLongValue] > until) break;
+        if ([event[@"replay"] boolValue]) continue;
+        NSString *button = [event[@"type"] isEqualToString:@"hid.power"] ? @"power"
+                         : [event[@"type"] isEqualToString:@"hid.home"] ? @"home"
+                         : [event[@"button"] isEqualToString:@"up"] ? @"volumeUp" : @"volumeDown";
+        if (![buttons containsObject:button]) {
+            // Before the step's first press it's just getting ready (waking the phone)
+            if (![event[@"down"] boolValue] || !order.count) continue;
+            if (foreignAt) *foreignAt = [event[@"seq"] unsignedLongLongValue];
+            break;
+        }
+        if (lastInputAt) *lastInputAt = MAX(*lastInputAt, [event[@"t"] doubleValue]);
+        if ([button isEqualToString:@"power"]) {
+            // Held long enough for iOS's own long press (Siri, power-off): a different input
+            if ([event[@"down"] boolValue]) powerDownAt = [event[@"t"] doubleValue];
+            else if (powerDownAt && [event[@"t"] doubleValue] - powerDownAt > 500) counts[@"powerHeldLong"] = @YES;
+        }
+        if (![event[@"down"] boolValue]) {
+            if (![button isEqualToString:lastUp]) { previousUp = lastUp; previousUpAt = lastUpAt; }
+            lastUp = button; lastUpAt = [event[@"t"] doubleValue];
+            continue;
+        }
+        counts[button] = @([counts[button] integerValue] + 1);
+        if (![order containsObject:button]) [order addObject:button];
+    }
+    if (order.count > 1) {
+        counts[@"order"] = order;
+        if (lastUp) counts[@"releasedLast"] = previousUp && lastUpAt - previousUpAt < 15 ? @"together" : lastUp;
+    }
+    return counts;
+}
+
+// Everything a pass changed between journal entries `since` and `until`, and the probes
+// before and after. The screen is the list of its changes ("slept", "woke"). SpringBoard's
+// notification is read after the fact - a quick off/on can arrive as two "on"s - so each
+// one counts as a change from the state before. A wake more than 600 ms after the last
+// Power / Home event (real or replayed) is the user waking the phone (a tap, raising it),
+// and ends what the pass is judged on.
+static NSDictionary *RCTKOutcome(unsigned long long since, unsigned long long until, NSDictionary *before, NSDictionary *after) {
+    double lastButtonAt = 0;
+    BOOL on = [before[@"screenOn"] boolValue];
+    NSMutableArray *changes = [NSMutableArray array];
+    for (NSDictionary *event in RCTKJournal(since, nil, 0)[@"events"]) {
+        if ([event[@"seq"] unsignedLongLongValue] > until) break;
+        NSString *type = event[@"type"];
+        if ([type isEqualToString:@"hid.power"] || [type isEqualToString:@"hid.home"]) lastButtonAt = [event[@"t"] doubleValue];
+        if (![type isEqualToString:@"screen"]) continue;
+        if (!on && (!lastButtonAt || [event[@"t"] doubleValue] - lastButtonAt > 600)) break;
+        on = !on;
+        [changes addObject:on ? @"woke" : @"slept"];
+    }
+    NSString *screen = changes.count ? [changes componentsJoinedByString:@", then "]
+                                     : ([before[@"screenOn"] boolValue] ? @"stayed on" : @"stayed off");
+    NSString *photoBefore = before[@"latestPhoto"][@"file"], *photoAfter = after[@"latestPhoto"][@"file"];
+    BOOL screenshot = photoAfter.length && ![photoAfter isEqualToString:photoBefore ?: @""];
+    long volumeSteps = lround(([after[@"volume"] doubleValue] - [before[@"volume"] doubleValue]) * 16.0);
+    NSMutableDictionary *outcome = [@{
+        @"screen": screen,
+        @"screenshotSaved": @(screenshot),
+        @"volumeSteps": @(volumeSteps),
+        @"siri": @([after[@"siriVisible"] boolValue]),
+        @"switcher": @([after[@"switcherVisible"] boolValue]),
+    } mutableCopy];
+    if (![after[@"frontApp"] isEqual:before[@"frontApp"]]) outcome[@"frontApp"] = after[@"frontApp"] ?: @"";
+    return outcome;
+}
+
+// One pass: prompt, wait for the input, let it settle, record the outcome. Returns nil if no
+// input came (timeout, skip, stop).
+static NSDictionary *RCTKDifferentialPass(NSString *title, NSString *prompt, NSArray *buttons) {
+    NSDictionary *before = RCTKProbe();
+    unsigned long long since = RCTKRecord(@"mark", @{ @"label": title });
+    RCShowPrompt(title, prompt, @"hand.point.up.left", 60.0);
+
+    // Wait for the first press, then until nothing has been pressed for 2.5 s - or another
+    // button is pressed, which is the user waking the phone
+    double start = RCTKNowMs(), lastInput = 0;
+    unsigned long long foreign = 0;
+    while (YES) {
+        double last = 0;
+        NSDictionary *inputs = RCTKInputsSince(since, 0, buttons, &last, &foreign);
+        if (inputs.count) lastInput = last;
+        if (lastInput > 0 && (foreign || RCTKNowMs() - lastInput > 2500)) break;
+        if (g_tkSkipStep || g_tkStopRun || (lastInput == 0 && RCTKNowMs() - start > 45000)) return nil;
+        [NSThread sleepForTimeInterval:0.05];
+    }
+    unsigned long long until = RCTKRecord(@"mark", @{ @"label": [title stringByAppendingString:@" (recorded)"] });
+    if (foreign) until = foreign - 1;
+    NSDictionary *after = RCTKProbe();
+    NSDictionary *inputs = RCTKInputsSince(since, until, buttons, NULL, NULL);
+    NSDictionary *outcome = RCTKOutcome(since, until, before, after);
+
+    // If the pass left the screen off, wait for the user to wake it (that press isn't part of it)
+    if (![after[@"screenOn"] boolValue]) {
+        double waitStart = RCTKNowMs();
+        while (![RCTKProbeLight()[@"screenOn"] boolValue] && RCTKNowMs() - waitStart < 60000 && !g_tkStopRun) {
+            [NSThread sleepForTimeInterval:0.2];
+        }
+        [NSThread sleepForTimeInterval:1.0];
+    }
+    // Siri / switcher / an app left open would get in the way of the next pass
+    if ([outcome[@"siri"] boolValue] || [outcome[@"switcher"] boolValue]) {
+        RCShowPrompt(title, @"Close it and go back to the home screen", @"house", 4.0);
+        [NSThread sleepForTimeInterval:4.0];
+    }
+    return @{ @"inputs": inputs, @"outcome": outcome };
+}
+
+static const NSUInteger kRCTKDifferentialAttempts = 3; // an inconclusive step is redone twice
+
+static void RCTKSuiteDifferential(NSMutableDictionary *run) {
+    BOOL hasHome = RCTKHasHomeButton();
+    NSArray *steps = RCTKDifferentialSteps(hasHome);
+    NSDictionary *base = RCCopyTriggerConfig();
+    NSDictionary *stockConfig = RCTKConfigWith(base, NO, NO);
+    NSDictionary *tweakConfig = RCTKConfigWith(base, YES, YES);
+    @synchronized (run) { run[@"homeButton"] = @(hasHome); }
+    g_tkCapture = YES;
+    RCTKEvent(@"testkit.capture", @{ @"on": @YES });
+
+    RCShowPrompt(@"Stock vs tweak test", [NSString stringWithFormat:@"%lu inputs, each twice - starting...", (unsigned long)steps.count], @"square.split.2x1", 3.0);
+    [NSThread sleepForTimeInterval:3.5];
+
+    NSUInteger index = 0, same = 0;
+    for (NSDictionary *step in steps) {
+        index++;
+        if (g_tkStopRun) break;
+        g_tkSkipStep = NO;
+        NSString *testId = [@"differential." stringByAppendingString:step[@"id"]];
+        // An inconclusive attempt (the input wasn't the same both times, or wasn't the one
+        // asked for) is redone, up to kRCTKDifferentialAttempts in all; earlier attempts
+        // stay in the report.
+        NSMutableArray *earlier = [NSMutableArray array];
+        NSMutableDictionary *detail = nil;
+        NSString *status = nil, *retryHint = nil;
+        BOOL stepAbandoned = NO;
+        for (NSUInteger attempt = 1; attempt <= kRCTKDifferentialAttempts; attempt++) {
+            if (retryHint) {
+                RCShowPrompt([NSString stringWithFormat:@"Step %lu of %lu - again", (unsigned long)index, (unsigned long)steps.count],
+                             retryHint, @"arrow.counterclockwise", 3.0);
+                [NSThread sleepForTimeInterval:3.5];
+            }
+            NSMutableDictionary *passes = [NSMutableDictionary dictionary];
+            for (NSString *pass in @[@"stock", @"tweak"]) {
+                RCSetTriggerConfig([pass isEqualToString:@"stock"] ? stockConfig : tweakConfig);
+                [NSThread sleepForTimeInterval:0.5];
+                NSString *title = [NSString stringWithFormat:@"Step %lu of %lu - %@", (unsigned long)index, (unsigned long)steps.count,
+                                   [pass isEqualToString:@"stock"] ? @"stock" : @"with tweak"];
+                NSDictionary *result = RCTKDifferentialPass(title, step[@"prompt"], step[@"buttons"]);
+                if (!result) break;
+                passes[pass] = result;
+                RCShowPrompt(title, @"Recorded", @"checkmark", 1.0);
+                [NSThread sleepForTimeInterval:1.2];
+            }
+            if (passes.count < 2) {
+                RCTKRecordResult(run, testId, @"skip", @{ @"reason": g_tkStopRun ? @"run stopped" : @"no input / skipped", @"passes": passes,
+                                                          @"earlierAttempts": earlier }, -1);
+                stepAbandoned = YES;
+                break;
+            }
+            NSDictionary *stock = passes[@"stock"], *tweak = passes[@"tweak"];
+            detail = [@{ @"stock": stock, @"tweak": tweak, @"attempt": @(attempt) } mutableCopy];
+            NSMutableDictionary *stockInputs = [stock[@"inputs"] mutableCopy], *tweakInputs = [tweak[@"inputs"] mutableCopy];
+            if (![step[@"ordered"] boolValue]) {
+                [stockInputs removeObjectsForKeys:@[@"order", @"releasedLast"]];
+                [tweakInputs removeObjectsForKeys:@[@"order", @"releasedLast"]];
+            }
+            if (stockInputs[@"powerHeldLong"] || tweakInputs[@"powerHeldLong"]) {
+                status = @"skip";
+                detail[@"reason"] = @"not the requested input - Power was held long enough for iOS's long press (over 0.5 s)";
+                retryHint = @"Power was held too long - keep it quick";
+            } else if (![stockInputs isEqual:tweakInputs]) {
+                status = @"skip";
+                detail[@"reason"] = @"inconclusive - the presses (or their order) differed between the two passes";
+                retryHint = [step[@"ordered"] boolValue] ? @"The presses differed - same order both times, and release the last button clearly after"
+                                                         : @"The presses differed - do exactly the same thing both times";
+            } else if ([stock[@"outcome"] isEqual:tweak[@"outcome"]]) {
+                status = @"pass";
+                break;
+            } else {
+                status = @"fail";
+                NSMutableArray *differs = [NSMutableArray array];
+                NSMutableSet *keys = [NSMutableSet setWithArray:[stock[@"outcome"] allKeys]];
+                [keys addObjectsFromArray:[tweak[@"outcome"] allKeys]];
+                for (NSString *key in keys) if (![stock[@"outcome"][key] isEqual:tweak[@"outcome"][key]]) [differs addObject:key];
+                detail[@"differs"] = differs;
+                break;
+            }
+            if (attempt < kRCTKDifferentialAttempts && !g_tkStopRun) [earlier addObject:detail];
+            else break;
+        }
+        if (stepAbandoned) continue;
+        if (earlier.count) detail[@"earlierAttempts"] = earlier;
+        if ([status isEqualToString:@"pass"]) same++;
+        RCTKRecordResult(run, testId, status, detail, -1);
+        NSString *verdict = [status isEqualToString:@"pass"] ? @"Same as stock"
+                          : [status isEqualToString:@"fail"] ? [@"Differs: " stringByAppendingString:[detail[@"differs"] componentsJoinedByString:@", "]]
+                          : @"Inconclusive - the input wasn't the same both times";
+        RCShowPrompt([NSString stringWithFormat:@"Step %lu of %lu", (unsigned long)index, (unsigned long)steps.count], verdict,
+                     [status isEqualToString:@"pass"] ? @"checkmark.circle.fill" : @"exclamationmark.circle.fill", 1.5);
+        [NSThread sleepForTimeInterval:2.0];
+    }
+
+    g_tkCapture = NO;
+    RCTKEvent(@"testkit.capture", @{ @"on": @NO });
+    RCShowPrompt(@"Stock vs tweak test", [NSString stringWithFormat:@"Done: %lu of %lu same as stock", (unsigned long)same, (unsigned long)steps.count],
+                 @"flag.checkered", 3.0);
+}
+
 #pragma mark Running
 
 static NSDictionary *RCTKSuites(void) {
@@ -788,6 +1057,7 @@ static NSDictionary *RCTKSuites(void) {
         @{ @"name": @"toggles", @"changesState": @YES, @"description": @"Toggle actions switch and read back, and their conditions follow; state is snapshotted and restored. disruptive=1 adds Wi-Fi, Bluetooth, location, cellular and airplane mode" },
         @{ @"name": @"all", @"changesState": @YES, @"description": @"conditions, then toggles" },
         @{ @"name": @"guided", @"changesState": @YES, @"description": @"Banner prompts for each button and gesture trigger; passes when exactly that trigger fires. Your config is swapped for a test one (with capture on) and restored. suite/skip skips a step, suite/stop ends the run" },
+        @{ @"name": @"differential", @"changesState": @YES, @"description": @"Each Power / Volume / Home input twice - stock (master switch off) and with the tweak armed but not claiming it - and the outcomes (screen, screenshot, volume, Siri, switcher, front app) must match. Real screenshots may be saved during the run" },
     ] };
 }
 
@@ -807,7 +1077,7 @@ static NSDictionary *RCTKSummarize(NSMutableDictionary *run) {
 }
 
 static NSDictionary *RCTKRunSuite(NSString *name, BOOL disruptive, BOOL wait) {
-    if (![@[@"conditions", @"toggles", @"all", @"guided"] containsObject:name ?: @""]) {
+    if (![@[@"conditions", @"toggles", @"all", @"guided", @"differential"] containsObject:name ?: @""]) {
         return @{ @"error": [NSString stringWithFormat:@"unknown suite '%@'", name ?: @""], @"suites": RCTKSuites()[@"suites"] };
     }
     NSMutableDictionary *run;
@@ -835,6 +1105,7 @@ static NSDictionary *RCTKRunSuite(NSString *name, BOOL disruptive, BOOL wait) {
         if ([name isEqualToString:@"conditions"] || [name isEqualToString:@"all"]) RCTKSuiteConditions(run);
         if ([name isEqualToString:@"toggles"] || [name isEqualToString:@"all"]) RCTKSuiteToggles(run, disruptive);
         if ([name isEqualToString:@"guided"]) RCTKSuiteGuided(run);
+        if ([name isEqualToString:@"differential"]) RCTKSuiteDifferential(run);
         if (changesState) {
             NSDictionary *restored = RCTKRestore();
             @synchronized (run) { run[@"restored"] = restored[@"restored"] ?: @[]; }
@@ -858,10 +1129,10 @@ static NSDictionary *RCTKRunSuite(NSString *name, BOOL disruptive, BOOL wait) {
 }
 
 static NSDictionary *RCTKReport(NSString *reportId) {
-    if (!reportId.length) {
-        NSMutableDictionary *run = g_tkRun;
-        return run ? RCTKSummarize(run) : @{ @"error": @"no runs yet" };
-    }
+    NSMutableDictionary *run = g_tkRun;
+    if (!reportId.length) return run ? RCTKSummarize(run) : @{ @"error": @"no runs yet" };
+    // The run in progress isn't saved until it ends
+    if (run && [run[@"id"] isEqual:reportId] && [run[@"status"] isEqual:@"running"]) return RCTKSummarize(run);
     NSData *data = [NSData dataWithContentsOfFile:[kRCTKReportsDir stringByAppendingPathComponent:[reportId stringByAppendingString:@".json"]]];
     id report = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
     return report ?: @{ @"error": [NSString stringWithFormat:@"no report '%@'", reportId] };
