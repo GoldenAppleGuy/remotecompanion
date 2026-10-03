@@ -4,6 +4,7 @@
 #import <sys/socket.h>
 #import <sys/un.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 #import <unistd.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
@@ -95,6 +96,7 @@ static UIWindow *g_rcTapTestWindow;
 static UIWindow *g_rcTapRecordWindow = nil;
 
 void SRLog(NSString *format, ...);
+void SRLogMin(NSString *format, ...);
 #import <objc/message.h>
 
 static IOHIDEventSystemClientRef (*_IOHIDEventSystemClientCreate)(CFAllocatorRef allocator);
@@ -582,33 +584,80 @@ static NSString *rc_get_log_file_path(void) {
     return cachedLogPath ?: @"/tmp/remotecommand.log";
 }
 
-// File-based logging helper
+// The log file is trimmed to its newest RC_LOG_KEEP_BYTES once it passes RC_LOG_MAX_BYTES.
+// Trimming rewrites the same file (no rename), so `tail -f` keeps following it.
+#define RC_LOG_MAX_BYTES (2 * 1024 * 1024)
+#define RC_LOG_KEEP_BYTES (1024 * 1024)
+
+static void rc_log_trim(int fd, off_t size) {
+    char *tail = malloc(RC_LOG_KEEP_BYTES);
+    if (!tail) return;
+    ssize_t got = pread(fd, tail, RC_LOG_KEEP_BYTES, size - RC_LOG_KEEP_BYTES);
+    if (got > 0) {
+        // Start on a whole line
+        char *start = memchr(tail, '\n', (size_t)got);
+        start = start ? start + 1 : tail;
+        size_t keep = (size_t)got - (size_t)(start - tail);
+        if (ftruncate(fd, 0) == 0) pwrite(fd, start, keep, 0);
+    }
+    free(tail);
+}
+
+// Logging level, from the config's "logLevel": "off", "minimal" (the default) or "full".
+// SRLogMin lines (triggers, actions, conditions, errors, startup) are written at minimal
+// and full; SRLog lines (step-by-step detail: button and touch events, hooks, commands)
+// only at full. Set by load_trigger_config.
+static int g_rcLogLevel = 1;
+
+static int rc_log_level_from_config(NSDictionary *config) {
+    id level = config[@"logLevel"];
+    if (![level isKindOfClass:[NSString class]]) return 1;
+    if ([level isEqualToString:@"off"]) return 0;
+    if ([level isEqualToString:@"full"]) return 2;
+    return 1;
+}
+
+// Lines are written in order on a background queue, so a caller (often SpringBoard's main
+// thread) never waits on the disk
+static void rc_log_write(NSString *message) {
+    // Log to console (stderr) for syslog capture if available
+    NSLog(@"[RemoteCommand] %@", message);
+
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ queue = dispatch_queue_create("com.rc.log", DISPATCH_QUEUE_SERIAL); });
+    NSString *logMsg = [NSString stringWithFormat:@"%@ [RemoteCommand] %@\n", [NSDate date], message];
+    dispatch_async(queue, ^{
+        NSString *logPath = rc_get_log_file_path();
+        int fd = open([logPath fileSystemRepresentation], O_RDWR | O_APPEND | O_CREAT, 0666);
+        if (fd < 0) return;
+        fchmod(fd, 0666);
+        NSData *data = [logMsg dataUsingEncoding:NSUTF8StringEncoding];
+        write(fd, data.bytes, data.length);
+        off_t size = lseek(fd, 0, SEEK_END);
+        if (size > RC_LOG_MAX_BYTES) rc_log_trim(fd, size);
+        close(fd);
+    });
+}
+
+// Step-by-step detail: written only at "full"
 void SRLog(NSString *format, ...) {
+    if (g_rcLogLevel < 2) return;
     va_list args;
     va_start(args, format);
     NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
     va_end(args);
-    
-    // Log to console (stderr) for syslog capture if available
-    NSLog(@"[RemoteCommand] %@", message);
-    
-    // Write to file with synchronization
-    @synchronized([NSFileManager defaultManager]) {
-        NSString *logPath = rc_get_log_file_path();
-        NSString *logMsg = [NSString stringWithFormat:@"%@ [RemoteCommand] %@\n", [NSDate date], message];
-        NSFileHandle *fileHandle = [NSFileHandle fileHandleForWritingAtPath:logPath];
-        if (fileHandle) {
-            @try {
-                [fileHandle seekToEndOfFile];
-                [fileHandle writeData:[logMsg dataUsingEncoding:NSUTF8StringEncoding]];
-                [fileHandle synchronizeFile]; // Force flush to disk
-                [fileHandle closeFile];
-            } @catch (NSException *e) {}
-        } else {
-            [logMsg writeToFile:logPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-            chmod([logPath UTF8String], 0666);
-        }
-    }
+    rc_log_write(message);
+}
+
+// Triggers, actions, conditions, errors and startup: written at "minimal" and "full"
+void SRLogMin(NSString *format, ...) {
+    if (g_rcLogLevel < 1) return;
+    va_list args;
+    va_start(args, format);
+    NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+    rc_log_write(message);
 }
 
 // Add DND Toggle Helper
@@ -663,7 +712,7 @@ static void toggle_dnd(BOOL state) {
                                                                            lifetime:nil];
                 NSError *err = nil;
                 id assertion = [service takeModeAssertionWithDetails:details error:&err];
-                if (err) SRLog(@"Failed to enable DND: %@", err);
+                if (err) SRLogMin(@"Failed to enable DND: %@", err);
                 else SRLog(@"DND Enabled. Assertion: %@", assertion);
             } else {
                 SRLog(@"DND Disabled");
@@ -712,7 +761,7 @@ static void toggle_lpm(BOOL state) {
             
             id saver = [BatterySaverClass batterySaver];
             if (!saver) {
-                SRLog(@"Failed to get batterySaver instance");
+                SRLogMin(@"Failed to get batterySaver instance");
                 return;
             }
             
@@ -720,7 +769,7 @@ static void toggle_lpm(BOOL state) {
             BOOL result = [saver setPowerMode:mode error:&err];
             
             if (err) {
-                SRLog(@"Failed to set LPM: %@", err);
+                SRLogMin(@"Failed to set LPM: %@", err);
             } else {
                 SRLog(@"LPM %@. Result: %d", state ? @"Enabled" : @"Disabled", result);
             }
@@ -1151,7 +1200,7 @@ static void inject_hid_event(uint32_t page, uint32_t usage, uint64_t durationNs,
     dispatch_async(hidQueue, ^{
         IOHIDEventSystemClientRef client = _IOHIDEventSystemClientCreate(kCFAllocatorDefault);
         if (!client) {
-            SRLog(@"ERROR: Could not create HID event system client");
+            SRLogMin(@"ERROR: Could not create HID event system client");
             return;
         }
 
@@ -1591,16 +1640,36 @@ static void load_trigger_config() {
         NSString *path = find_config_path();
         
         if (path) {
+            // This runs on almost every event (touches, button presses, commands): parse the
+            // file only when it has changed since the last load. Every in-memory change is
+            // saved to the file, so the file is always the newest config.
+            static NSString *loadedPath;
+            static struct timespec loadedTime;
+            static off_t loadedSize = -1;
+            static ino_t loadedInode;
+            struct stat st;
+            BOOL haveStat = stat([path fileSystemRepresentation], &st) == 0;
+            if (haveStat && g_triggerConfig && [path isEqualToString:loadedPath] && st.st_ino == loadedInode && st.st_size == loadedSize &&
+                st.st_mtimespec.tv_sec == loadedTime.tv_sec && st.st_mtimespec.tv_nsec == loadedTime.tv_nsec) {
+                return;
+            }
             NSDictionary *newConfig = [NSDictionary dictionaryWithContentsOfFile:path];
             if (newConfig) {
                 // Thread-safe update: replace the pointer
                 g_triggerConfig = newConfig;
                 g_resolvedConfigPath = path;
-                SRLog(@"Loaded trigger config from %@: triggers=%lu",
+                g_rcLogLevel = rc_log_level_from_config(newConfig);
+                if (haveStat) {
+                    loadedPath = path;
+                    loadedTime = st.st_mtimespec;
+                    loadedSize = st.st_size;
+                    loadedInode = st.st_ino;
+                }
+                SRLogMin(@"Loaded trigger config from %@: triggers=%lu",
                       path,
                       (unsigned long)[g_triggerConfig[@"triggers"] count]);
             } else {
-                SRLog(@"Failed to parse config at %@", path);
+                SRLogMin(@"Failed to parse config at %@", path);
             }
         } else {
             SRLog(@"No trigger config found at shared path or in app containers");
@@ -1642,7 +1711,7 @@ static void config_changed_callback(CFNotificationCenterRef center, void *observ
             start_mqtt_subscriber();
             SRLog(@"Config reload complete.");
         } @catch (NSException *e) {
-            SRLog(@"CRITICAL ERROR in config_changed_callback: %@\nStack: %@", e, e.callStackSymbols);
+            SRLogMin(@"CRITICAL ERROR in config_changed_callback: %@\nStack: %@", e, e.callStackSymbols);
         }
     });
 }
@@ -1667,7 +1736,7 @@ static void save_trigger_config() {
                 success = YES;
                 SRLog(@"[WebUI] Saved config to shared path via POSIX: %@", sharedPath);
             } else {
-                SRLog(@"[WebUI] Failed to save to shared path (errno: %d)", errno);
+                SRLogMin(@"[WebUI] Failed to save to shared path (errno: %d)", errno);
             }
         } else {
             SRLog(@"[WebUI] Saved config to shared path: %@", sharedPath);
@@ -1683,7 +1752,7 @@ static void save_trigger_config() {
             notify_post("com.pizzaman.rc.configchanged");
         }
     } else {
-        SRLog(@"[WebUI] Failed to serialize config: %@", error);
+        SRLogMin(@"[WebUI] Failed to serialize config: %@", error);
     }
     }
 
@@ -2322,7 +2391,7 @@ static void rc_execute_action_sequence(NSArray *actions, NSString *triggerKey, B
         
         if ([actionItem isKindOfClass:[NSString class]]) {
             NSString *action = (NSString *)actionItem;
-            SRLog(@"[%@] -> %@", triggerKey, action);
+            SRLogMin(@"[%@] -> %@", triggerKey, action);
             handle_command(action);
             rc_maybe_show_action_banner(action);
             usleep(simulationMode ? 50000 : 10000);
@@ -2339,7 +2408,7 @@ static void rc_execute_action_sequence(NSArray *actions, NSString *triggerKey, B
         
         if ([type isEqualToString:@"if"]) {
             BOOL shouldRunBlock = rc_evaluate_if_condition(dictAction);
-            SRLog(@"[%@] If %@ == %@ -> %@", triggerKey, dictAction[@"conditionKey"], dictAction[@"expectedValue"], shouldRunBlock ? @"TRUE" : @"FALSE");
+            SRLogMin(@"[%@] If %@ == %@ -> %@", triggerKey, dictAction[@"conditionKey"], dictAction[@"expectedValue"], shouldRunBlock ? @"TRUE" : @"FALSE");
             
             if (shouldRunBlock) {
                 // TRUE branch: just continue to next item. 
@@ -2362,7 +2431,7 @@ static void rc_execute_action_sequence(NSArray *actions, NSString *triggerKey, B
                         if (rc_is_else_if_action_item(item)) {
                             NSDictionary *elseIfDict = (NSDictionary *)item;
                             BOOL elseIfVal = rc_evaluate_if_condition(elseIfDict);
-                            SRLog(@"[%@] Else If %@ == %@ -> %@", triggerKey, elseIfDict[@"conditionKey"], elseIfDict[@"expectedValue"], elseIfVal ? @"TRUE" : @"FALSE");
+                            SRLogMin(@"[%@] Else If %@ == %@ -> %@", triggerKey, elseIfDict[@"conditionKey"], elseIfDict[@"expectedValue"], elseIfVal ? @"TRUE" : @"FALSE");
                             if (elseIfVal) {
                                 idx = skipIdx;
                                 foundNextBranch = YES;
@@ -2478,7 +2547,7 @@ static void update_simulation_observers() {
             SRLog(@"Registered %d NEW simulation observers (Total: %lu)", count, (unsigned long)g_registeredTriggers.count);
         }
     } @catch (NSException *e) {
-         SRLog(@"ERROR in update_simulation_observers: %@", e);
+         SRLogMin(@"ERROR in update_simulation_observers: %@", e);
     }
 }
 
@@ -2498,7 +2567,7 @@ void RCExecuteTrigger(NSString *triggerKey) {
         SRLog(@"Config missing, attempting to load...");
         load_trigger_config();
         if (!g_triggerConfig) {
-            SRLog(@"ERROR: Could not load trigger config for '%@'", triggerKey);
+            SRLogMin(@"ERROR: Could not load trigger config for '%@'", triggerKey);
             return;
         }
     }
@@ -2511,7 +2580,7 @@ void RCExecuteTrigger(NSString *triggerKey) {
     
     id triggers = g_triggerConfig[@"triggers"];
     if (!triggers || ![triggers isKindOfClass:[NSDictionary class]]) {
-        SRLog(@"ERROR: Triggers dictionary is missing or invalid");
+        SRLogMin(@"ERROR: Triggers dictionary is missing or invalid");
         return;
     }
     
@@ -2532,7 +2601,7 @@ void RCExecuteTrigger(NSString *triggerKey) {
         return;
     }
     
-    SRLog(@"TRIGGER FIRED: '%@' -> Executing %lu actions", triggerKey, (unsigned long)actions.count);
+    SRLogMin(@"TRIGGER FIRED: '%@' -> Executing %lu actions", triggerKey, (unsigned long)actions.count);
     
     // Execute on background queue to allow for delays and blocking operations
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -3473,7 +3542,7 @@ static void rc_load_touch_symbols(void) {
         void *handle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW | RTLD_NOLOAD);
         if (!handle) handle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
         if (!handle) {
-            SRLog(@"[Touch] Failed to open IOKit framework");
+            SRLogMin(@"[Touch] Failed to open IOKit framework");
             return;
         }
         if (!_IOHIDEventSystemClientCreate)
@@ -3872,7 +3941,7 @@ static void rc_spawn_root_iohid(NSString *subcommand, NSArray *args) {
         int exit_status;
         waitpid(pid, &exit_status, 0);
     } else {
-        SRLog(@"[Touch] posix_spawn failed for rc-root: %d", status);
+        SRLogMin(@"[Touch] posix_spawn failed for rc-root: %d", status);
     }
     free(argv);
 }
@@ -6031,7 +6100,7 @@ static void rc_execute_shortcut(NSString *shortcutName, NSString *inputArg) {
                 if (descriptor) {
                     WFWorkflowRunnerClient *client = (WFWorkflowRunnerClient *)[[WFWorkflowRunnerClientClass alloc] initWithWorkflowDescriptor:descriptor input:inputArg parseInput:NO output:nil completion:^(id output, NSError *error) {
                         if (error) {
-                            SRLog(@"[Shortcut] '%@' failed: %@", cleanName, error);
+                            SRLogMin(@"[Shortcut] '%@' failed: %@", cleanName, error);
                         } else {
                             SRLog(@"[Shortcut] '%@' completed successfully", cleanName);
                         }
@@ -6092,7 +6161,7 @@ static void rc_execute_shortcut(NSString *shortcutName, NSString *inputArg) {
                     });
                     return;
                 } else {
-                    SRLog(@"[Shortcut] posix_spawn springcuts failed: %d (%s)", result, strerror(result));
+                    SRLogMin(@"[Shortcut] posix_spawn springcuts failed: %d (%s)", result, strerror(result));
                 }
             }
             
@@ -6549,7 +6618,7 @@ static NSString *rc_handle_autolock(NSString *arg) {
 
 static NSString *handle_command(NSString *cmd) {
     if (!cmd || ![cmd isKindOfClass:[NSString class]]) {
-        SRLog(@"ERROR: handle_command received nil or invalid command string");
+        SRLogMin(@"ERROR: handle_command received nil or invalid command string");
         return @"Error: Invalid command\n";
     }
     NSString *cleanCmd = [cmd stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -6996,7 +7065,7 @@ static NSString *handle_command(NSString *cmd) {
         dispatch_async(dispatch_get_main_queue(), ^{
             Class AVOutputContextClass = objc_getClass("AVOutputContext");
             if (!AVOutputContextClass) {
-                SRLog(@"ERROR: AVOutputContext class not found");
+                SRLogMin(@"ERROR: AVOutputContext class not found");
                 return;
             }
             
@@ -7013,7 +7082,7 @@ static NSString *handle_command(NSString *cmd) {
                     if (success) {
                         SRLog(@"ANC mode set successfully on %@", device.name);
                     } else {
-                        SRLog(@"Failed to set ANC mode: %@", error);
+                        SRLogMin(@"Failed to set ANC mode: %@", error);
                     }
                     return;
                 }
@@ -7297,7 +7366,7 @@ static NSString *handle_command(NSString *cmd) {
                      RC_PressPowerAfterRelease();
                  }
             } else {
-                SRLog(@"[SmartLock] ERROR: manager is nil or does not respond to isUILocked. Forcing lock.");
+                SRLogMin(@"[SmartLock] ERROR: manager is nil or does not respond to isUILocked. Forcing lock.");
                  RC_PressPowerAfterRelease();
             }
         });
@@ -7369,7 +7438,7 @@ static NSString *handle_command(NSString *cmd) {
             // Wait for screen to wake/process (0.5s delay for more reliability)
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 if (!manager) {
-                    SRLog(@"[SmartUnlock] ERROR: Manager became nil!");
+                    SRLogMin(@"[SmartUnlock] ERROR: Manager became nil!");
                     return;
                 }
                 
@@ -7383,7 +7452,7 @@ static NSString *handle_command(NSString *cmd) {
                     [manager unlockUIFromSource:0 withOptions:nil];
                     SRLog(@"[SmartUnlock] unlockUIFromSource called");
                 } else {
-                    SRLog(@"[SmartUnlock] ERROR: No supported unlock method found on manager!");
+                    SRLogMin(@"[SmartUnlock] ERROR: No supported unlock method found on manager!");
                 }
             });
         });
@@ -7555,7 +7624,7 @@ static NSString *handle_command(NSString *cmd) {
                                     // Send explicit PLAY command (kMRPlay = 0) to Spotify
                                     SRLog(@"Sending kMRPlay to com.spotify.client");
                                     SendCommandToApp(kMRPlay, nil, nil, @"com.spotify.client", 0, dispatch_get_main_queue(), ^(NSError *err){
-                                         if (err) SRLog(@"MR Play Error: %@", err);
+                                         if (err) SRLogMin(@"MR Play Error: %@", err);
                                          else SRLog(@"MR Play sent successfully");
                                     });
                                 }
@@ -8661,7 +8730,7 @@ static NSString *handle_command(NSString *cmd) {
                     result = WEXITSTATUS(status);
                 }
             } else {
-                SRLog(@"posix_spawn failed: %d", spawn_result);
+                SRLogMin(@"posix_spawn failed: %d", spawn_result);
             }
             SRLog(@"Root command finished with exit code: %d", result);
         });
@@ -8716,7 +8785,7 @@ static NSString *handle_command(NSString *cmd) {
                         result = WEXITSTATUS(status);
                     }
                 } else {
-                    SRLog(@"posix_spawn %s failed: %d", sh, spawn_result);
+                    SRLogMin(@"posix_spawn %s failed: %d", sh, spawn_result);
                 }
 
                 // Cleanup
@@ -9337,7 +9406,7 @@ static void start_web_server() {
         if ((server_fd = socket(AF_INET6, SOCK_STREAM, 0)) < 0) {
             // Fallback to IPv4 socket if IPv6 creation fails
             if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-                SRLog(@"[WebUI] socket failed");
+                SRLogMin(@"[WebUI] socket failed");
                 return;
             }
         } else {
@@ -9385,7 +9454,7 @@ static void start_web_server() {
         }
         
         if (!bound || port >= 8100) {
-            SRLog(@"[WebUI] bind failed (ports 8080-8099 all taken)");
+            SRLogMin(@"[WebUI] bind failed (ports 8080-8099 all taken)");
             close(server_fd);
             return;
         }
@@ -9393,12 +9462,12 @@ static void start_web_server() {
         g_actualWebPort = port;
         
         if (listen(server_fd, 5) < 0) {
-            SRLog(@"[WebUI] listen failed");
+            SRLogMin(@"[WebUI] listen failed");
             close(server_fd);
             return;
         }
 
-        SRLog(@"[WebUI] Server listening on port %d", port);
+        SRLogMin(@"[WebUI] Server listening on port %d", port);
 
         while (1) {
             struct sockaddr_storage client_addr;
@@ -10233,7 +10302,7 @@ static void start_server() {
         NSString *socketPath = @"/var/mobile/Documents/rc.sock";
 
         if ((server_fd = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
-            SRLog(@"[RemoteCommand] ERROR: Failed to create socket (errno: %d)", errno);
+            SRLogMin(@"[RemoteCommand] ERROR: Failed to create socket (errno: %d)", errno);
             return;
         }
 
@@ -10248,7 +10317,7 @@ static void start_server() {
         strncpy(address.sun_path, [socketPath UTF8String], sizeof(address.sun_path) - 1);
         
         if (bind(server_fd, (struct sockaddr *)&address, sizeof(struct sockaddr_un)) < 0) {
-            SRLog(@"[RemoteCommand] ERROR: Failed to bind to socket (errno: %d - %s)", errno, strerror(errno));
+            SRLogMin(@"[RemoteCommand] ERROR: Failed to bind to socket (errno: %d - %s)", errno, strerror(errno));
             close(server_fd);
             return;
         }
@@ -10257,19 +10326,19 @@ static void start_server() {
         chmod([socketPath UTF8String], 0777);
         
         if (listen(server_fd, 5) < 0) {
-            SRLog(@"[RemoteCommand] ERROR: Failed to listen (errno: %d)", errno);
+            SRLogMin(@"[RemoteCommand] ERROR: Failed to listen (errno: %d)", errno);
             close(server_fd);
             return;
         }
 
-        SRLog(@"[RemoteCommand] Server listening on UNIX socket %@... Waiting for connections.", socketPath);
+        SRLogMin(@"[RemoteCommand] Server listening on UNIX socket %@... Waiting for connections.", socketPath);
 
         while (1) {
             addrlen = sizeof(address);
             
             if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
                  if (errno != EAGAIN && errno != EINTR) {
-                     SRLog(@"[RemoteCommand] Accept failed: %d (%s)", errno, strerror(errno));
+                     SRLogMin(@"[RemoteCommand] Accept failed: %d (%s)", errno, strerror(errno));
                  }
                  continue;
             }
@@ -11843,7 +11912,7 @@ static void setup_background_hid_listener() {
         // Create client
         g_hidClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
         if (!g_hidClient) {
-            SRLog(@"❌ Failed to create HID Client");
+            SRLogMin(@"❌ Failed to create HID Client");
             return;
         }
         
@@ -12495,7 +12564,6 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                 inBottomRegion = (loc.x < 50);
             }
 
-            SRLog(@"[Debug] TouchBegan phys=(%.1f, %.1f) orient=%ld (T=%d B=%d)", loc.x, loc.y, (long)orientation, inTopRegion, inBottomRegion);
             
             if (inTopRegion) {
                 g_statusBarSwipeStartX = loc.x;
@@ -12764,7 +12832,6 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                             RCExecuteTrigger(trigger);
                         }
                     }
-                    SRLog(@"[Debug] Ended: user_dx=%.1f user_dy=%.1f orient=%ld isHoz=%d isVertUp=%d", user_dx, user_dy, (long)orientation, isHoz, isVertUp);
                     g_statusBarTouchActive = NO;
                     g_bottomBarTouchActive = NO;
                     g_statusBarHoldTriggered = NO;
@@ -12943,7 +13010,7 @@ static void register_edge_gestures() {
     if (!g_gestureManager) {
         g_gestureManager = [%c(SBSystemGestureManager) mainDisplayManager];
         if (!g_gestureManager) {
-            SRLog(@"ERROR: Could not find mainDisplayManager");
+            SRLogMin(@"ERROR: Could not find mainDisplayManager");
             return;
         }
     }
@@ -13006,7 +13073,7 @@ static void update_edge_gestures() {
             // SRLog(@"Edge gestures not needed and not registered");
         }
     } @catch (NSException *e) {
-        SRLog(@"ERROR in update_edge_gestures: %@", e);
+        SRLogMin(@"ERROR in update_edge_gestures: %@", e);
     }
 }
 

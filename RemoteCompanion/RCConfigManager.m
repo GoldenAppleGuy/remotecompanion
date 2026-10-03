@@ -242,6 +242,16 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     [self saveConfig];
 }
 
+- (NSString *)logLevel {
+    NSString *level = _config[@"logLevel"];
+    return [@[@"off", @"minimal", @"full"] containsObject:level] ? level : @"minimal";
+}
+
+- (void)setLogLevel:(NSString *)logLevel {
+    _config[@"logLevel"] = logLevel;
+    [self saveConfig];
+}
+
 - (NSArray<NSDictionary *> *)bannerActions {
     id list = _config[@"bannerActions"];
     return [list isKindOfClass:[NSArray class]] ? list : @[];

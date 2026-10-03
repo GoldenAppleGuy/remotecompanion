@@ -6,6 +6,9 @@
 @property (nonatomic, assign) BOOL masterEnabled;
 @property (nonatomic, assign) BOOL tcpEnabled;
 @property (nonatomic, assign) BOOL webUIEnabled;
+// The tweak's log: @"off", @"minimal" (the default: triggers, actions, conditions, errors)
+// or @"full" (every step, for chasing a bug)
+@property (nonatomic, copy) NSString *logLevel;
 // Settings > Banners: actions that show a banner when a trigger runs them (built by RCBannersViewController)
 @property (nonatomic, copy) NSArray<NSDictionary *> *bannerActions;
 // Actions with a banner of their own that have been switched off in Settings > Banners
