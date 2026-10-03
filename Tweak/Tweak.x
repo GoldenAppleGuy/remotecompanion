@@ -10403,11 +10403,8 @@ static NSUInteger g_replayAwaitingSequenceCount = 0;
 static NSUInteger g_replayAwaitGeneration = 0;
 // Lets a new real press cancel the rest of a multi-press replay (RC_ReplayPowerPresses)
 static NSUInteger g_replayChainGeneration = 0;
-// When each press of the current deferred click sequence was released, so a multi-press
-// replay can keep the original gaps between presses (see RC_ReplayNextPowerPress)
+// The most presses of a click sequence a replay keeps the timing of (g_hidPowerDowns)
 #define RC_MAX_SEQUENCE_PRESSES 8
-static NSTimeInterval g_sequencePressTimes[RC_MAX_SEQUENCE_PRESSES];
-static NSUInteger g_sequencePressCount = 0;
 
 static void RC_MarkPowerVolComboFired(void) {
     g_lastPowerVolComboFireTime = [[NSDate date] timeIntervalSince1970];
@@ -10461,11 +10458,17 @@ static void RC_SetScreenshotRecognizerSuppressed(BOOL suppress) {
 // suppress the system press unconditionally while a multi-click trigger is
 // armed, count on the main thread inside the hook, and REPLAY the original
 // press if the sequence turns out not to match any enabled trigger.
-static BOOL g_powerIsReplaying = NO;          // recursion guard for the replay
-static BOOL g_replayDownAwaitingUp = NO;      // the injected replay press has gone down; its
-                                               // release is the next performButtonUpPreActions
-static BOOL g_replayAwaitingSinglePress = NO; // the replay finished; the next singlePress: is its
-                                               // own, and the only one a deferred press should get
+static BOOL g_powerIsReplaying = NO;          // a replay's presses are on their way (recursion guard)
+static NSUInteger g_replayPressCount = 0;     // presses in the replay in progress
+static volatile NSUInteger g_replayDownsSeen = 0; // its press-downs the HID listener has seen
+static NSUInteger g_replayUpsHandled = 0;     // its releases performButtonUpPreActions has passed on
+static NSUInteger g_replaySinglePressesAllowed = 0; // singlePress: calls owed to replayed presses -
+                                               // the only ones a deferred press should get
+// Real Power presses as the hardware timed them (HID listener), for a multi-press replay to
+// repeat exactly (RC_ReplayPowerPresses). A new sequence starts after a second without one.
+static double g_hidPowerDowns[RC_MAX_SEQUENCE_PRESSES], g_hidPowerUps[RC_MAX_SEQUENCE_PRESSES];
+static NSUInteger g_hidPowerPresses = 0;
+static double g_hidPowerLastUp = 0;
 static NSUInteger g_replayGeneration = 0;     // lets a stale fallback timer skip a newer replay
 static BOOL g_walletIsReplaying = NO;         // separate guard: Wallet's replay can take ~1-2s to
                                                // open (no predictive fast-path), and must not hold
@@ -10569,60 +10572,109 @@ static BOOL RC_ShouldDeferPowerPress(void) {
 // the Down/Up timing itself, identically to a real press, reaching whatever
 // actually turns the backlight off (not just the Actions-class notifications).
 //
-// The replay stays marked as ours until its own release reaches
-// performButtonUpPreActions (see g_replayDownAwaitingUp), not for a fixed
-// time. A fixed 200ms window was too short for the first injection after a
-// respring, which is slower: confirmed in the field, the injected release
-// landed after the window closed, was filtered as a phantom, and the native
-// lock got its press-down with no release - locked, screen left on.
-static void RC_ReplayPowerPress(void) {
+// Posts Power presses - press-downs and releases at offsets (seconds) from the first
+// press-down - from a thread of its own, on time to the millisecond, through the same path
+// as the real button. A new real press (g_replayChainGeneration) stops any press not yet
+// started; one already down always gets its release.
+static void RC_InjectPowerTimeline(NSArray<NSNumber *> *downs, NSArray<NSNumber *> *ups, NSUInteger generation) {
+    static IOHIDEventSystemClientRef (*create)(CFAllocatorRef);
+    static IOHIDEventRef (*keyboardEvent)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, boolean_t, IOOptionBits);
+    static void (*dispatchEvent)(IOHIDEventSystemClientRef, IOHIDEventRef);
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        void *iokit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
+        create = (IOHIDEventSystemClientRef (*)(CFAllocatorRef))dlsym(iokit, "IOHIDEventSystemClientCreate");
+        keyboardEvent = (IOHIDEventRef (*)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, boolean_t, IOOptionBits))dlsym(iokit, "IOHIDEventCreateKeyboardEvent");
+        dispatchEvent = (void (*)(IOHIDEventSystemClientRef, IOHIDEventRef))dlsym(iokit, "IOHIDEventSystemClientDispatchEvent");
+        queue = dispatch_queue_create("com.rc.power.replay", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
+    });
+    if (!create || !keyboardEvent || !dispatchEvent) return;
+    NSMutableArray<NSArray *> *events = [NSMutableArray array]; // @[offset, down?, press]
+    for (NSUInteger i = 0; i < downs.count; i++) {
+        [events addObject:@[downs[i], @YES, @(i)]];
+        [events addObject:@[ups[i], @NO, @(i)]];
+    }
+    [events sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) { return [a[0] compare:b[0]]; }];
+    dispatch_async(queue, ^{
+        IOHIDEventSystemClientRef client = create(kCFAllocatorDefault);
+        if (!client) return;
+        mach_timebase_info_data_t base;
+        mach_timebase_info(&base);
+        uint64_t t0 = mach_absolute_time();
+        NSMutableSet *down = [NSMutableSet set];
+        for (NSArray *event in events) {
+            BOOL isDown = [event[1] boolValue];
+            if (isDown && generation != g_replayChainGeneration) continue; // superseded: don't start more
+            if (!isDown && ![down containsObject:event[2]]) continue;
+            mach_wait_until(t0 + (uint64_t)([event[0] doubleValue] * 1e9 * base.denom / base.numer));
+            IOHIDEventRef hid = keyboardEvent(kCFAllocatorDefault, mach_absolute_time(), kHIDPage_Consumer, kHIDUsage_Csmr_Power, isDown, 0);
+            if (hid) {
+                dispatchEvent(client, hid);
+                CFRelease(hid);
+            }
+            if (isDown) [down addObject:event[2]]; else [down removeObject:event[2]];
+        }
+        CFRelease(client);
+    });
+}
+
+// Hands presses back to the system as one timeline (see RC_InjectPowerTimeline). They stay
+// marked as ours until each one's release has reached performButtonUpPreActions (not for a
+// fixed time: the first injection after a respring is slower - a fixed 200ms window once let
+// a release through as a phantom, and the phone locked with the screen left on).
+static void RC_ReplayPowerTimeline(NSArray<NSNumber *> *downs, NSArray<NSNumber *> *ups) {
+    if (!downs.count) return;
     dispatch_async(dispatch_get_main_queue(), ^{
-        SRLog(@"[Power] ▶️ Replaying system power press (HID injection)");
+        SRLog(@"[Power] ▶️ Replaying %lu system power press(es) (HID injection, original timing)", (unsigned long)downs.count);
         NSUInteger generation = ++g_replayGeneration;
         g_powerIsReplaying = YES;
-        g_replayDownAwaitingUp = NO;
-        inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_Power, 0, 0);
-        // Fallback only, in case the injected release never reaches the hook.
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        g_replayPressCount = downs.count;
+        g_replayDownsSeen = 0;
+        g_replayUpsHandled = 0;
+        RC_InjectPowerTimeline(downs, ups, g_replayChainGeneration);
+        // Fallback only, in case an injected release never reaches the hook.
+        double last = [[ups valueForKeyPath:@"@max.doubleValue"] doubleValue];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((last + 1.5) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (generation != g_replayGeneration || !g_powerIsReplaying) return;
             SRLog(@"⚠️ [Power] Replayed release never arrived - ending replay window");
             g_powerIsReplaying = NO;
-            g_replayDownAwaitingUp = NO;
         });
     });
 }
 
-// Replays the next press of a multi-press replay once the previous replay has finished
-// and the original gap between the two presses has passed, so iOS sees them with the
-// timing they had. iOS's own rules depend on it: a second press right after a sleep
-// wakes an iOS 14 iPhone but is ignored on an iPhone 15, so evenly spaced replays don't
-// reproduce stock.
-static void RC_ReplayNextPowerPress(NSArray<NSNumber *> *gaps, NSUInteger index, NSTimeInterval previousStart, NSUInteger generation) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.02 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (generation != g_replayChainGeneration) return; // a real press started something new
-        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-        BOOL previousStillReplaying = g_powerIsReplaying && now - previousStart < 3.0;
-        if (previousStillReplaying || now < previousStart + gaps[index].doubleValue) {
-            RC_ReplayNextPowerPress(gaps, index, previousStart, generation);
-            return;
-        }
-        RC_ReplayPowerPress();
-        if (index + 1 < gaps.count) RC_ReplayNextPowerPress(gaps, index + 1, now, generation);
-    });
+// One press, for an action (Lock Device, "button power") or a deferred single press
+static void RC_ReplayPowerPress(void) {
+    RC_ReplayPowerTimeline(@[@0], @[@0.05]);
 }
 
-// Hands `count` deferred presses back to the system, keeping their original spacing
+// Hands `count` deferred presses back to the system with the timing the hardware gave them -
+// how long each was held (up to 0.12 s), and the gaps between them - so iOS sees what it would have seen
+// and applies its own rules. They depend on that timing: a press that lands while the screen
+// is still fading out after a sleep is absorbed (iPhone 15, lock screen), and a second press
+// right after a sleep wakes an iOS 14 iPhone. Without the hardware's times (none recorded),
+// presses 0.3 s apart.
 static void RC_ReplayPowerPresses(NSUInteger count) {
     if (count == 0) return;
-    NSUInteger generation = ++g_replayChainGeneration;
-    NSMutableArray<NSNumber *> *gaps = [NSMutableArray array];
-    for (NSUInteger i = 1; i < count; i++) {
-        NSTimeInterval gap = (i < g_sequencePressCount) ? g_sequencePressTimes[i] - g_sequencePressTimes[i - 1] : 0.3;
-        [gaps addObject:@(gap)];
+    g_replayChainGeneration++;
+    NSMutableArray<NSNumber *> *downs = [NSMutableArray array], *ups = [NSMutableArray array];
+    BOOL timed = g_hidPowerPresses >= count;
+    for (NSUInteger i = 0; i < count && timed; i++) if (g_hidPowerUps[i] <= g_hidPowerDowns[i]) timed = NO;
+    for (NSUInteger i = 0; i < count; i++) {
+        if (timed) {
+            // Held no longer than a tap (real ones are 60-90 ms): a long hold is iOS's long press
+            // (Siri), and an iPhone 15's lock screen didn't sleep for a 200 ms one - the press may
+            // have been long only because of a chord the replay doesn't repeat (a Volume button
+            // clicked inside it)
+            double down = g_hidPowerDowns[i] - g_hidPowerDowns[0];
+            [downs addObject:@(down)];
+            [ups addObject:@(down + MIN(g_hidPowerUps[i] - g_hidPowerDowns[i], 0.12))];
+        } else {
+            [downs addObject:@(0.3 * i)];
+            [ups addObject:@(0.3 * i + 0.06)];
+        }
     }
-    NSTimeInterval start = [[NSDate date] timeIntervalSince1970];
-    RC_ReplayPowerPress();
-    if (gaps.count) RC_ReplayNextPowerPress(gaps, 0, start, generation);
+    RC_ReplayPowerTimeline(downs, ups);
 }
 
 // A power press requested by an action (Lock Device, "button power"). Injected as a
@@ -11734,11 +11786,22 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
             // processes it normally for the actual lock/sleep effect.
             if (g_powerIsReplaying) {
                 SRLog(@"[HID] (replay) Power %@ seen on the HID bus", down ? @"DOWN" : @"UP");
-                if (down) g_replayDownAwaitingUp = YES;
+                if (down) g_replayDownsSeen++;
                 return;
             }
             NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
             static NSTimeInterval lastPowerDownTime = 0;
+            if (down) {
+                if (now - g_hidPowerLastUp > 1.0) g_hidPowerPresses = 0;
+                if (g_hidPowerPresses < RC_MAX_SEQUENCE_PRESSES) {
+                    g_hidPowerDowns[g_hidPowerPresses] = now;
+                    g_hidPowerUps[g_hidPowerPresses] = 0;
+                    g_hidPowerPresses++;
+                }
+            } else {
+                if (g_hidPowerPresses > 0 && g_hidPowerPresses <= RC_MAX_SEQUENCE_PRESSES) g_hidPowerUps[g_hidPowerPresses - 1] = now;
+                g_hidPowerLastUp = now;
+            }
 
             if (down) {
                 // Outside the !g_powerIsDown guard: the main thread can set
@@ -12005,7 +12068,6 @@ static void setup_background_hid_listener() {
 
     if (g_powerIsReplaying) {
         SRLog(@"[Power] Replay: injected press-down reached performInitialButtonDownActions");
-        g_replayDownAwaitingUp = YES;
         %orig;
         return;
     }
@@ -12019,12 +12081,11 @@ static void setup_background_hid_listener() {
     g_powerSuppressPostUp = NO; // fresh press
     g_powerIsDown = YES;
     g_powerDownAwaitingUp = YES;
-    g_replayAwaitingSinglePress = NO; // a new real press; any unclaimed replay slot is stale
+    g_replaySinglePressesAllowed = 0; // a new real press; any unclaimed replay slot is stale
     g_powerPressIsCombo = NO;
     g_powerReleasedWithVolumeHeld = NO;
     if (g_powerClickCount == 0) { // a new click sequence
         g_nativeSinglePressCount = 0;
-        g_sequencePressCount = 0;
     }
 
     g_replayAwaitingSequenceCount = 0;
@@ -12120,17 +12181,18 @@ static void setup_background_hid_listener() {
     g_powerActionsInstance = self;
 
     if (g_powerIsReplaying) {
-        if (g_replayDownAwaitingUp) {
-            // The injected press's own release: hand it through, and the
-            // replay is complete.
-            SRLog(@"[Power] Replay: injected release reached performButtonUpPreActions - replay complete");
-            g_replayAwaitingSinglePress = YES;
-            g_replayDownAwaitingUp = NO;
-            g_powerIsReplaying = NO;
+        // A release of one of the replay's presses (iOS doesn't deliver every press-down to
+        // performInitialButtonDownActions, but the HID listener sees them all): hand it
+        // through, and the replay is complete once all of them have come through.
+        if (g_replayDownsSeen > g_replayUpsHandled) {
+            g_replayUpsHandled++;
+            g_replaySinglePressesAllowed++;
+            if (g_replayUpsHandled >= g_replayPressCount) g_powerIsReplaying = NO;
+            SRLog(@"[Power] Replay: injected release %lu of %lu reached performButtonUpPreActions", (unsigned long)g_replayUpsHandled, (unsigned long)g_replayPressCount);
             %orig;
             return;
         }
-        // Arrived before the injected press went down, so it's the real
+        // Arrived before any of the replay's presses went down, so it's the real
         // press's own phantom call - don't let it reach %orig.
         SRLog(@"Ignoring phantom performButtonUpPreActions call during replay");
         g_powerSuppressPostUp = YES;
@@ -12207,11 +12269,6 @@ static void setup_background_hid_listener() {
     // listener entirely - the count and the %orig decision can no longer disagree.
     if (g_powerDeferActive) {
         g_powerClickCount++;
-        // Timed at the release: iOS doesn't deliver a quick second press-down here at
-        // all, but every release arrives, and the gaps between them match the presses'
-        if (g_sequencePressCount < RC_MAX_SEQUENCE_PRESSES) {
-            g_sequencePressTimes[g_sequencePressCount++] = [[NSDate date] timeIntervalSince1970];
-        }
         SRLog(@"⚡️ POWER CLICK (hook). Count: %d - deferring system UP", g_powerClickCount);
         g_powerSuppressPostUp = YES;
         RC_CheckAndFirePower();
@@ -12356,9 +12413,9 @@ static void setup_background_hid_listener() {
     // has completed the replay. It must be the only one the press gets, so it
     // is checked first: it can arrive right after a combo, which an earlier
     // time-based combo check here swallowed, leaving the phone awake.
-    if (g_replayAwaitingSinglePress) {
-        g_replayAwaitingSinglePress = NO;
-        SRLog(@"[Power] Native singlePress: fired for the replayed press");
+    if (g_replaySinglePressesAllowed > 0) {
+        g_replaySinglePressesAllowed--;
+        SRLog(@"[Power] Native singlePress: fired for a replayed press");
         %orig;
         return;
     }
