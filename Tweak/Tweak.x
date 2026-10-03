@@ -10349,6 +10349,29 @@ static void RC_VolComboUsePresses(void) {
     g_volComboUpCount = g_volUpHIDPressCount;
     g_volComboDownCount = g_volDownHIDPressCount;
 }
+
+// The buttons as the HID listener saw them (g_volUpIsDown / g_volDownIsDown are also set by
+// the hooks, late), when each went down, and when both were last down at the same time
+static volatile BOOL g_volUpHeldOnHIDBus = NO, g_volDownHeldOnHIDBus = NO;
+static volatile NSTimeInterval g_volUpDownOnHIDTime = 0, g_volDownDownOnHIDTime = 0;
+static volatile NSTimeInterval g_volBothHeldOnHIDTime = 0;
+
+// How long to wait for a hold, counted from when the button really went down. The hooks can
+// get a press ~0.5 s late (iOS 17 did, for a press right after a hold the tweak used), so a
+// 0.35 s timer started there missed holds; a press already held that long is a hold at once.
+static NSTimeInterval RC_VolHoldDelay(BOOL up) {
+    BOOL held = up ? g_volUpHeldOnHIDBus : g_volDownHeldOnHIDBus;
+    NSTimeInterval downAt = up ? g_volUpDownOnHIDTime : g_volDownDownOnHIDTime;
+    if (!held || downAt <= 0) return 0.35;
+    return MAX(0.0, 0.35 - ([[NSDate date] timeIntervalSince1970] - downAt));
+}
+
+// The buttons overlapped just now - a Both Press, not an Up-then-Down / Down-then-Up sequence.
+// iOS 14 hands an overlapping press to the hooks as one tap and then the other, which looked
+// like a sequence (and the HID fallback fired Both Press as well).
+static BOOL RC_VolPressesOverlapped(void) {
+    return g_volBothHeldOnHIDTime > 0 && [[NSDate date] timeIntervalSince1970] - g_volBothHeldOnHIDTime < 0.6;
+}
 static NSTimeInterval g_lastVolUpPressTime = 0;
 static NSTimeInterval g_lastVolDownPressTime = 0;
 static BOOL g_hidBothPressPending = NO; // HID listener: a Both Press check is queued
@@ -10810,7 +10833,9 @@ static BOOL g_isSwappingVolume = NO;
         [g_pendingVolDownSeqTimer invalidate];
         g_pendingVolDownSeqTimer = nil;
         BOOL seqDownUpEnabled = RC_TriggerIsActionable(@"volume_down_then_up");
-        if (seqDownUpEnabled) {
+        if (seqDownUpEnabled && RC_VolPressesOverlapped()) {
+            SRLog(@"[Vol] Down then Up overlapped on the HID bus - checking for Both Press, not the sequence");
+        } else if (seqDownUpEnabled) {
             SRLog(@"Volume Down then Up sequence triggered!");
             g_volSeqJustFired = YES;
             if (g_volUpTimer) { [g_volUpTimer invalidate]; g_volUpTimer = nil; }
@@ -10894,8 +10919,12 @@ static BOOL g_isSwappingVolume = NO;
 
         if (holdEnabled || comboEnabled || seqUpDownEnabled) {
             if (g_volUpTimer) [g_volUpTimer invalidate];
-            g_volUpTimer = [NSTimer scheduledTimerWithTimeInterval:0.35 repeats:NO block:^(NSTimer *timer) {
-                if (g_volComboTriggered || g_powerVolComboTriggered || g_volDownIsDown) return;
+            g_volUpTimer = [NSTimer scheduledTimerWithTimeInterval:RC_VolHoldDelay(YES) repeats:NO block:^(NSTimer *timer) {
+                if (g_volComboTriggered || g_powerVolComboTriggered || g_volDownIsDown) {
+                    SRLog(@"[Vol] Up hold timer: not a hold - combo fired=%d, Power combo fired=%d, other button down=%d",
+                          g_volComboTriggered, g_powerVolComboTriggered, g_volDownIsDown);
+                    return;
+                }
                 g_volUpTimer = nil;
                 // Never start a hold action or native ramp for a press a
                 // combo consumed, or one already released - nothing would
@@ -11073,7 +11102,9 @@ static BOOL g_isSwappingVolume = NO;
         [g_pendingVolUpSeqTimer invalidate];
         g_pendingVolUpSeqTimer = nil;
         BOOL seqUpDownEnabled = RC_TriggerIsActionable(@"volume_up_then_down");
-        if (seqUpDownEnabled) {
+        if (seqUpDownEnabled && RC_VolPressesOverlapped()) {
+            SRLog(@"[Vol] Up then Down overlapped on the HID bus - checking for Both Press, not the sequence");
+        } else if (seqUpDownEnabled) {
             SRLog(@"Volume Up then Down sequence triggered!");
             g_volSeqJustFired = YES;
             if (g_volUpTimer) { [g_volUpTimer invalidate]; g_volUpTimer = nil; }
@@ -11149,8 +11180,12 @@ static BOOL g_isSwappingVolume = NO;
 
         if (holdEnabled || comboEnabled || seqDownUpEnabled) {
             if (g_volDownTimer) [g_volDownTimer invalidate];
-            g_volDownTimer = [NSTimer scheduledTimerWithTimeInterval:0.35 repeats:NO block:^(NSTimer *timer) {
-                if (g_volComboTriggered || g_powerVolComboTriggered || g_volUpIsDown) return;
+            g_volDownTimer = [NSTimer scheduledTimerWithTimeInterval:RC_VolHoldDelay(NO) repeats:NO block:^(NSTimer *timer) {
+                if (g_volComboTriggered || g_powerVolComboTriggered || g_volUpIsDown) {
+                    SRLog(@"[Vol] Down hold timer: not a hold - combo fired=%d, Power combo fired=%d, other button down=%d",
+                          g_volComboTriggered, g_powerVolComboTriggered, g_volUpIsDown);
+                    return;
+                }
                 g_volDownTimer = nil;
                 // See the symmetric comment in volumeIncreasePressDownWithModifiers:.
                 if (RC_VolumePressWasPowerCombo(now) || !g_volDownIsDown) return;
@@ -11793,6 +11828,9 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
             if (mappedUsage == kHIDUsage_Csmr_VolumeIncrement) g_volUpIsDown = !!down;
             if (mappedUsage == kHIDUsage_Csmr_VolumeDecrement) g_volDownIsDown = !!down;
             if (down) { if (mappedUsage == kHIDUsage_Csmr_VolumeIncrement) g_volUpHIDPressCount++; else g_volDownHIDPressCount++; }
+            if (mappedUsage == kHIDUsage_Csmr_VolumeIncrement) g_volUpHeldOnHIDBus = !!down; else g_volDownHeldOnHIDBus = !!down;
+            if (down) { if (mappedUsage == kHIDUsage_Csmr_VolumeIncrement) g_volUpDownOnHIDTime = [[NSDate date] timeIntervalSince1970]; else g_volDownDownOnHIDTime = [[NSDate date] timeIntervalSince1970]; }
+            if (g_volUpHeldOnHIDBus && g_volDownHeldOnHIDBus) g_volBothHeldOnHIDTime = [[NSDate date] timeIntervalSince1970];
             if (down && g_powerIsDown) g_volPressedDuringPower = YES;
             
             // Check for Power + Volume combination.
