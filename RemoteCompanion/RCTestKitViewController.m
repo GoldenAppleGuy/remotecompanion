@@ -7,6 +7,7 @@
 typedef NS_ENUM(NSInteger, RCTestKitSection) {
     RCTestKitSectionRun,     // the run in progress (only while there is one)
     RCTestKitSectionSuites,
+    RCTestKitSectionUnlock,  // a passcode so test runs can unlock the phone
     RCTestKitSectionReports,
 };
 
@@ -16,6 +17,7 @@ typedef NS_ENUM(NSInteger, RCTestKitSection) {
 @property (nonatomic, strong) NSDictionary *currentRun;          // the run in progress, or nil
 @property (nonatomic, strong) NSTimer *pollTimer;
 @property (nonatomic, assign) BOOL polling;
+@property (nonatomic, strong) NSDictionary *passcodeStatus;      // set, expiresInSeconds
 @end
 
 @implementation RCTestKitViewController
@@ -89,6 +91,7 @@ static NSString *RCSuiteIcon(NSString *suite) {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    [self refreshPasscodeStatus];
     [self poll];
     self.pollTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(poll) userInfo:nil repeats:YES];
 }
@@ -179,7 +182,24 @@ static NSString *RCSuiteIcon(NSString *suite) {
         __weak typeof(self) weakSelf = self;
         setup.onStart = ^(NSString *options) {
             [weakSelf.navigationController popToViewController:weakSelf animated:YES];
-            [weakSelf startSuite:suite options:options];
+            if (![suite isEqualToString:@"differential"]) {
+                [weakSelf startSuite:suite options:options];
+                return;
+            }
+            // Stock vs tweak: the tweak can do the presses itself, exactly the same both times
+            UIAlertController *mode = [UIAlertController alertControllerWithTitle:@"Stock vs Tweak"
+                message:@"Replayed presses are exactly the same in both passes - leave the phone alone while it runs. Every pass starts on the lock screen (the phone is locked first), so both passes are alike. iOS really acts on the presses: screenshots may be saved and Apple Pay may open."
+                preferredStyle:UIAlertControllerStyleActionSheet];
+            [mode addAction:[UIAlertAction actionWithTitle:@"Replay the Presses" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                [weakSelf startSuite:suite options:[(options ?: @"") stringByAppendingString:@"&replay=1"]];
+            }]];
+            [mode addAction:[UIAlertAction actionWithTitle:@"Press Them Myself" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+                [weakSelf startSuite:suite options:options];
+            }]];
+            [mode addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+            mode.popoverPresentationController.sourceView = weakSelf.view;
+            mode.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(weakSelf.view.bounds), CGRectGetMidY(weakSelf.view.bounds), 0, 0);
+            [weakSelf presentViewController:mode animated:YES completion:nil];
         };
         [self.navigationController pushViewController:setup animated:YES];
         return;
@@ -219,17 +239,69 @@ static NSString *RCSuiteIcon(NSString *suite) {
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 3;
+    return 4;
+}
+
+#pragma mark - Passcode for tests
+
+- (void)refreshPasscodeStatus {
+    [RCTestKitViewController sendRequest:@"passcode" completion:^(NSDictionary *json, NSError *error) {
+        self.passcodeStatus = json;
+        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:RCTestKitSectionUnlock] withRowAnimation:UITableViewRowAnimationNone];
+    }];
+}
+
+// The passcode goes to the tweak over the UNIX socket and is kept only in SpringBoard's memory
+// (see RCTestKit.x); the app doesn't keep it either
+- (void)askForPasscode {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Passcode for Tests"
+        message:@"Lets test runs unlock the phone between steps. It's kept only in memory - not saved anywhere - and forgotten after 30 minutes, a respring, or if it doesn't unlock the phone."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.secureTextEntry = YES;
+        field.placeholder = @"Passcode";
+        field.textContentType = UITextContentTypeOneTimeCode; // no password-manager prompt to save it
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Use" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        NSString *passcode = alert.textFields.firstObject.text ?: @"";
+        alert.textFields.firstObject.text = @"";
+        NSString *encoded = [passcode stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet alphanumericCharacterSet]] ?: @"";
+        [RCTestKitViewController sendRequest:[@"passcode/set code=" stringByAppendingString:encoded] completion:^(NSDictionary *json, NSError *error) {
+            if (json[@"error"] || !json) [self showMessage:@"Couldn't Set the Passcode" text:json[@"error"] ?: error.localizedDescription];
+            [self refreshPasscodeStatus];
+        }];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)passcodeRowTapped {
+    if (![self.passcodeStatus[@"set"] boolValue]) {
+        [self askForPasscode];
+        return;
+    }
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Passcode for Tests" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Forget Now" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        [RCTestKitViewController sendRequest:@"passcode/forget" completion:^(NSDictionary *json, NSError *error) { [self refreshPasscodeStatus]; }];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Enter Again" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { [self askForPasscode]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    NSIndexPath *row = [NSIndexPath indexPathForRow:0 inSection:RCTestKitSectionUnlock];
+    sheet.popoverPresentationController.sourceView = [self.tableView cellForRowAtIndexPath:row] ?: self.view;
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     if (section == RCTestKitSectionRun) return self.currentRun ? @"Running" : nil;
     if (section == RCTestKitSectionSuites) return @"Tests";
+    if (section == RCTestKitSectionUnlock) return @"Unlocking";
     return @"Reports";
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == RCTestKitSectionSuites) return @"Your settings are put back when a test ends.";
+    if (section == RCTestKitSectionUnlock) return @"Optional. Tests that lock the phone can unlock it again with this. Kept in memory only; a passcode that doesn't work is forgotten after one try.";
     if (section == RCTestKitSectionReports && !self.reports.count) return @"Reports of finished tests appear here.";
     return nil;
 }
@@ -237,6 +309,7 @@ static NSString *RCSuiteIcon(NSString *suite) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section == RCTestKitSectionRun) return self.currentRun ? 2 : 0;
     if (section == RCTestKitSectionSuites) return self.suites.count;
+    if (section == RCTestKitSectionUnlock) return 1;
     return self.reports.count;
 }
 
@@ -284,6 +357,18 @@ static NSString *RCSuiteIcon(NSString *suite) {
         return cell;
     }
 
+    if (indexPath.section == RCTestKitSectionUnlock) {
+        UITableViewCell *cell = [self styledCellWithStyle:UITableViewCellStyleValue1];
+        cell.textLabel.text = @"Passcode for Tests";
+        NSInteger seconds = [self.passcodeStatus[@"expiresInSeconds"] integerValue];
+        cell.detailTextLabel.text = [self.passcodeStatus[@"set"] boolValue]
+            ? [NSString stringWithFormat:@"Set - forgotten in %ld min", (long)MAX(1, (seconds + 59) / 60)] : @"Not set";
+        cell.imageView.image = [UIImage systemImageNamed:@"lock.open"];
+        cell.imageView.tintColor = [UIColor systemTealColor];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        return cell;
+    }
+
     NSDictionary *report = self.reports[indexPath.row];
     NSDictionary *summary = report[@"summary"];
     UITableViewCell *cell = [self styledCellWithStyle:UITableViewCellStyleSubtitle];
@@ -307,6 +392,8 @@ static NSString *RCSuiteIcon(NSString *suite) {
         if (indexPath.row == 1) [self stopRun];
     } else if (indexPath.section == RCTestKitSectionSuites) {
         [self confirmSuite:self.suites[indexPath.row][@"name"]];
+    } else if (indexPath.section == RCTestKitSectionUnlock) {
+        [self passcodeRowTapped];
     } else {
         [self.navigationController pushViewController:[[RCTestReportViewController alloc] initWithReportId:self.reports[indexPath.row][@"id"]] animated:YES];
     }

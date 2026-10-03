@@ -6690,6 +6690,13 @@ static NSString *rc_handle_autolock(NSString *arg) {
     return [NSString stringWithFormat:@"Auto-Lock: %@\n", rc_autolock_label(target)];
 }
 
+// Set while the UNIX socket's handler runs a command: it came from this phone (the app, rc),
+// not the network (the web server's /api/command also calls handle_command)
+static __thread BOOL g_rcCommandFromLocalSocket = NO;
+BOOL RCCommandFromLocalSocket(void) {
+    return g_rcCommandFromLocalSocket;
+}
+
 static NSString *handle_command(NSString *cmd) {
     if (!cmd || ![cmd isKindOfClass:[NSString class]]) {
         SRLog(@"ERROR: handle_command received nil or invalid command string");
@@ -6697,6 +6704,11 @@ static NSString *handle_command(NSString *cmd) {
     }
     NSString *cleanCmd = [cmd stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (cleanCmd.length == 0) return @"Error: Empty command\n";
+    // The test kit's passcode never reaches the log (see RCTestKit.x)
+    if ([cleanCmd hasPrefix:@"testkit passcode/set"]) {
+        SRLog(@"Received command: testkit passcode/set (redacted)");
+        return RCTKHandleCommand([cleanCmd substringFromIndex:7]);
+    }
     SRLog(@"Received command: %@", cleanCmd);
     
     if ([cleanCmd isEqualToString:@"ha"] || [cleanCmd hasPrefix:@"ha "]) {
@@ -10443,7 +10455,9 @@ static void start_server() {
                 if (valread > 0) {
                     NSString *cmd = [[NSString alloc] initWithBytes:local_buffer length:valread encoding:NSUTF8StringEncoding];
                     // UNIX Sockets are inherently local, no need to check IP or tcpEnabled config
+                    g_rcCommandFromLocalSocket = YES;
                     NSString *response = handle_command(cmd);
+                    g_rcCommandFromLocalSocket = NO;
                     if (response) {
                         write(new_socket, [response UTF8String], [response lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
                     }

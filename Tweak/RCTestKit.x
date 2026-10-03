@@ -19,7 +19,8 @@
 //                                       report when done; &disruptive=1 adds Wi-Fi etc. toggles;
 //                                       guided / differential: &steps=id,id:3 runs only those, each the
 //                                       given number of times (default 1, or &repeat=N) - guided in
-//                                       rounds, differential each step in a row
+//                                       rounds, differential each step in a row; differential &replay=1 replays
+//                                       each step's presses (hands off) instead of asking for them
 //   GET  /api/testkit/suite/steps?name= the steps of guided / differential on this device, grouped
 //   POST /api/testkit/suite/skip        skip the current guided step; suite/stop ends the run
 //   GET  /api/testkit/report[?id=]      the current/last run, or a saved one; &redact=1 replaces personal
@@ -27,6 +28,10 @@
 //                                       and adds "redacted": true if there were any
 //   GET  /api/testkit/reports           saved reports: ids, and a summary of each
 //   POST /api/testkit/report/delete?id= delete a saved report
+//   GET  /api/testkit/passcode          whether a passcode is set for unlocking during tests, and for how long
+//   POST /api/testkit/passcode/forget   forget it now
+//        testkit passcode/set code=...  (UNIX socket only - the Test Kit screen; refused over the network)
+//   POST /api/testkit/unlock            unlock the phone with it (wakes the screen first)
 //   POST /api/testkit/replay            body (or ?seq=): simulated button presses at exact times, e.g.
 //                                       "vU@0 vD@7 ^D@125 ^U@147" (v = down, ^ = up; U / D = Volume Up /
 //                                       Down, H = Home, P = Power; @ms from the start). Triggers are captured, not run
@@ -47,6 +52,7 @@
 #import "RCTestKit.h"
 
 extern void SRLog(NSString *format, ...);
+extern BOOL RCCommandFromLocalSocket(void);
 
 static const NSUInteger kRCTKJournalCapacity = 4000;
 static NSString *const kRCTKSnapshotPath = @"/var/mobile/Documents/rc_testkit_snapshot.plist";
@@ -1053,12 +1059,14 @@ static void RCTKSuiteGuided(NSMutableDictionary *run) {
 
 // Never a step: Power + Volume held down - held long enough it starts Emergency SOS, which
 // can call emergency services by itself.
+static NSArray<NSDictionary *> *RCTKParseReplay(NSString *seq, NSString **error);
+
 static NSArray<NSDictionary *> *RCTKDifferentialSteps(BOOL hasHome) {
     NSMutableArray *steps = [NSMutableArray arrayWithArray:@[
-        @{ @"id": @"power_single", @"buttons": @[@"power"], @"prompt": @"Press Power once" },
-        @{ @"id": @"power_double", @"buttons": @[@"power"], @"prompt": @"Double-press Power" },
-        @{ @"id": @"power_triple", @"buttons": @[@"power"], @"prompt": @"Triple-press Power" },
-        @{ @"id": @"power_volume_up", @"buttons": @[@"power", @"volumeUp"], @"prompt": @"Press Power + Volume Up together" },
+        @{ @"id": @"power_single", @"buttons": @[@"power"], @"prompt": @"Press Power once", @"seq": @"vP@0 ^P@90" },
+        @{ @"id": @"power_double", @"buttons": @[@"power"], @"prompt": @"Double-press Power", @"seq": @"vP@0 ^P@80 vP@220 ^P@300" },
+        @{ @"id": @"power_triple", @"buttons": @[@"power"], @"prompt": @"Triple-press Power", @"seq": @"vP@0 ^P@80 vP@220 ^P@300 vP@440 ^P@520" },
+        @{ @"id": @"power_volume_up", @"buttons": @[@"power", @"volumeUp"], @"prompt": @"Press Power + Volume Up together", @"seq": @"vP@0 vU@20 ^U@180 ^P@200" },
         // Stock iOS sleeps or not depending on which is released last. "ordered": a pass
         // counts only if the buttons went down in "order" and "releasedLast" was let go
         // clearly last (15 ms or more after the other) - what the prompt asks for.
@@ -1071,20 +1079,65 @@ static NSArray<NSDictionary *> *RCTKDifferentialSteps(BOOL hasHome) {
            @"order": @[@"volumeDown", @"power"], @"releasedLast": @"volumeDown", @"defined": @{ @"screen": @"stayed on" },
            @"prompt": @"Quickly press both, Volume Down first, then let go of Power first",
            @"note": @"Held back: a multi-click trigger is armed",
-           @"hint": @"Volume Down first, and let go of Power first" },
+           @"hint": @"Volume Down first, and let go of Power first", @"seq": @"vD@0 vP@60 ^P@200 ^D@320" },
         @{ @"id": @"power_volume_down_hold_plain", @"buttons": @[@"power", @"volumeDown"], @"ordered": @YES, @"plain": @YES,
            @"order": @[@"volumeDown", @"power"], @"releasedLast": @"volumeDown", @"defined": @{ @"screen": @"stayed on" },
            @"prompt": @"Quickly press both, Volume Down first, then let go of Power first",
            @"note": @"Passed straight through: nothing armed",
-           @"hint": @"Volume Down first, and let go of Power first" },
+           @"hint": @"Volume Down first, and let go of Power first", @"seq": @"vD@0 vP@60 ^P@200 ^D@320" },
         @{ @"id": @"power_volume_down_inside", @"buttons": @[@"power", @"volumeDown"], @"ordered": @YES,
            @"order": @[@"power", @"volumeDown"], @"releasedLast": @"power",
            @"prompt": @"Quickly press both, Power first, then let go of Volume Down first",
-           @"hint": @"Power first, and let go of Volume Down first" },
-        @{ @"id": @"home_power", @"buttons": @[@"home", @"power"], @"prompt": @"Press Home + Power together", @"home": @YES },
-        @{ @"id": @"volume_up", @"buttons": @[@"volumeUp"], @"prompt": @"Press Volume Up once" },
-        @{ @"id": @"volume_both", @"buttons": @[@"volumeUp", @"volumeDown"], @"prompt": @"Press Volume Up + Down together" },
+           @"hint": @"Power first, and let go of Volume Down first", @"seq": @"vP@0 vD@60 ^D@200 ^P@320" },
+        @{ @"id": @"home_power", @"buttons": @[@"home", @"power"], @"prompt": @"Press Home + Power together", @"home": @YES, @"seq": @"vH@0 vP@20 ^P@180 ^H@200",
+           @"defined": @{ @"screen": @"stayed on", @"screenshotSaved": @YES } },
+        @{ @"id": @"volume_up", @"buttons": @[@"volumeUp"], @"prompt": @"Press Volume Up once", @"seq": @"vU@0 ^U@90" },
+        @{ @"id": @"volume_both", @"buttons": @[@"volumeUp", @"volumeDown"], @"prompt": @"Press Volume Up + Down together", @"seq": @"vU@0 vD@5 ^D@150 ^U@155" },
     ]];
+    // Replay only: a sweep of timings and orders around the steps above, each judged against
+    // stock - or against the defined behaviour where the tweak defines one (see below).
+    NSArray *sweep = @[
+        @[@"power_double_gap100", @"vP@0 ^P@60 vP@160 ^P@220", @"Power double, 100 ms gap"],
+        @[@"power_double_gap180", @"vP@0 ^P@70 vP@250 ^P@320", @"Power double, 180 ms gap"],
+        @[@"power_double_gap260", @"vP@0 ^P@70 vP@330 ^P@400", @"Power double, 260 ms gap"],
+        @[@"power_double_gap350", @"vP@0 ^P@70 vP@420 ^P@490", @"Power double, 350 ms gap"],
+        @[@"power_triple_gap150", @"vP@0 ^P@60 vP@210 ^P@270 vP@420 ^P@480", @"Power triple, 150 ms gaps"],
+        @[@"power_triple_gap300", @"vP@0 ^P@70 vP@370 ^P@440 vP@740 ^P@810", @"Power triple, 300 ms gaps"],
+        @[@"power_volume_up_vfirst", @"vU@0 vP@40 ^P@180 ^U@200", @"Volume Up then Power, Power released first"],
+        @[@"power_volume_up_plast", @"vP@0 vU@40 ^U@160 ^P@200", @"Power then Volume Up, Power released last"],
+        @[@"power_volume_down_short_dlast", @"vD@0 vP@30 ^P@120 ^D@160", @"Volume Down then Power, short, Volume Down released last"],
+        @[@"power_volume_down_long_dlast", @"vD@0 vP@100 ^P@400 ^D@500", @"Volume Down then Power, long, Volume Down released last"],
+        @[@"power_volume_down_short_plast", @"vD@0 vP@30 ^D@120 ^P@160", @"Volume Down then Power, short, Power released last"],
+        @[@"power_volume_down_pfirst_dlast", @"vP@0 vD@30 ^P@150 ^D@200", @"Power then Volume Down, Volume Down released last"],
+        @[@"power_volume_down_pfirst_long", @"vP@0 vD@100 ^D@400 ^P@500", @"Power then Volume Down, long, Power released last"],
+    ];
+    NSArray *homeSweep = @[
+        @[@"home_power_pfirst", @"vP@0 vH@20 ^H@180 ^P@200", @"Power then Home, Power released last"],
+        @[@"home_power_hlast", @"vH@0 vP@20 ^H@180 ^P@200", @"Home then Power, Power released last"],
+        @[@"home_power_hold", @"vH@0 vP@40 ^P@400 ^H@450", @"Home then Power, held longer"],
+    ];
+    NSDictionary *names = @{ @"U": @"volumeUp", @"D": @"volumeDown", @"H": @"home", @"P": @"power" };
+    for (NSArray *entry in hasHome ? [sweep arrayByAddingObjectsFromArray:homeSweep] : sweep) {
+        NSString *error = nil;
+        NSArray *events = RCTKParseReplay(entry[1], &error);
+        NSMutableArray *buttons = [NSMutableArray array];
+        BOOL volumeHeld = NO, volumeHeldAtPowerUp = NO;
+        NSMutableSet *held = [NSMutableSet set];
+        for (NSDictionary *event in events) {
+            NSString *button = names[event[@"button"]];
+            if (![buttons containsObject:button]) [buttons addObject:button];
+            if ([event[@"down"] boolValue]) [held addObject:event[@"button"]]; else [held removeObject:event[@"button"]];
+            volumeHeld = [held containsObject:@"U"] || [held containsObject:@"D"];
+            if ([event[@"button"] isEqualToString:@"P"] && ![event[@"down"] boolValue] && volumeHeld) volumeHeldAtPowerUp = YES;
+        }
+        NSMutableDictionary *step = [@{ @"id": entry[0], @"buttons": buttons, @"prompt": entry[2], @"seq": entry[1], @"replayOnly": @YES } mutableCopy];
+        // Defined behaviour: a Volume button held at Power's release doesn't sleep; Home + Power
+        // takes a screenshot and stays on
+        if (volumeHeldAtPowerUp) step[@"defined"] = @{ @"screen": @"stayed on" };
+        if ([buttons containsObject:@"home"] && [buttons containsObject:@"power"]) step[@"defined"] = @{ @"screen": @"stayed on", @"screenshotSaved": @YES };
+        [steps addObject:step];
+    }
+
     NSIndexSet *wrongDevice = [steps indexesOfObjectsPassingTest:^BOOL(NSDictionary *step, NSUInteger idx, BOOL *stop) {
         return step[@"home"] && [step[@"home"] boolValue] != hasHome;
     }];
@@ -1236,6 +1289,123 @@ static NSDictionary *RCTKDifferentialPass(NSString *title, NSString *prompt, NSA
     return @{ @"inputs": inputs, @"outcome": outcome };
 }
 
+static NSArray<NSDictionary *> *RCTKParseReplay(NSString *seq, NSString **error);
+static NSString *RCTKReplaySend(NSArray<NSDictionary *> *events, double *startMs);
+static void RCTKReplaySetConfig(NSDictionary *config);
+static BOOL RCTKReplayWake(NSDictionary *unbound);
+static NSString *RCTKCurrentPasscode(void);
+static NSDictionary *RCTKUnlock(void);
+
+// What a replayed timeline pressed, in RCTKInputsSince's terms (the journal can miss a
+// press - with the master switch off the tweak doesn't record Power - but here we know)
+static NSDictionary *RCTKInputsFromReplay(NSArray<NSDictionary *> *events) {
+    NSDictionary *names = @{ @"U": @"volumeUp", @"D": @"volumeDown", @"H": @"home", @"P": @"power" };
+    NSMutableDictionary *counts = [NSMutableDictionary dictionary];
+    NSMutableArray *order = [NSMutableArray array];
+    NSString *lastUp = nil, *previousUp = nil;
+    double lastUpAt = 0, previousUpAt = 0, powerDownAt = 0;
+    for (NSDictionary *event in events) {
+        NSString *button = names[event[@"button"]];
+        double ms = [event[@"ms"] doubleValue];
+        if ([event[@"down"] boolValue]) {
+            counts[button] = @([counts[button] integerValue] + 1);
+            if (![order containsObject:button]) [order addObject:button];
+            if ([button isEqualToString:@"power"]) powerDownAt = ms;
+        } else {
+            if ([button isEqualToString:@"power"] && ms - powerDownAt > 500) counts[@"powerHeldLong"] = @YES;
+            if (![button isEqualToString:lastUp]) { previousUp = lastUp; previousUpAt = lastUpAt; }
+            lastUp = button; lastUpAt = ms;
+        }
+    }
+    if (order.count > 1) {
+        counts[@"order"] = order;
+        if (lastUp) counts[@"releasedLast"] = previousUp && lastUpAt - previousUpAt < 15 ? @"together" : lastUp;
+    }
+    return counts;
+}
+
+// Every replayed pass starts the same way: locked, screen on. A pass can't unlock the phone
+// (no passcode is ever stored), and a single Power press locks it, so passes run on the lock
+// screen - both passes of a step alike. Locks and wakes with guarded Power presses under
+// `unbound` (the stock config).
+static BOOL RCTKReplayLockedStart(NSDictionary *unbound) {
+    if (![RCTKProbe()[@"locked"] boolValue]) {
+        if (![RCTKProbeLight()[@"screenOn"] boolValue] && !RCTKReplayWake(unbound)) return NO;
+        RCTKReplaySetConfig(unbound);
+        NSString *error = nil;
+        RCTKReplaySend(RCTKParseReplay(@"vP@0 ^P@90", &error), NULL);
+        double start = RCTKNowMs();
+        while ([RCTKProbeLight()[@"screenOn"] boolValue] && RCTKNowMs() - start < 3000) [NSThread sleepForTimeInterval:0.1];
+        [NSThread sleepForTimeInterval:0.5];
+    }
+    return RCTKReplayWake(unbound) && [RCTKProbe()[@"locked"] boolValue];
+}
+
+// "The user did something": restarts iOS's idle timer, so a lock screen woken a few seconds ago
+// doesn't dim and sleep in the middle of a pass
+static void RCTKResetIdleTimer(void) {
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        id app = [UIApplication sharedApplication];
+        SEL reset = NSSelectorFromString(@"resetIdleTimerAndUndim");
+        if ([app respondsToSelector:reset]) ((void (*)(id, SEL))objc_msgSend)(app, reset);
+    });
+}
+
+// Or unlocked, on the home screen - with the Test Kit passcode (RCTKUnlock)
+static BOOL RCTKReplayUnlockedStart(NSDictionary *unbound) {
+    if (!RCTKCurrentPasscode()) return NO;
+    RCTKReplaySetConfig(unbound);
+    if (![RCTKProbeLight()[@"screenOn"] boolValue] && !RCTKReplayWake(unbound)) return NO;
+    if ([RCTKProbe()[@"locked"] boolValue] && ![RCTKUnlock()[@"unlocked"] boolValue]) return NO;
+    RCTKReturnHome();
+    [NSThread sleepForTimeInterval:0.5];
+    return ![RCTKProbe()[@"locked"] boolValue] && [RCTKProbeLight()[@"screenOn"] boolValue];
+}
+
+// The same pass with the step's presses replayed (see RCTKReplay) instead of asked for: from
+// the step's start state (step "state": locked, or unlocked on the home screen), the pass's
+// config goes in, then the presses, then 2.5 s for what iOS does. The inputs are the timeline's.
+static NSDictionary *RCTKDifferentialReplayPass(NSString *title, NSDictionary *step, NSDictionary *config, NSDictionary *unbound) {
+    BOOL unlocked = [step[@"state"] isEqualToString:@"unlocked"];
+    if (!(unlocked ? RCTKReplayUnlockedStart(unbound) : RCTKReplayLockedStart(unbound))) return nil;
+    RCTKReplaySetConfig(config);
+    // The screen has to be on - and stay on - when the presses start: right after a wake, the
+    // lock screen can go dark again within ~0.1 s, and a pass started that way measures a
+    // different input (its first press wakes instead of sleeping). Woken again (under
+    // `unbound`) until it has stayed on for 0.8 s.
+    BOOL steady = NO;
+    for (int attempt = 0; attempt < 3 && !steady; attempt++) {
+        if (![RCTKProbeLight()[@"screenOn"] boolValue]) {
+            if (!RCTKReplayWake(unbound)) break;
+            RCTKReplaySetConfig(config);
+        }
+        RCTKResetIdleTimer();
+        steady = YES;
+        double start = RCTKNowMs();
+        while (RCTKNowMs() - start < 800) {
+            if (![RCTKProbeLight()[@"screenOn"] boolValue]) { steady = NO; break; }
+            [NSThread sleepForTimeInterval:0.05];
+        }
+    }
+    if (!steady) return nil;
+    RCTKResetIdleTimer(); // and the lock screen's dim timer starts over just before the presses
+    NSString *error = nil;
+    NSArray *events = RCTKParseReplay(step[@"seq"], &error);
+    if (!events) return nil;
+    NSDictionary *before = RCTKProbe();
+    unsigned long long since = RCTKRecord(@"mark", @{ @"label": title });
+    RCShowPrompt(title, step[@"prompt"], @"play.circle", 2.0);
+    NSString *sent = RCTKReplaySend(events, NULL);
+    if (!sent) return nil;
+    // Saving a screenshot can take a few seconds (an iPhone 8 on the lock screen); both passes
+    // of a step that's defined to take one wait the same, longer time
+    [NSThread sleepForTimeInterval:[step[@"defined"][@"screenshotSaved"] boolValue] ? 4.0 : 2.5];
+    unsigned long long until = RCTKRecord(@"mark", @{ @"label": [title stringByAppendingString:@" (recorded)"] });
+    NSDictionary *after = RCTKProbe();
+    NSDictionary *outcome = RCTKOutcome(since, until, before, after);
+    return @{ @"inputs": RCTKInputsFromReplay(events), @"outcome": outcome, @"sent": sent, @"startedLocked": @(!unlocked) };
+}
+
 static const NSUInteger kRCTKDifferentialAttempts = 3; // an inconclusive step is redone twice
 
 static void RCTKSuiteDifferential(NSMutableDictionary *run) {
@@ -1250,7 +1420,31 @@ static void RCTKSuiteDifferential(NSMutableDictionary *run) {
     g_tkCapture = YES;
     RCTKEvent(@"testkit.capture", @{ @"on": @YES });
 
-    BOOL started = RCTKWaitForReady(run, @"Stock vs tweak test", steps.count);
+    // replay=1: the tweak replays each step's presses - nobody presses anything
+    BOOL replay = [run[@"replay"] boolValue];
+    if (replay) {
+        RCShowPrompt(@"Stock vs tweak test", @"Replaying button presses - leave the phone alone", @"play.circle", 3.0);
+        [NSThread sleepForTimeInterval:2.0];
+    }
+    if (replay) {
+        // Each step from the lock screen, and - with a Test Kit passcode - unlocked too
+        // (states=locked|unlocked|both; the default is both when there's a passcode)
+        NSString *states = [run[@"states"] isKindOfClass:[NSString class]] ? run[@"states"] : (RCTKCurrentPasscode() ? @"both" : @"locked");
+        NSMutableArray *expanded = [NSMutableArray array];
+        for (NSDictionary *step in steps) {
+            for (NSString *state in @[@"locked", @"unlocked"]) {
+                if (![states isEqualToString:@"both"] && ![states isEqualToString:state]) continue;
+                NSMutableDictionary *withState = [step mutableCopy];
+                withState[@"state"] = state;
+                withState[@"id"] = [NSString stringWithFormat:@"%@.%@", step[@"id"], state];
+                [expanded addObject:withState];
+            }
+        }
+        steps = expanded;
+    } else {
+        steps = [steps filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"replayOnly != YES"]];
+    }
+    BOOL started = replay || RCTKWaitForReady(run, @"Stock vs tweak test", steps.count);
 
     NSUInteger index = 0, same = 0;
     for (NSDictionary *step in started ? steps : @[]) {
@@ -1274,24 +1468,33 @@ static void RCTKSuiteDifferential(NSMutableDictionary *run) {
             }
             NSMutableDictionary *passes = [NSMutableDictionary dictionary];
             for (NSString *pass in @[@"stock", @"tweak"]) {
-                RCSetTriggerConfig([pass isEqualToString:@"stock"] ? stockConfig : [step[@"plain"] boolValue] ? tweakPlainConfig : tweakConfig);
-                [NSThread sleepForTimeInterval:0.5];
+                NSDictionary *passConfig = [pass isEqualToString:@"stock"] ? stockConfig : [step[@"plain"] boolValue] ? tweakPlainConfig : tweakConfig;
                 NSString *title = [NSString stringWithFormat:@"Step %lu of %lu - %@", (unsigned long)index, (unsigned long)steps.count,
                                    [pass isEqualToString:@"stock"] ? @"stock" : @"with tweak"];
-                NSDictionary *result = RCTKDifferentialPass(title, step[@"prompt"], step[@"buttons"]);
+                NSDictionary *result;
+                if (replay) {
+                    result = RCTKDifferentialReplayPass(title, step, passConfig, stockConfig);
+                } else {
+                    RCSetTriggerConfig(passConfig);
+                    [NSThread sleepForTimeInterval:0.5];
+                    result = RCTKDifferentialPass(title, step[@"prompt"], step[@"buttons"]);
+                }
                 if (!result) break;
                 passes[pass] = result;
-                RCShowPrompt(title, @"Recorded", @"checkmark", 1.0);
-                [NSThread sleepForTimeInterval:1.2];
+                if (!replay) {
+                    RCShowPrompt(title, @"Recorded", @"checkmark", 1.0);
+                    [NSThread sleepForTimeInterval:1.2];
+                }
             }
             if (passes.count < 2) {
-                RCTKRecordResult(run, testId, @"skip", @{ @"reason": g_tkStopRun ? @"run stopped" : @"no input / skipped", @"passes": passes,
+                RCTKRecordResult(run, testId, @"skip", @{ @"reason": g_tkStopRun ? @"run stopped" : replay ? @"couldn't replay the presses (or wake the screen)" : @"no input / skipped", @"passes": passes,
                                                           @"earlierAttempts": earlier }, -1);
                 stepAbandoned = YES;
                 break;
             }
             NSDictionary *stock = passes[@"stock"], *tweak = passes[@"tweak"];
             detail = [@{ @"stock": stock, @"tweak": tweak, @"attempt": @(attempt) } mutableCopy];
+            if (replay) detail[@"seq"] = step[@"seq"];
             NSMutableDictionary *stockInputs = [stock[@"inputs"] mutableCopy], *tweakInputs = [tweak[@"inputs"] mutableCopy];
             if (![step[@"ordered"] boolValue]) {
                 [stockInputs removeObjectsForKeys:@[@"order", @"releasedLast"]];
@@ -1356,6 +1559,10 @@ static void RCTKSuiteDifferential(NSMutableDictionary *run) {
         [NSThread sleepForTimeInterval:2.0];
     }
 
+    if (replay) {
+        RCTKReplayWake(stockConfig);
+        if (RCTKCurrentPasscode()) RCTKUnlock(); // leave the phone unlocked, as it was
+    }
     g_tkCapture = NO;
     RCTKEvent(@"testkit.capture", @{ @"on": @NO });
     if (started) RCShowPrompt(@"Stock vs tweak test", [NSString stringWithFormat:@"Done: %lu of %lu same as stock", (unsigned long)same, (unsigned long)steps.count],
@@ -1407,7 +1614,7 @@ static NSDictionary *RCTKRunSuite(NSString *name, NSDictionary *params) {
             @"id": [NSString stringWithFormat:@"%@-%@", [formatter stringFromDate:[NSDate date]], name],
             @"suite": name, @"disruptive": @(disruptive), @"status": @"running",
             @"started": @(RCTKNowMs()), @"device": probe[@"device"], @"session": g_tkSession ?: @"",
-            @"steps": params[@"steps"] ?: @"", @"repeat": @(MAX(1, [params[@"repeat"] integerValue])),
+            @"steps": params[@"steps"] ?: @"", @"repeat": @(MAX(1, [params[@"repeat"] integerValue])), @"replay": @([params[@"replay"] boolValue]), @"states": params[@"states"] ?: [NSNull null],
             @"tests": [NSMutableArray array]
         } mutableCopy];
         g_tkRun = run;
@@ -1950,12 +2157,89 @@ static void RCTKSuiteReplay(NSMutableDictionary *run) {
     }
 
     RCTKReplayWake(configBinding(@[]));
+    if (RCTKCurrentPasscode()) RCTKUnlock(); // the last Power step locks the phone
     RCSetTriggerConfig(saved);
     g_tkCapture = NO;
     RCTKEvent(@"testkit.capture", @{ @"on": @NO });
     RCTKReturnHome();
     RCShowPrompt(@"RemoteCompanion Test", [NSString stringWithFormat:@"Done: %lu of %lu passed", (unsigned long)passed, (unsigned long)index],
                  passed == index ? @"checkmark.circle.fill" : @"exclamationmark.circle.fill", 3.0);
+}
+
+#pragma mark - Unlocking for tests
+
+// A passcode the user typed into the Test Kit screen, so runs (and whoever drives the test
+// kit) can unlock the phone between steps. It's guarded like this:
+// - Set only over the UNIX socket - from this phone - never over the network.
+// - Kept only here, in SpringBoard's memory: never in the config, the log (handle_command
+//   redacts the command), the journal or a report, and never returned by any endpoint. A
+//   respring forgets it, and so does kRCTKPasscodeLifetimeMs passing.
+// - Forgotten the moment an unlock with it doesn't work, so a wrong passcode is tried at
+//   most once - iOS disables the phone (or erases it, if set to) after repeated wrong ones.
+static const double kRCTKPasscodeLifetimeMs = 30 * 60 * 1000;
+static NSString *g_tkPasscode;
+static double g_tkPasscodeExpiresAt;
+static __thread BOOL g_tkFromNetwork = NO;
+
+static NSString *RCTKCurrentPasscode(void) {
+    @synchronized (RCTKLock()) {
+        if (g_tkPasscode && RCTKNowMs() > g_tkPasscodeExpiresAt) g_tkPasscode = nil;
+        return g_tkPasscode;
+    }
+}
+
+static void RCTKForgetPasscode(void) {
+    @synchronized (RCTKLock()) { g_tkPasscode = nil; g_tkPasscodeExpiresAt = 0; }
+}
+
+static NSDictionary *RCTKPasscodeStatus(void) {
+    NSString *passcode = RCTKCurrentPasscode();
+    return @{ @"set": @(passcode != nil), @"expiresInSeconds": @(passcode ? round((g_tkPasscodeExpiresAt - RCTKNowMs()) / 1000) : 0) };
+}
+
+static NSDictionary *RCTKSetPasscode(NSString *passcode) {
+    if (g_tkFromNetwork) return @{ @"error": @"the passcode can only be set on the phone (Test Kit screen), not over the network" };
+    NSCharacterSet *space = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+    if (passcode.length < 4 || passcode.length > 64 || [passcode rangeOfCharacterFromSet:space].location != NSNotFound) {
+        return @{ @"error": @"not a passcode (4-64 characters, no spaces)" };
+    }
+    @synchronized (RCTKLock()) {
+        g_tkPasscode = [passcode copy];
+        g_tkPasscodeExpiresAt = RCTKNowMs() + kRCTKPasscodeLifetimeMs;
+    }
+    RCTKEvent(@"passcode", @{ @"set": @YES }); // that it was set - not what it is
+    return RCTKPasscodeStatus();
+}
+
+// Unlocks with the passcode (waking the screen with a guarded Power press if it's off)
+static NSDictionary *RCTKUnlock(void) {
+    NSString *passcode = RCTKCurrentPasscode();
+    if (!passcode) return @{ @"error": @"no passcode set - enter it in Test Kit on the phone", @"unlocked": @NO };
+    if (![RCTKProbe()[@"locked"] boolValue]) return @{ @"unlocked": @YES, @"wasLocked": @NO };
+    if (![RCTKProbeLight()[@"screenOn"] boolValue]) {
+        NSString *error = nil;
+        RCTKReplaySend(RCTKParseReplay(@"vP@0 ^P@90", &error), NULL);
+        double start = RCTKNowMs();
+        while (![RCTKProbeLight()[@"screenOn"] boolValue] && RCTKNowMs() - start < 3000) [NSThread sleepForTimeInterval:0.1];
+        [NSThread sleepForTimeInterval:0.3];
+    }
+    __block BOOL accepted = NO;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        id manager = RCTKShared(@"SBLockScreenManager", @"sharedInstance");
+        SEL sel = NSSelectorFromString(@"_attemptUnlockWithPasscode:finishUIUnlock:");
+        if ([manager respondsToSelector:sel]) accepted = ((BOOL (*)(id, SEL, id, BOOL))objc_msgSend)(manager, sel, passcode, YES);
+    });
+    double start = RCTKNowMs();
+    while ([RCTKProbe()[@"locked"] boolValue] && RCTKNowMs() - start < 3000) [NSThread sleepForTimeInterval:0.1];
+    BOOL unlocked = ![RCTKProbe()[@"locked"] boolValue];
+    if (!unlocked) {
+        RCTKForgetPasscode();
+        RCTKEvent(@"passcode", @{ @"forgotten": @YES, @"reason": @"unlock failed" });
+        return @{ @"unlocked": @NO, @"accepted": @(accepted),
+                  @"error": @"the passcode didn't unlock the phone, so it was forgotten (a wrong one is never tried twice) - enter it again in Test Kit" };
+    }
+    RCTKEvent(@"unlock", nil);
+    return @{ @"unlocked": @YES, @"wasLocked": @YES };
 }
 
 static NSDictionary *RCTKInfo(void) {
@@ -1965,12 +2249,16 @@ static NSDictionary *RCTKInfo(void) {
         @"tweakVersion": RCTKPackageVersion(),
         @"endpoints": @[@"info", @"probe", @"journal", @"journal/clear", @"mark", @"run", @"lua", @"capture", @"snapshot", @"restore",
                         @"suites", @"suite/steps", @"suite/run", @"suite/skip", @"suite/stop", @"report", @"reports", @"report/delete",
-                        @"replay"]
+                        @"replay", @"passcode", @"passcode/forget", @"unlock"]
     };
 }
 
 static NSDictionary *RCTKRun(NSString *command) {
     if (!command.length) return @{ @"error": @"missing command" };
+    // It would land in the journal (readable over the network) - set it on the phone instead
+    if ([[command stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] hasPrefix:@"testkit passcode"]) {
+        return @{ @"error": @"the passcode can only be set on the phone (Test Kit screen)" };
+    }
     RCTKEvent(@"testkit.run", @{ @"command": command });
     double start = RCTKNowMs();
     NSString *output = RCHandleCommand(command) ?: @"";
@@ -2016,6 +2304,10 @@ static NSDictionary *RCTKDispatch(NSString *endpoint, NSDictionary<NSString *, N
     if ([endpoint isEqualToString:@"restore"]) return RCTKRestore();
     if ([endpoint isEqualToString:@"lua"]) return RCTKLua(params[@"code"] ?: body);
     if ([endpoint isEqualToString:@"replay"]) return RCTKReplay(params[@"seq"] ?: body, params);
+    if ([endpoint isEqualToString:@"passcode"]) return RCTKPasscodeStatus();
+    if ([endpoint isEqualToString:@"passcode/set"]) return RCTKSetPasscode(params[@"code"]);
+    if ([endpoint isEqualToString:@"passcode/forget"]) { RCTKForgetPasscode(); return RCTKPasscodeStatus(); }
+    if ([endpoint isEqualToString:@"unlock"]) return RCTKUnlock();
     if ([endpoint isEqualToString:@"suites"]) return RCTKSuites();
     if ([endpoint isEqualToString:@"suite/run"]) {
         NSString *name = params[@"name"] ?: body;
@@ -2079,7 +2371,9 @@ NSString *RCTKHandleHTTP(int fd, const char *buffer, long length, NSString *meth
     }
 
     int status = 200;
+    g_tkFromNetwork = YES;
     NSDictionary *result = RCTKDispatch(endpoint, params, body, &status);
+    g_tkFromNetwork = NO;
     NSString *json = RCTKJSON(result);
     return [NSString stringWithFormat:@"HTTP/1.1 %d %@\r\n%@Content-Type: application/json\r\nContent-Length: %lu\r\n\r\n%@",
             status, status == 200 ? @"OK" : @"Not Found", cors, (unsigned long)[json lengthOfBytesUsingEncoding:NSUTF8StringEncoding], json];
@@ -2103,7 +2397,11 @@ NSString *RCTKHandleCommand(NSString *args) {
         params[@"since"] = rest;
     }
     int status = 200;
-    return [RCTKJSON(RCTKDispatch(endpoint.length ? endpoint : @"info", params, rest, &status)) stringByAppendingString:@"\n"];
+    // From the UNIX socket (this phone) or relayed from the network (the web server's /api/command)
+    g_tkFromNetwork = !RCCommandFromLocalSocket();
+    NSString *reply = [RCTKJSON(RCTKDispatch(endpoint.length ? endpoint : @"info", params, rest, &status)) stringByAppendingString:@"\n"];
+    g_tkFromNetwork = NO;
+    return reply;
 }
 
 #pragma mark - Events from iOS
