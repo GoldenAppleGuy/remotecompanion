@@ -2233,6 +2233,8 @@ static void rc_banner_show_toggle_state(NSString *cmd, NSString *title, NSString
             @{ @"key": @"ring_vibration", @"prefixes": @[@"vibration ring-"], @"status": @"vibration ring-status" },
             @{ @"key": @"autolock", @"prefixes": @[@"autolock ", @"auto-lock "], @"status": @"autolock status" },
             @{ @"key": @"haptics", @"prefixes": @[@"haptics "] },
+            @{ @"key": @"anc", @"prefixes": @[@"anc "], @"words": @{ @"on": @"Noise Cancellation", @"nc": @"Noise Cancellation", @"transparency": @"Transparency",
+                                                                     @"ambient": @"Transparency", @"off": @"Off" } },
             // Silent Mode on / off - "ringer volume" is a value, not this toggle
             @{ @"key": @"ringer", @"prefixes": @[@"ringer silent", @"ringer ring", @"ringer toggle"], @"status": @"ringer status", @"cond": @"silent_mode" }
         ];
@@ -2245,8 +2247,9 @@ static void rc_banner_show_toggle_state(NSString *cmd, NSString *title, NSString
             if (![cmd hasPrefix:prefix]) continue;
             NSString *arg = [cmd substringFromIndex:prefix.length];
             if ([arg isEqualToString:@"status"] || [arg hasPrefix:@"connect"] || [arg hasPrefix:@"disconnect"]) return;
-            if (words[arg]) {
-                rc_show_hud_toast(title, words[arg], icon);
+            NSDictionary *defWords = def[@"words"] ?: words;
+            if (defWords[arg]) {
+                rc_show_hud_toast(title, defWords[arg], icon);
                 return;
             }
             // "toggle", or a value (Auto-Lock "2m", a flashlight level): read the result

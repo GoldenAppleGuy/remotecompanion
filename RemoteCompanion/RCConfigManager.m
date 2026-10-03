@@ -1663,6 +1663,14 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
             @"displaySuffixes": @[@"On", @"Off", @"Toggle"]
         },
         @{
+            @"key": @"anc",
+            @"name": @"Noise Control",
+            @"icon": @"ear",
+            @"prefixes": @[@"anc "],
+            @"suffixes": @[@"on", @"transparency", @"off"],
+            @"displaySuffixes": @[@"Noise Cancellation", @"Transparency", @"Off"]
+        },
+        @{
             @"key": @"camera_video",
             @"name": @"Open Video Camera",
             @"icon": @"video.fill",

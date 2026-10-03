@@ -2898,6 +2898,7 @@ const ACTION_SECTIONS = [
     { name:'Set Volume…',       cmd:'__SET_VOLUME__',icon:'slider_horizontal_3', needs_input:true },
     { name:'Set Ringer Volume…', cmd:'__SET_RINGER_VOLUME__',icon:'bell_fill', needs_input:true },
     { name:'Mute',              cmd:'mute toggle',  icon:'speaker_slash_fill', is_toggle:true },
+    { name:'Noise Control',     cmd:'anc on',       icon:'ear', is_toggle:true },
     { name:'Silent Mode',       cmd:'ringer toggle', icon:'bell_slash_fill', is_toggle:true },
     { name:'Haptics',           cmd:'haptics always', icon:'waveform_path_ecg', is_toggle:true },
     { name:'Silent Vibration',  cmd:'vibration silent-toggle', icon:'bell_slash', is_toggle:true },
@@ -3782,6 +3783,7 @@ function parseToggleCmd(cmd) {
     { key:'vibration_ring', name:'Ring Vibration', icon:'bell', prefixes:['vibration ring-'], suffixes:['on','off','toggle'], displaySuffixes:['On','Off','Toggle'] },
     { key:'haptics', name:'Haptics', icon:'waveform_path_ecg', prefixes:['haptics '], suffixes:['always','silent-only','ring-only','never'], displaySuffixes:['Always Play','Play in Silent Mode',"Don't Play in Silent Mode",'Never Play'] },
     { key:'ringer', name:'Silent Mode', icon:'bell_slash_fill', prefixes:['ringer '], suffixes:['silent','ring','toggle'], displaySuffixes:['On','Off','Toggle'] },
+    { key:'anc', name:'Noise Control', icon:'ear', prefixes:['anc '], suffixes:['on','transparency','off'], displaySuffixes:['Noise Cancellation','Transparency','Off'] },
     {
       key: 'camera_video',
       name: 'Open Video Camera',

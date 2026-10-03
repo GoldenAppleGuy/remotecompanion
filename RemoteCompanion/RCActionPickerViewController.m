@@ -140,9 +140,7 @@
             @{ @"name": @"Set Volume...", @"command": @"__SET_VOLUME__", @"icon": @"slider.horizontal.3" },
             @{ @"name": @"Set Ringer Volume...", @"command": @"__SET_RINGER_VOLUME__", @"icon": @"bell.fill" },
             @{ @"name": @"Mute", @"command": @"mute toggle", @"icon": @"speaker.slash.fill" },
-            @{ @"name": @"ANC On", @"command": @"anc on", @"icon": @"ear.badge.checkmark" },
-            @{ @"name": @"ANC Off", @"command": @"anc off", @"icon": @"ear" },
-            @{ @"name": @"Transparency Mode", @"command": @"anc transparency", @"icon": @"waveform.circle.fill" },
+            @{ @"name": @"Noise Control", @"command": @"anc on", @"icon": @"ear" },
             @{ @"name": @"Silent Mode", @"command": @"ringer toggle", @"icon": @"bell.slash.fill" },
             @{ @"name": @"Silent Vibration", @"command": @"vibration silent-toggle", @"icon": @"bell.slash" },
             @{ @"name": @"Ring Vibration", @"command": @"vibration ring-toggle", @"icon": @"bell" }

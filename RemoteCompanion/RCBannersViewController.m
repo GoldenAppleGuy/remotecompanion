@@ -82,6 +82,8 @@ static NSArray<NSArray<NSDictionary *> *> *RCBannerCatalog(NSArray<NSString *> *
     for (NSDictionary *entry in cm.bannerActions) {
         if ([entry[@"id"] isKindOfClass:[NSString class]]) [self.selectedIds addObject:entry[@"id"]];
     }
+    // ANC Off and Transparency Mode were their own entries before Noise Control took all three modes
+    if ([self.selectedIds containsObject:@"anc off"] || [self.selectedIds containsObject:@"anc transparency"]) [self.selectedIds addObject:@"anc on"];
     self.optedOutIds = [NSMutableSet setWithArray:cm.bannerOptOut];
 }
 
