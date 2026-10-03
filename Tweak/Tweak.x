@@ -2232,14 +2232,14 @@ static void rc_banner_show_toggle_state(NSString *cmd, NSString *title, NSString
             @{ @"key": @"silent_vibration", @"prefixes": @[@"vibration silent-"], @"status": @"vibration silent-status" },
             @{ @"key": @"ring_vibration", @"prefixes": @[@"vibration ring-"], @"status": @"vibration ring-status" },
             @{ @"key": @"autolock", @"prefixes": @[@"autolock ", @"auto-lock "], @"status": @"autolock status" },
-            @{ @"key": @"haptics", @"prefixes": @[@"haptics "] },
+            @{ @"key": @"haptics", @"prefixes": @[@"haptics "], @"words": @{ @"always": @"Always Play", @"silent-only": @"Play in Silent Mode",
+                                                                         @"ring-only": @"Don't Play in Silent Mode", @"never": @"Never Play" } },
             @{ @"key": @"anc", @"prefixes": @[@"anc "], @"words": @{ @"on": @"Noise Cancellation", @"nc": @"Noise Cancellation", @"transparency": @"Transparency",
                                                                      @"ambient": @"Transparency", @"off": @"Off" } },
             // Silent Mode on / off - "ringer volume" is a value, not this toggle
             @{ @"key": @"ringer", @"prefixes": @[@"ringer silent", @"ringer ring", @"ringer toggle"], @"status": @"ringer status", @"cond": @"silent_mode" }
         ];
-        words = @{ @"on": @"On", @"off": @"Off", @"dark": @"Dark", @"light": @"Light", @"lock": @"Locked", @"unlock": @"Unlocked",
-                   @"always": @"Always Play", @"silent-only": @"Play in Silent Mode", @"ring-only": @"Don't Play in Silent Mode", @"never": @"Never Play" };
+        words = @{ @"on": @"On", @"off": @"Off", @"dark": @"Dark", @"light": @"Light", @"lock": @"Locked", @"unlock": @"Unlocked" };
     });
 
     for (NSDictionary *def in defs) {
