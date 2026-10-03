@@ -1242,6 +1242,73 @@ static BOOL get_system_vibration(BOOL silentMode) {
     return val;
 }
 
+// SpringBoard's ringer control (SBRingerControl): SpringBoard has it from iOS 15, the main
+// workspace before that. Main thread only.
+static id rc_ringer_control(void) {
+    id sb = [UIApplication sharedApplication];
+    if ([sb respondsToSelector:@selector(ringerControl)]) return [sb performSelector:@selector(ringerControl)];
+    Class workspaceClass = objc_getClass("SBMainWorkspace");
+    id workspace = [workspaceClass respondsToSelector:@selector(sharedInstance)] ? [workspaceClass performSelector:@selector(sharedInstance)] : nil;
+    return [workspace respondsToSelector:@selector(ringerControl)] ? [workspace performSelector:@selector(ringerControl)] : nil;
+}
+
+// The system's ringer state, which SpringBoard publishes and audio follows: 1 Ring, 0 Silent.
+// From iOS 17 it's also how the ringer is set from software - SBRingerControl ignores a
+// change that doesn't match the switch (the same way TrollCuts' Set Ringer works).
+#define RC_RINGER_STATE_NOTIFICATION "com.apple.springboard.ringerstate"
+static int rc_ringer_state_token(void) {
+    static int token = -1;
+    if (token == -1) notify_register_check(RC_RINGER_STATE_NOTIFICATION, &token);
+    return token;
+}
+
+// 1 in Silent mode, 0 in Ring mode, -1 if it can't be read. Main thread only.
+static int rc_ringer_muted(void) {
+    id ringer = rc_ringer_control();
+    // iOS 17+: the published state, which the ringer command can change (see above)
+    if (![ringer respondsToSelector:@selector(setRingerMuted:)] && rc_ringer_state_token() != -1) {
+        uint64_t state = 0;
+        if (notify_get_state(rc_ringer_state_token(), &state) == NOTIFY_STATUS_OK) return state ? 0 : 1;
+    }
+    SEL mutedSel = [ringer respondsToSelector:@selector(_accessibilityIsRingerMuted)] ? @selector(_accessibilityIsRingerMuted)
+                 : [ringer respondsToSelector:@selector(isRingerMuted)] ? @selector(isRingerMuted)
+                 : NULL;
+    if (mutedSel) return ((BOOL (*)(id, SEL))objc_msgSend)(ringer, mutedSel) ? 1 : 0;
+    // iOS 14 also reports the switch itself (0 = silent)
+    id sb = [UIApplication sharedApplication];
+    if ([sb respondsToSelector:@selector(ringerSwitchState)]) return ((int (*)(id, SEL))objc_msgSend)(sb, @selector(ringerSwitchState)) == 0 ? 1 : 0;
+    return -1;
+}
+
+// The ringer command's own change, so the ringer triggers can skip it (see
+// rc_ringer_state_changed): the state it set and when, or -1.
+static int g_rcRingerCommandState = -1;
+static NSTimeInterval g_rcRingerCommandTime = 0;
+
+// Silent or Ring mode. The physical switch, where there is one, stays where it is - flipping
+// it later takes over again.
+static BOOL rc_set_ringer_muted(BOOL muted) {
+    id ringer = rc_ringer_control();
+    // Either way SpringBoard's ringer control reports the change, which the ringer
+    // triggers then recognize as this command's (see rc_ringer_state_changed)
+    g_rcRingerCommandState = muted ? 1 : 0;
+    g_rcRingerCommandTime = [[NSDate date] timeIntervalSince1970];
+    // iOS 16 and earlier: the ringer control, as the switch does it - with the switch's banner,
+    // which setRingerMuted: doesn't show (its argument is the switch position: 0 Silent, 1 Ring)
+    if ([ringer respondsToSelector:@selector(setRingerMuted:)]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(ringer, @selector(setRingerMuted:), muted);
+        SEL hud = NSSelectorFromString(@"activateRingerHUDFromMuteSwitch:");
+        if ([ringer respondsToSelector:hud]) ((void (*)(id, SEL, int))objc_msgSend)(ringer, hud, muted ? 0 : 1);
+        return YES;
+    }
+    // iOS 17+: the published ringer state (see rc_ringer_state_token)
+    int token = rc_ringer_state_token();
+    if (token == -1) { g_rcRingerCommandState = -1; return NO; }
+    notify_set_state(token, muted ? 0 : 1);
+    notify_post(RC_RINGER_STATE_NOTIFICATION);
+    return YES;
+}
+
 // Helper to detect rootless vs rootful
 static NSString* root_prefix() {
     static NSString *prefix = nil;
@@ -1750,6 +1817,7 @@ static NSString *rc_status_command_for_condition_key(NSString *conditionKey) {
         @"dnd": @"dnd status",
         @"silent_vibration": @"vibration silent-status",
         @"ring_vibration": @"vibration ring-status",
+        @"haptics": @"haptics status",
         @"orientation": @"orientation status",
         @"location": @"location status",
         @"location_services": @"location status",
@@ -1791,6 +1859,20 @@ static NSString *rc_canonical_status_value_for_condition_key(NSString *condition
         return nil;
     }
     
+    // "ringer status" read as Silent Mode on / off (the banner for the Silent Mode action)
+    if ([conditionKey isEqualToString:@"silent_mode"]) {
+        if ([upper containsString:@"SILENT"]) return @"ON";
+        if ([upper containsString:@"RING"]) return @"OFF";
+        return nil;
+    }
+
+    if ([conditionKey isEqualToString:@"haptics"]) {
+        for (NSString *value in @[@"SILENT_ONLY", @"RING_ONLY", @"ALWAYS", @"NEVER"]) {
+            if ([upper containsString:value]) return value;
+        }
+        return nil;
+    }
+
     if ([conditionKey isEqualToString:@"screenrecord"] || [conditionKey isEqualToString:@"screen_recording"]) {
         // INACTIVE first: "inactive" contains "active"
         if ([upper containsString:@"INACTIVE"]) return @"INACTIVE";
@@ -1947,16 +2029,8 @@ static BOOL rc_condition_direct_match(NSString *key, NSString *expected, BOOL *h
         rc_dispatch_sync_main_safe(^{
             id sb = [UIApplication sharedApplication];
             if ([key isEqualToString:@"ringer"]) {
-                id ringer = [sb respondsToSelector:@selector(ringerControl)] ? [sb performSelector:@selector(ringerControl)] : nil;
-                SEL mutedSel = [ringer respondsToSelector:@selector(_accessibilityIsRingerMuted)] ? @selector(_accessibilityIsRingerMuted)
-                             : [ringer respondsToSelector:@selector(isRingerMuted)] ? @selector(isRingerMuted)
-                             : NULL;
-                if (mutedSel) {
-                    actual = ((BOOL (*)(id, SEL))objc_msgSend)(ringer, mutedSel) ? @"SILENT" : @"RING";
-                } else if ([sb respondsToSelector:@selector(ringerSwitchState)]) {
-                    // iOS 14: SpringBoard has no ringerControl, but reports the switch itself (0 = silent)
-                    actual = ((int (*)(id, SEL))objc_msgSend)(sb, @selector(ringerSwitchState)) == 0 ? @"SILENT" : @"RING";
-                }
+                int muted = rc_ringer_muted();
+                if (muted >= 0) actual = muted ? @"SILENT" : @"RING";
             } else if ([key isEqualToString:@"rotation_lock"]) {
                 actual = [[objc_getClass("SBOrientationLockManager") sharedInstance] isUserLocked] ? @"LOCKED" : @"UNLOCKED";
             } else if ([key isEqualToString:@"appearance"]) {
@@ -2157,9 +2231,13 @@ static void rc_banner_show_toggle_state(NSString *cmd, NSString *title, NSString
             @{ @"key": @"screenrecord", @"prefixes": @[@"screenrecord "], @"status": @"screenrecord status", @"cond": @"screenrecord" },
             @{ @"key": @"silent_vibration", @"prefixes": @[@"vibration silent-"], @"status": @"vibration silent-status" },
             @{ @"key": @"ring_vibration", @"prefixes": @[@"vibration ring-"], @"status": @"vibration ring-status" },
-            @{ @"key": @"autolock", @"prefixes": @[@"autolock ", @"auto-lock "], @"status": @"autolock status" }
+            @{ @"key": @"autolock", @"prefixes": @[@"autolock ", @"auto-lock "], @"status": @"autolock status" },
+            @{ @"key": @"haptics", @"prefixes": @[@"haptics "] },
+            // Silent Mode on / off - "ringer volume" is a value, not this toggle
+            @{ @"key": @"ringer", @"prefixes": @[@"ringer silent", @"ringer ring", @"ringer toggle"], @"status": @"ringer status", @"cond": @"silent_mode" }
         ];
-        words = @{ @"on": @"On", @"off": @"Off", @"dark": @"Dark", @"light": @"Light", @"lock": @"Locked", @"unlock": @"Unlocked" };
+        words = @{ @"on": @"On", @"off": @"Off", @"dark": @"Dark", @"light": @"Light", @"lock": @"Locked", @"unlock": @"Unlocked",
+                   @"always": @"Always Play", @"silent-only": @"Play in Silent Mode", @"ring-only": @"Don't Play in Silent Mode", @"never": @"Never Play" };
     });
 
     for (NSDictionary *def in defs) {
@@ -2284,9 +2362,9 @@ static void rc_maybe_show_action_banner(NSString *action) {
     if ([cmd hasPrefix:@"uiopen "]) subtitle = rc_banner_app_name([original substringFromIndex:7]);
     else if ([cmd hasPrefix:@"kill "]) subtitle = rc_banner_app_name([original substringFromIndex:5]);
     else if ([cmd hasPrefix:@"shortcut:"]) subtitle = [[original substringFromIndex:9] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    else if ([cmd hasPrefix:@"set-vol "] || [cmd hasPrefix:@"brightness "]) {
-        // Both take 0-100
-        float level = [[cmd substringFromIndex:[cmd rangeOfString:@" "].location + 1] floatValue];
+    else if ([cmd hasPrefix:@"set-vol "] || [cmd hasPrefix:@"ringer volume "] || [cmd hasPrefix:@"brightness "]) {
+        // All take 0-100
+        float level = [[cmd substringFromIndex:[cmd rangeOfString:@" " options:NSBackwardsSearch].location + 1] floatValue];
         subtitle = [NSString stringWithFormat:@"%.0f%%", fmaxf(0, fminf(100, level))];
     }
     else if ([cmd isEqualToString:@"previous app"] || [cmd isEqualToString:@"last app"]) {
@@ -8446,6 +8524,49 @@ static NSString *handle_command(NSString *cmd) {
              BOOL current = get_system_vibration(NO);
              return current ? @"Ring Vibrate: ON\n" : @"Ring Vibrate: OFF\n";
         }
+    } else if ([cleanCmd isEqualToString:@"haptics"] || [cleanCmd hasPrefix:@"haptics "]) {
+        // iOS 17's Haptics setting (Settings > Sounds & Haptics): one choice over the two
+        // vibration settings above - in Ring mode, in Silent mode
+        NSString *sub = cleanCmd.length > 8 ? [cleanCmd substringFromIndex:8] : @"status";
+        NSDictionary *choices = @{ @"always": @[@YES, @YES], @"silent-only": @[@NO, @YES], @"ring-only": @[@YES, @NO], @"never": @[@NO, @NO] };
+        NSArray *choice = choices[sub];
+        if (choice) {
+            toggle_system_vibration(NO, [choice[0] boolValue]);
+            toggle_system_vibration(YES, [choice[1] boolValue]);
+        } else if (![sub isEqualToString:@"status"]) {
+            return @"Usage: haptics always|silent-only|ring-only|never|status\n";
+        }
+        BOOL ring = get_system_vibration(NO), silent = get_system_vibration(YES);
+        return [NSString stringWithFormat:@"Haptics: %@\n", ring ? (silent ? @"ALWAYS" : @"RING_ONLY") : (silent ? @"SILENT_ONLY" : @"NEVER")];
+    } else if ([cleanCmd isEqualToString:@"ringer"] || [cleanCmd hasPrefix:@"ringer "]) {
+        NSString *sub = cleanCmd.length > 7 ? [cleanCmd substringFromIndex:7] : @"status";
+        // Ringtone & alerts volume, separate from the media volume (set-vol)
+        if ([sub hasPrefix:@"volume"]) {
+            NSString *valStr = [[sub substringFromIndex:6] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            AVSystemController *av = [objc_getClass("AVSystemController") sharedAVSystemController];
+            if (!av) return @"Error: AVSystemController not found\n";
+            if (valStr.length && ![valStr isEqualToString:@"status"]) {
+                float val = fmaxf(0, fminf(100, [valStr floatValue])) / 100.0f;
+                [av setVolumeTo:val forCategory:@"Ringtone"];
+            }
+            float current = 0;
+            [av getVolume:&current forCategory:@"Ringtone"];
+            return [NSString stringWithFormat:@"Ringer volume: %.0f%%\n", current * 100];
+        }
+        __block NSString *result = nil;
+        rc_dispatch_sync_main_safe(^{
+            int muted = rc_ringer_muted();
+            BOOL set = YES;
+            if ([sub isEqualToString:@"silent"]) set = rc_set_ringer_muted(YES);
+            else if ([sub isEqualToString:@"ring"]) set = rc_set_ringer_muted(NO);
+            else if ([sub isEqualToString:@"toggle"]) set = muted >= 0 && rc_set_ringer_muted(!muted);
+            else if (![sub isEqualToString:@"status"]) { result = @"Usage: ringer silent|ring|toggle|status|volume [0-100]\n"; return; }
+            if (!set) { result = @"Error: couldn't reach the ringer control\n"; return; }
+            // The state just set, or the current one
+            int state = [sub isEqualToString:@"silent"] ? 1 : [sub isEqualToString:@"ring"] ? 0 : [sub isEqualToString:@"toggle"] ? !muted : muted;
+            result = state < 0 ? @"Ringer: UNKNOWN\n" : state ? @"Ringer: SILENT\n" : @"Ringer: RING\n";
+        });
+        return result;
     } else if ([cleanCmd isEqualToString:@"haptic"]) {
         // Haptic feedback using UIImpactFeedbackGenerator
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -10642,6 +10763,15 @@ static void rc_ringer_state_changed(BOOL muted, NSString *source) {
 
     g_lastRingerState = (int)muted;
     SRLog(@"[Ringer] Muted -> %d (%@)", muted, source);
+
+    // The ringer command's own change doesn't fire the ringer triggers: a Silent Mode action
+    // bound to one of them would otherwise set them off again, forever
+    BOOL fromCommand = g_rcRingerCommandState == (int)muted && [[NSDate date] timeIntervalSince1970] - g_rcRingerCommandTime < 2.0;
+    g_rcRingerCommandState = -1;
+    if (fromCommand) {
+        SRLog(@"[Ringer] Set by the ringer command - not firing the ringer triggers");
+        return;
+    }
 
     // Fire generic toggle status
     RCExecuteTrigger(@"trigger_ringer_toggle");

@@ -2687,6 +2687,7 @@ function nameForCmd(cmd) {
   if (lowCmd.startsWith('bt disconnect ')) return `Disconnect ${cmd.slice(14)}`;
   if (lowCmd.startsWith('airplay connect ')) return `AirPlay Connect ${cmd.slice(16)}`;
   if (lowCmd.startsWith('set-vol '))      return `Set Volume ${cmd.slice(8)}%`;
+  if (lowCmd.startsWith('ringer volume ')) return `Set Ringer Volume ${cmd.slice(14)}%`;
   if (lowCmd.startsWith('brightness '))   return `Set Brightness ${cmd.slice(11)}%`;
   if (lowCmd.startsWith('shortcut:'))     return `Shortcut: ${cmd.slice(9)}`;
   if (lowCmd.startsWith('uiopen ')) {
@@ -2861,6 +2862,7 @@ function iconForCmd(cmd) {
   if (lowCmd.startsWith('bt connect '))   return { icon:'link',            cls:'icon-indigo' };
   if (lowCmd.startsWith('airplay connect ')) return { icon:'airplayvideo',     cls:'icon-blue' };
   if (lowCmd.startsWith('set-vol '))      return { icon:'speaker_3_fill',  cls:'icon-blue' };
+  if (lowCmd.startsWith('ringer volume ')) return { icon:'bell_fill',       cls:'icon-blue' };
   if (lowCmd.startsWith('brightness '))   return { icon:'sun_max_fill',    cls:'icon-yellow' };
   if (lowCmd.startsWith('shortcut:'))     return { icon:'command',         cls:'icon-indigo' };
   if (lowCmd.startsWith('uiopen '))       return { icon:'app_badge_fill',  cls:'icon-pink' };
@@ -2883,11 +2885,6 @@ const ACTION_SECTIONS = [
     { name:'Play/Pause',        cmd:'playpause',    icon:'playpause_fill' },
     { name:'Next Track',        cmd:'next',         icon:'forward_fill' },
     { name:'Previous Track',    cmd:'prev',         icon:'backward_fill' },
-    { name:'Volume Up',         cmd:'volume up',    icon:'speaker_3_fill' },
-    { name:'Volume Down',       cmd:'volume down',  icon:'speaker_1_fill' },
-    { name:'Set Volume…',       cmd:'__SET_VOLUME__',icon:'speaker_3_fill', needs_input:true },
-    { name:'Set Brightness…',   cmd:'__SET_BRIGHTNESS__',icon:'sun_max_fill', needs_input:true },
-    { name:'Mute',              cmd:'mute toggle',  icon:'speaker_slash_fill', is_toggle:true },
     { name:'Open Camera…',       cmd:'__CAMERA_PICKER__', icon:'camera_fill', needs_input:true },
     { name:'Open Video Camera…', cmd:'__CAMERA_VIDEO_PICKER__', icon:'video_fill', needs_input:true },
     { name:'Camera Shutter / Snap', cmd:'camera shutter', icon:'camera_fill' },
@@ -2897,8 +2894,20 @@ const ACTION_SECTIONS = [
     { name:'Shuffle All Songs', cmd:'shuffleall',   icon:'shuffle' },
     { name:'Delete Currently Playing Song', cmd:'deletesong', icon:'trash' },
   ]},
+  { title:'Sound', actions:[
+    { name:'Volume Up',         cmd:'volume up',    icon:'speaker_3_fill' },
+    { name:'Volume Down',       cmd:'volume down',  icon:'speaker_1_fill' },
+    { name:'Set Volume…',       cmd:'__SET_VOLUME__',icon:'speaker_3_fill', needs_input:true },
+    { name:'Set Ringer Volume…', cmd:'__SET_RINGER_VOLUME__',icon:'bell_fill', needs_input:true },
+    { name:'Mute',              cmd:'mute toggle',  icon:'speaker_slash_fill', is_toggle:true },
+    { name:'Silent Mode',       cmd:'ringer toggle', icon:'bell_slash_fill', is_toggle:true },
+    { name:'Haptics',           cmd:'haptics always', icon:'waveform_path_ecg', is_toggle:true },
+    { name:'Silent Vibration',  cmd:'vibration silent-toggle', icon:'bell_slash', is_toggle:true },
+    { name:'Ring Vibration',    cmd:'vibration ring-toggle', icon:'bell', is_toggle:true },
+  ]},
   { title:'Device Controls', actions:[
     { name:'Appearance',        cmd:'appearance toggle', icon:'moon_fill', is_toggle:true },
+    { name:'Set Brightness…',   cmd:'__SET_BRIGHTNESS__',icon:'sun_max_fill', needs_input:true },
     { name:'Flashlight',        cmd:'flashlight toggle', icon:'bolt_fill', is_toggle:true },
     { name:'Flashlight Intensity…', cmd:'__SET_FLASHLIGHT__', icon:'bolt_fill', needs_input:true },
     { name:'Rotation Lock',     cmd:'rotate toggle',     icon:'lock_rotation', is_toggle:true },
@@ -2932,8 +2941,6 @@ const ACTION_SECTIONS = [
     { name:'Soft Reboot',       cmd:'ldrestart',     icon:'arrow_clockwise' },
     { name:'Low Power Mode',    cmd:'low power toggle',icon:'battery_25', is_toggle:true },
     { name:'Auto-Lock',         cmd:'autolock toggle', icon:'timer', is_toggle:true },
-    { name:'Silent Vibration',  cmd:'vibration silent-toggle', icon:'bell_slash', is_toggle:true },
-    { name:'Ring Vibration',    cmd:'vibration ring-toggle', icon:'bell', is_toggle:true },
   ]},
   { title:'Integrations', actions:[
     { name:'Home Assistant: Control Entity…',  cmd:'__HA_PICKER__', icon:'house_fill', needs_input:true },
@@ -2955,6 +2962,7 @@ const ACTION_SECTIONS = [
     { name:'Lua Script…',       cmd:'__LUA_SCRIPT__',icon:'command', needs_input:true },
     { name:'HUD Toast…',        cmd:'__TOAST__',     icon:'text_bubble', needs_input:true },
     { name:'Set Volume…',       cmd:'__SET_VOLUME__',icon:'speaker_3_fill', needs_input:true },
+    { name:'Set Ringer Volume…', cmd:'__SET_RINGER_VOLUME__',icon:'bell_fill', needs_input:true },
   ]},
 ];
 
@@ -2970,6 +2978,7 @@ const CONDITION_DEFS = [
   { key:'airplane',   title:'Airplane Mode',values:[{value:'ON',title:'On'},{value:'OFF',title:'Off'}] },
   { key:'silent_vibration', title:'Silent Vibration', values:[{value:'ON',title:'On'},{value:'OFF',title:'Off'}] },
   { key:'ring_vibration',   title:'Ring Vibration',   values:[{value:'ON',title:'On'},{value:'OFF',title:'Off'}] },
+  { key:'haptics',    title:'Haptics', values:[{value:'ALWAYS',title:'Always Play'},{value:'SILENT_ONLY',title:'Play in Silent Mode'},{value:'RING_ONLY',title:"Don't Play in Silent Mode"},{value:'NEVER',title:'Never Play'}] },
   { key:'orientation',title:'Orientation',  values:[{value:'PORTRAIT',title:'Portrait'},{value:'LANDSCAPE',title:'Landscape'}] },
   { key:'wifi_network', title:'Wi-Fi Network is', values:null, freeText:true },
   { key:'bt_device', title:'Bluetooth Device Connected', values:null, freeText:true },
@@ -3765,6 +3774,8 @@ function parseToggleCmd(cmd) {
     { key:'rotate', name:'Rotation Lock', icon:'lock_rotation', prefixes:['rotate '], suffixes:['lock','unlock','toggle'], displaySuffixes:['Lock','Unlock','Toggle'] },
     { key:'vibration_silent', name:'Silent Vibration', icon:'bell_slash', prefixes:['vibration silent-'], suffixes:['on','off','toggle'], displaySuffixes:['On','Off','Toggle'] },
     { key:'vibration_ring', name:'Ring Vibration', icon:'bell', prefixes:['vibration ring-'], suffixes:['on','off','toggle'], displaySuffixes:['On','Off','Toggle'] },
+    { key:'haptics', name:'Haptics', icon:'waveform_path_ecg', prefixes:['haptics '], suffixes:['always','silent-only','ring-only','never'], displaySuffixes:['Always Play','Play in Silent Mode',"Don't Play in Silent Mode",'Never Play'] },
+    { key:'ringer', name:'Silent Mode', icon:'bell_slash_fill', prefixes:['ringer '], suffixes:['silent','ring','toggle'], displaySuffixes:['On','Off','Toggle'] },
     {
       key: 'camera_video',
       name: 'Open Video Camera',
@@ -4577,6 +4588,12 @@ function editAction(idx) {
         actions[idx] = `set-vol ${val}`;
         saveConfig(); renderActionList();
       }, true);
+    } else if (low.startsWith('ringer volume ')) {
+      showDialog('Edit Ringer Volume', 'Ringer volume % (0-100):', act.slice(14), 'Save', val => {
+        if (!val) return;
+        actions[idx] = `ringer volume ${val}`;
+        saveConfig(); renderActionList();
+      }, true);
     } else if (low.startsWith('brightness ')) {
       showDialog('Edit Brightness Level', 'Brightness % (0-100):', act.slice(11), 'Save', val => {
         if (!val) return;
@@ -4822,6 +4839,10 @@ function selectPickerAction(act) {
   } else if (c === '__SET_VOLUME__') {
     showDialog('Set Volume', 'Volume percentage (0-100):', '50', 'Add', val => {
       if (val) addActionToCurrent(`set-vol ${val}`);
+    }, true);
+  } else if (c === '__SET_RINGER_VOLUME__') {
+    showDialog('Set Ringer Volume', 'Ringer volume percentage (0-100):', '50', 'Add', val => {
+      if (val) addActionToCurrent(`ringer volume ${val}`);
     }, true);
   } else if (c === '__SET_BRIGHTNESS__') {
     showDialog('Set Brightness', 'Brightness percentage (0-100):', '50', 'Add', val => {

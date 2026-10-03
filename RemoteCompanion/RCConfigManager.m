@@ -1103,6 +1103,8 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
             result = @"Disconnect Airplay";
         } else if ([cmd hasPrefix:@"set-vol "]) {
             result = [NSString stringWithFormat:@"Set Volume %@", [cmd substringFromIndex:8]];
+        } else if ([cmd hasPrefix:@"ringer volume "]) {
+            result = [NSString stringWithFormat:@"Set Ringer Volume %@", [cmd substringFromIndex:14]];
         } else if ([cmd hasPrefix:@"brightness "]) {
             result = [NSString stringWithFormat:@"Set Brightness %@", [cmd substringFromIndex:11]];
         } else if ([cmd hasPrefix:@"flashlight "] && ![[cmd lowercaseString] hasSuffix:@"on"] && ![[cmd lowercaseString] hasSuffix:@"off"] && ![[cmd lowercaseString] hasSuffix:@"toggle"]) {
@@ -1347,6 +1349,9 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     if ([cmd hasPrefix:@"airplay connect "]) return @"airplayaudio";
     if ([cmd hasPrefix:@"shortcut:"]) return @"command";
     if ([cmd hasPrefix:@"set-vol "]) return @"speaker.wave.3.fill";
+    if ([cmd hasPrefix:@"ringer volume "]) return @"bell.fill";
+    if ([cmd hasPrefix:@"ringer "]) return @"bell.slash.fill";
+    if ([cmd hasPrefix:@"haptics "]) return @"iphone.radiowaves.left.and.right";
     if ([cmd hasPrefix:@"brightness "]) return @"sun.max.fill";
     if ([cmd hasPrefix:@"flashlight "] || [cmd hasPrefix:@"flash "]) return @"flashlight.on.fill";
     if ([cmd hasPrefix:@"Lua "] || [cmd hasPrefix:@"lua_eval "] || [cmd hasPrefix:@"lua-eval "] || [cmd hasPrefix:@"lua "]) return @"scroll.fill";
@@ -1500,6 +1505,17 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     return result ?: @"circle.fill";
 }
 
++ (BOOL)usesHapticsMenu {
+    return [[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){17, 0, 0}];
+}
+
++ (NSString *)vibrationNameForSilentMode:(BOOL)silent {
+    if ([[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){16, 0, 0}]) {
+        return silent ? @"Play Haptics in Silent Mode" : @"Play Haptics in Ring Mode";
+    }
+    return silent ? @"Vibrate on Silent" : @"Vibrate on Ring";
+}
+
 - (NSDictionary *)toggleInfoForCommand:(NSString *)cmd {
     if (![cmd isKindOfClass:[NSString class]]) return nil;
     
@@ -1614,7 +1630,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         },
         @{
             @"key": @"vibration_silent",
-            @"name": @"Silent Vibration",
+            @"name": [RCConfigManager vibrationNameForSilentMode:YES],
             @"icon": @"bell.slash",
             @"prefixes": @[@"vibration silent-"],
             @"suffixes": @[@"on", @"off", @"toggle"],
@@ -1622,10 +1638,26 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         },
         @{
             @"key": @"vibration_ring",
-            @"name": @"Ring Vibration",
+            @"name": [RCConfigManager vibrationNameForSilentMode:NO],
             @"icon": @"bell",
             @"prefixes": @[@"vibration ring-"],
             @"suffixes": @[@"on", @"off", @"toggle"],
+            @"displaySuffixes": @[@"On", @"Off", @"Toggle"]
+        },
+        @{
+            @"key": @"haptics",
+            @"name": @"Haptics",
+            @"icon": @"iphone.radiowaves.left.and.right",
+            @"prefixes": @[@"haptics "],
+            @"suffixes": @[@"always", @"silent-only", @"ring-only", @"never"],
+            @"displaySuffixes": @[@"Always Play", @"Play in Silent Mode", @"Don't Play in Silent Mode", @"Never Play"]
+        },
+        @{
+            @"key": @"ringer",
+            @"name": @"Silent Mode",
+            @"icon": @"bell.slash.fill",
+            @"prefixes": @[@"ringer "],
+            @"suffixes": @[@"silent", @"ring", @"toggle"],
             @"displaySuffixes": @[@"On", @"Off", @"Toggle"]
         },
         @{

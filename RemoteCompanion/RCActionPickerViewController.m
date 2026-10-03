@@ -89,7 +89,7 @@
 - (void)rebuildSections {
     RCConfigManager *cm = [RCConfigManager sharedManager];
     
-    _sectionTitles = @[@"Media", @"Device Controls", @"Connectivity", @"System", @"Integrations", @"Scripting & Logic"];
+    _sectionTitles = @[@"Media", @"Sound", @"Device Controls", @"Connectivity", @"System", @"Integrations", @"Scripting & Logic"];
     
     _sections = @[
         // Media
@@ -100,14 +100,6 @@
                 @{ @"name": @"Play/Pause", @"command": @"playpause", @"icon": @"playpause.fill" },
                 @{ @"name": @"Next Track", @"command": @"next", @"icon": @"forward.fill" },
                 @{ @"name": @"Previous Track", @"command": @"prev", @"icon": @"backward.fill" },
-                @{ @"name": @"Volume Up", @"command": @"volume up", @"icon": @"speaker.wave.3.fill" },
-                @{ @"name": @"Volume Down", @"command": @"volume down", @"icon": @"speaker.wave.1.fill" },
-                @{ @"name": @"Set Volume...", @"command": @"__SET_VOLUME__", @"icon": @"speaker.wave.3.fill" },
-                @{ @"name": @"Set Brightness...", @"command": @"__SET_BRIGHTNESS__", @"icon": @"sun.max.fill" },
-                @{ @"name": @"Mute", @"command": @"mute toggle", @"icon": @"speaker.slash.fill" },
-                @{ @"name": @"ANC On", @"command": @"anc on", @"icon": @"ear.badge.checkmark" },
-                @{ @"name": @"ANC Off", @"command": @"anc off", @"icon": @"ear" },
-                @{ @"name": @"Transparency Mode", @"command": @"anc transparency", @"icon": @"waveform.circle.fill" },
                 @{ @"name": @"Open Camera...", @"command": @"__CAMERA_PICKER__", @"icon": @"camera.fill" },
                 @{ @"name": @"Open Video Camera...", @"command": @"__CAMERA_VIDEO_PICKER__", @"icon": @"video.fill" },
                 @{ @"name": @"Camera Shutter / Snap", @"command": @"camera shutter", @"icon": @"camera.circle.fill" },
@@ -145,9 +137,24 @@
             }
             media;
         }),
+        // Sound
+        @[
+            @{ @"name": @"Volume Up", @"command": @"volume up", @"icon": @"speaker.wave.3.fill" },
+            @{ @"name": @"Volume Down", @"command": @"volume down", @"icon": @"speaker.wave.1.fill" },
+            @{ @"name": @"Set Volume...", @"command": @"__SET_VOLUME__", @"icon": @"speaker.wave.3.fill" },
+            @{ @"name": @"Set Ringer Volume...", @"command": @"__SET_RINGER_VOLUME__", @"icon": @"bell.fill" },
+            @{ @"name": @"Mute", @"command": @"mute toggle", @"icon": @"speaker.slash.fill" },
+            @{ @"name": @"ANC On", @"command": @"anc on", @"icon": @"ear.badge.checkmark" },
+            @{ @"name": @"ANC Off", @"command": @"anc off", @"icon": @"ear" },
+            @{ @"name": @"Transparency Mode", @"command": @"anc transparency", @"icon": @"waveform.circle.fill" },
+            @{ @"name": @"Silent Mode", @"command": @"ringer toggle", @"icon": @"bell.slash.fill" },
+            @{ @"name": @"Silent Vibration", @"command": @"vibration silent-toggle", @"icon": @"bell.slash" },
+            @{ @"name": @"Ring Vibration", @"command": @"vibration ring-toggle", @"icon": @"bell" }
+        ],
         // Device Controls
         @[
             @{ @"name": @"Appearance", @"command": @"appearance toggle", @"icon": @"moon.fill" },
+            @{ @"name": @"Set Brightness...", @"command": @"__SET_BRIGHTNESS__", @"icon": @"sun.max.fill" },
             @{ @"name": @"Flashlight", @"command": @"flashlight toggle", @"icon": @"flashlight.on.fill" },
             @{ @"name": @"Rotation Lock", @"command": @"rotate toggle", @"icon": @"lock.rotation" }
         ],
@@ -183,8 +190,6 @@
             @{ @"name": @"Soft Reboot (ldrestart)", @"command": @"ldrestart", @"icon": @"arrow.clockwise" },
             @{ @"name": @"Userspace Reboot", @"command": @"userspace-reboot", @"icon": @"arrow.clockwise.circle" },
             @{ @"name": @"Refresh Icon Cache (uicache)", @"command": @"uicache", @"icon": @"square.grid.2x2" },
-            @{ @"name": @"Silent Vibration", @"command": @"vibration silent-toggle", @"icon": @"bell.slash" },
-            @{ @"name": @"Ring Vibration", @"command": @"vibration ring-toggle", @"icon": @"bell" },
             @{ @"name": @"Low Power Mode", @"command": @"low power toggle", @"icon": @"battery.25" },
             @{ @"name": @"Auto-Lock", @"command": @"autolock toggle", @"icon": @"timer" }
         ],
@@ -278,6 +283,27 @@
             @{ @"name": @"Toast...", @"command": @"__TOAST__", @"icon": @"text.bubble.fill" }
         ]
     ];
+
+    // The vibration settings as this iOS version's Settings shows them: iOS 17's one Haptics
+    // menu in place of the two switches, or the switches by their name for this version
+    NSMutableArray *sections = [NSMutableArray array];
+    for (NSArray *section in _sections) {
+        NSMutableArray *items = [NSMutableArray array];
+        for (NSDictionary *item in section) {
+            NSString *command = item[@"command"];
+            BOOL silent = [command isEqualToString:@"vibration silent-toggle"], ring = [command isEqualToString:@"vibration ring-toggle"];
+            if (!silent && !ring) { [items addObject:item]; continue; }
+            if ([RCConfigManager usesHapticsMenu]) {
+                if (silent) [items addObject:@{ @"name": @"Haptics", @"command": @"haptics always", @"icon": @"iphone.radiowaves.left.and.right" }];
+                continue;
+            }
+            NSMutableDictionary *renamed = [item mutableCopy];
+            renamed[@"name"] = [RCConfigManager vibrationNameForSilentMode:silent];
+            [items addObject:renamed];
+        }
+        [sections addObject:items];
+    }
+    _sections = sections;
 }
 
 - (NSArray<NSArray<NSDictionary *> *> *)catalogSections {
@@ -435,6 +461,7 @@
     // Add disclosure for items requiring input
     NSString *cmd = action[@"command"];
     if ([cmd isEqualToString:@"__SET_VOLUME__"] || 
+        [cmd isEqualToString:@"__SET_RINGER_VOLUME__"] || 
         [cmd isEqualToString:@"__SET_BRIGHTNESS__"] || 
         [cmd isEqualToString:@"__BT_CONNECT__"] || 
         [cmd isEqualToString:@"__BT_DISCONNECT__"] || 
@@ -466,7 +493,7 @@
     NSString *command = action[@"command"];
     
 
-    if ([command isEqualToString:@"__SET_VOLUME__"] || [command isEqualToString:@"__SET_BRIGHTNESS__"] || [command isEqualToString:@"__SET_FLASHLIGHT__"]) {
+    if ([command isEqualToString:@"__SET_VOLUME__"] || [command isEqualToString:@"__SET_RINGER_VOLUME__"] || [command isEqualToString:@"__SET_BRIGHTNESS__"] || [command isEqualToString:@"__SET_FLASHLIGHT__"]) {
         [self handleValueInputForCommand:command];
         return;
     }
@@ -694,8 +721,14 @@
 }
 
 - (void)handleValueInputForCommand:(NSString *)commandPlaceholder {
-    NSString *title = [commandPlaceholder isEqualToString:@"__SET_VOLUME__"] ? @"Set Volume" : ([commandPlaceholder isEqualToString:@"__SET_BRIGHTNESS__"] ? @"Set Brightness" : @"Set Flashlight");
-    NSString *prefix = [commandPlaceholder isEqualToString:@"__SET_VOLUME__"] ? @"set-vol" : ([commandPlaceholder isEqualToString:@"__SET_BRIGHTNESS__"] ? @"brightness" : @"flashlight");
+    NSDictionary *inputs = @{
+        @"__SET_VOLUME__": @[@"Set Volume", @"set-vol"],
+        @"__SET_RINGER_VOLUME__": @[@"Set Ringer Volume", @"ringer volume"],
+        @"__SET_BRIGHTNESS__": @[@"Set Brightness", @"brightness"],
+        @"__SET_FLASHLIGHT__": @[@"Set Flashlight", @"flashlight"],
+    };
+    NSString *title = inputs[commandPlaceholder][0] ?: @"Set Flashlight";
+    NSString *prefix = inputs[commandPlaceholder][1] ?: @"flashlight";
 
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title                                                                   message:@"Enter a value (0-100)" 
                                                             preferredStyle:UIAlertControllerStyleAlert];

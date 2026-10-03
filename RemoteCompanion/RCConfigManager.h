@@ -63,6 +63,10 @@
 - (NSString *)nameForBundleId:(NSString *)bundleId;
 - (NSString *)iconForCommand:(id)cmd;
 - (NSDictionary *)toggleInfoForCommand:(NSString *)cmd;
+// Vibration settings, the way this iOS version's Settings shows them: one Haptics menu from
+// iOS 17 (over the same two on/off values), the two switches by their names before that
++ (BOOL)usesHapticsMenu;
++ (NSString *)vibrationNameForSilentMode:(BOOL)silent;
 - (BOOL)isActionDisabled:(id)actionItem;
 - (id)toggleActionDisabled:(id)actionItem;
 - (void)registerKMMacroName:(NSString *)name forUid:(NSString *)uid;
