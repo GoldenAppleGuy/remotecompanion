@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - ANC actions now have selectable On, Off, Transparency, and Toggle controls.
+- Control Center action now opens correctly when assigned to a bottom swipe-up trigger.
 
 ## [3.7.0] - 2026-10-01
 
