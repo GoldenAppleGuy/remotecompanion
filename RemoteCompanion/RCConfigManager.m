@@ -1324,6 +1324,8 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     }
 
     NSString *cmd = [[(NSString *)cmdId stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+    if ([cmd isEqualToString:@"camera record"]) return @"video.circle.fill";
+    if ([cmd isEqualToString:@"camera shutter"]) return @"camera.circle.fill";
     if ([cmd hasPrefix:@"camera"] || [cmd hasPrefix:@"open camera"]) {
         if ([cmd containsString:@"flash"] || [cmd containsString:@"torch"]) return @"bolt.fill";
         if ([cmd containsString:@"front"] || [cmd containsString:@"selfie"]) return @"person.fill";
@@ -1332,23 +1334,23 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         return @"camera.fill";
     }
     if ([cmd hasPrefix:@"sneakycam photo"] || [cmd isEqualToString:@"sneakycam takephoto"]) return @"camera.aperture";
-    if ([cmd hasPrefix:@"sneakycam video"] || [cmd isEqualToString:@"sneakycam record"] || [cmd isEqualToString:@"sneakycam startstopvideo"]) return @"video.fill";
+    if ([cmd hasPrefix:@"sneakycam video"] || [cmd isEqualToString:@"sneakycam record"] || [cmd isEqualToString:@"sneakycam startstopvideo"]) return @"eye.slash.fill";
     if ([cmd hasPrefix:@"snapper freeze"]) return @"snowflake";
     if ([cmd hasPrefix:@"snapper instant"]) return @"bolt.fill";
-    if ([cmd hasPrefix:@"snapper close"]) return @"xmark.circle";
+    if ([cmd hasPrefix:@"snapper close"]) return @"xmark.rectangle.fill";
     if ([cmd hasPrefix:@"snapper"]) return @"crop";
-    if ([cmd hasPrefix:@"ha "] || [cmd isEqualToString:@"ha"]) return @"house.fill";
+    if ([cmd hasPrefix:@"ha "] || [cmd isEqualToString:@"ha"]) return @"lightbulb.fill";
     if ([cmd hasPrefix:@"km "] || [cmd isEqualToString:@"km"]) return @"command";
-    if ([cmd hasPrefix:@"mqtt "] || [cmd isEqualToString:@"mqtt"]) return @"antenna.radiowaves.left.and.right";
+    if ([cmd hasPrefix:@"mqtt "] || [cmd isEqualToString:@"mqtt"]) return @"dot.radiowaves.left.and.right";
     if ([cmd hasPrefix:@"toast"]) return @"text.bubble.fill";
     if ([cmd hasPrefix:@"root "] || [cmd hasPrefix:@"exec-root "]) return @"terminal.fill";
     if ([cmd hasPrefix:@"exec "]) return @"terminal.fill";
-    if ([cmd hasPrefix:@"delay "]) return @"timer";
+    if ([cmd hasPrefix:@"delay "]) return @"hourglass";
     if ([cmd hasPrefix:@"bt connect "] || [cmd hasPrefix:@"bluetooth connect "]) return @"link";
     if ([cmd hasPrefix:@"bt disconnect "] || [cmd hasPrefix:@"bluetooth disconnect "]) return @"xmark.circle";
     if ([cmd hasPrefix:@"airplay connect "]) return @"airplayaudio";
-    if ([cmd hasPrefix:@"shortcut:"]) return @"command";
-    if ([cmd hasPrefix:@"set-vol "]) return @"speaker.wave.3.fill";
+    if ([cmd hasPrefix:@"shortcut:"]) return @"wand.and.stars";
+    if ([cmd hasPrefix:@"set-vol "]) return @"slider.horizontal.3";
     if ([cmd hasPrefix:@"ringer volume "]) return @"bell.fill";
     if ([cmd hasPrefix:@"ringer "]) return @"bell.slash.fill";
     if ([cmd hasPrefix:@"haptics "]) return @"iphone.radiowaves.left.and.right";
@@ -1378,7 +1380,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"flashlight toggle": @"flashlight.on.fill",
         @"appearance dark": @"moon.fill",
         @"appearance light": @"sun.max.fill",
-        @"appearance toggle": @"moon.fill",
+        @"appearance toggle": @"circle.lefthalf.fill",
         @"rotate lock": @"lock.rotation",
         @"rotate unlock": @"lock.rotation.open",
         @"rotate toggle": @"lock.rotation",
@@ -1408,7 +1410,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"airplane off": @"airplane",
         @"airplane toggle": @"airplane",
         @"haptic": @"hand.tap.fill",
-        @"screenshot": @"camera.fill",
+        @"screenshot": @"camera.viewfinder",
         @"screenrecord": @"record.circle.fill",
         @"screenrecord toggle": @"record.circle.fill",
         @"screenrecord start": @"record.circle.fill",
@@ -1418,7 +1420,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"snapper open": @"crop",
         @"snapper freeze": @"snowflake",
         @"snapper instant": @"bolt.fill",
-        @"snapper close": @"xmark.circle",
+        @"snapper close": @"xmark.rectangle.fill",
         @"lock": @"lock.fill",
         @"unlock": @"lock.open.fill",
         @"lock toggle": @"lock.circle",
@@ -1495,7 +1497,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     
     if (!result) {
         if ([cmd hasPrefix:@"root "]) return @"command.square";
-        if ([cmd hasPrefix:@"delay "]) return @"timer";
+        if ([cmd hasPrefix:@"delay "]) return @"hourglass";
         if ([cmd hasPrefix:@"exec "]) return @"chevron.right.square";
         if ([cmd hasPrefix:@"flashlight "] || [cmd hasPrefix:@"flash "]) return @"flashlight.on.fill";
         if ([cmd hasPrefix:@"low power "]) return @"battery.100.bolt";
@@ -1558,7 +1560,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @{
             @"key": @"dnd",
             @"name": @"Do Not Disturb",
-            @"icon": @"moon.fill",
+            @"icon": @"moon.circle.fill",
             @"prefixes": @[@"dnd "],
             @"suffixes": @[@"on", @"off", @"toggle"],
             @"displaySuffixes": @[@"On", @"Off", @"Toggle"]
@@ -1606,7 +1608,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @{
             @"key": @"appearance",
             @"name": @"Appearance",
-            @"icon": @"moon.fill",
+            @"icon": @"circle.lefthalf.fill",
             @"prefixes": @[@"appearance "],
             @"suffixes": @[@"dark", @"light", @"toggle"],
             @"displaySuffixes": @[@"Dark", @"Light", @"Toggle"]

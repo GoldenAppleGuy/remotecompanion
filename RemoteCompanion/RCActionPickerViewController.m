@@ -89,7 +89,7 @@
 - (void)rebuildSections {
     RCConfigManager *cm = [RCConfigManager sharedManager];
     
-    _sectionTitles = @[@"Media", @"Sound", @"Device Controls", @"Connectivity", @"System", @"Integrations", @"Scripting & Logic"];
+    _sectionTitles = @[@"Media", @"Sound", @"Capture", @"Apps & Navigation", @"Device Controls", @"Connectivity", @"System", @"Integrations", @"Scripting & Logic"];
     
     _sections = @[
         // Media
@@ -99,11 +99,7 @@
                 @{ @"name": @"Pause", @"command": @"pause", @"icon": @"pause.fill" },
                 @{ @"name": @"Play/Pause", @"command": @"playpause", @"icon": @"playpause.fill" },
                 @{ @"name": @"Next Track", @"command": @"next", @"icon": @"forward.fill" },
-                @{ @"name": @"Previous Track", @"command": @"prev", @"icon": @"backward.fill" },
-                @{ @"name": @"Open Camera...", @"command": @"__CAMERA_PICKER__", @"icon": @"camera.fill" },
-                @{ @"name": @"Open Video Camera...", @"command": @"__CAMERA_VIDEO_PICKER__", @"icon": @"video.fill" },
-                @{ @"name": @"Camera Shutter / Snap", @"command": @"camera shutter", @"icon": @"camera.circle.fill" },
-                @{ @"name": @"Camera Record Toggle", @"command": @"camera record", @"icon": @"record.circle.fill" }
+                @{ @"name": @"Previous Track", @"command": @"prev", @"icon": @"backward.fill" }
             ]];
             NSArray *audioStreamPaths = @[
                 @"/Applications/AudioReceiver.app",
@@ -141,7 +137,7 @@
         @[
             @{ @"name": @"Volume Up", @"command": @"volume up", @"icon": @"speaker.wave.3.fill" },
             @{ @"name": @"Volume Down", @"command": @"volume down", @"icon": @"speaker.wave.1.fill" },
-            @{ @"name": @"Set Volume...", @"command": @"__SET_VOLUME__", @"icon": @"speaker.wave.3.fill" },
+            @{ @"name": @"Set Volume...", @"command": @"__SET_VOLUME__", @"icon": @"slider.horizontal.3" },
             @{ @"name": @"Set Ringer Volume...", @"command": @"__SET_RINGER_VOLUME__", @"icon": @"bell.fill" },
             @{ @"name": @"Mute", @"command": @"mute toggle", @"icon": @"speaker.slash.fill" },
             @{ @"name": @"ANC On", @"command": @"anc on", @"icon": @"ear.badge.checkmark" },
@@ -151,12 +147,36 @@
             @{ @"name": @"Silent Vibration", @"command": @"vibration silent-toggle", @"icon": @"bell.slash" },
             @{ @"name": @"Ring Vibration", @"command": @"vibration ring-toggle", @"icon": @"bell" }
         ],
+        // Capture
+        @[
+            @{ @"name": @"Screenshot", @"command": @"screenshot", @"icon": @"camera.viewfinder" },
+            @{ @"name": @"Screen Recording", @"command": @"screenrecord toggle", @"icon": @"record.circle.fill" },
+            @{ @"name": @"Open Camera...", @"command": @"__CAMERA_PICKER__", @"icon": @"camera.fill" },
+            @{ @"name": @"Open Video Camera...", @"command": @"__CAMERA_VIDEO_PICKER__", @"icon": @"video.fill" },
+            @{ @"name": @"Camera Shutter / Snap", @"command": @"camera shutter", @"icon": @"camera.circle.fill" },
+            @{ @"name": @"Camera Record Toggle", @"command": @"camera record", @"icon": @"video.circle.fill" }
+        ],
+        // Apps & Navigation
+        @[
+            @{ @"name": @"Open App...", @"command": @"__OPEN_APP__", @"icon": @"square.grid.2x2.fill" },
+            @{ @"name": @"Kill App...", @"command": @"__KILL_APP__", @"icon": @"xmark.square.fill" },
+            @{ @"name": @"Home Button", @"command": @"home", @"icon": @"house.fill" },
+            @{ @"name": @"App Switcher", @"command": @"switcher", @"icon": @"square.stack.3d.up.fill" },
+            @{ @"name": @"Previous App", @"command": @"previous app", @"icon": @"arrow.uturn.backward" },
+            @{ @"name": @"Control Center", @"command": @"open control center", @"icon": @"switch.2" },
+            @{ @"name": @"Activate Siri", @"command": @"siri", @"icon": @"mic.circle.fill" }
+        ],
         // Device Controls
         @[
-            @{ @"name": @"Appearance", @"command": @"appearance toggle", @"icon": @"moon.fill" },
+            @{ @"name": @"Appearance", @"command": @"appearance toggle", @"icon": @"circle.lefthalf.fill" },
             @{ @"name": @"Set Brightness...", @"command": @"__SET_BRIGHTNESS__", @"icon": @"sun.max.fill" },
             @{ @"name": @"Flashlight", @"command": @"flashlight toggle", @"icon": @"flashlight.on.fill" },
-            @{ @"name": @"Rotation Lock", @"command": @"rotate toggle", @"icon": @"lock.rotation" }
+            @{ @"name": @"Rotation Lock", @"command": @"rotate toggle", @"icon": @"lock.rotation" },
+            @{ @"name": @"Lock Device", @"command": @"lock", @"icon": @"lock.fill" },
+            @{ @"name": @"Unlock Device", @"command": @"unlock", @"icon": @"lock.open.fill" },
+            @{ @"name": @"Do Not Disturb", @"command": @"dnd toggle", @"icon": @"moon.circle.fill" },
+            @{ @"name": @"Low Power Mode", @"command": @"low power toggle", @"icon": @"battery.25" },
+            @{ @"name": @"Auto-Lock", @"command": @"autolock toggle", @"icon": @"timer" }
         ],
         // Connectivity
         @[
@@ -172,40 +192,25 @@
         ],
         // System
         @[
-            @{ @"name": @"Haptic Feedback", @"command": @"haptic", @"icon": @"hand.tap.fill" },
-            @{ @"name": @"Screenshot", @"command": @"screenshot", @"icon": @"camera.fill" },
-            @{ @"name": @"Screen Recording", @"command": @"screenrecord toggle", @"icon": @"record.circle.fill" },
-            @{ @"name": @"Open App...", @"command": @"__OPEN_APP__", @"icon": @"square.grid.2x2.fill" },
-            @{ @"name": @"Kill App...", @"command": @"__KILL_APP__", @"icon": @"xmark.square.fill" },
-            @{ @"name": @"Lock Device", @"command": @"lock", @"icon": @"lock.fill" },
-            @{ @"name": @"Unlock Device", @"command": @"unlock", @"icon": @"lock.open.fill" },
-            @{ @"name": @"Do Not Disturb", @"command": @"dnd toggle", @"icon": @"moon.fill" },
-            @{ @"name": @"Activate Siri", @"command": @"siri", @"icon": @"mic.circle.fill" },
-            @{ @"name": @"Home Button", @"command": @"home", @"icon": @"house.fill" },
-            @{ @"name": @"App Switcher", @"command": @"switcher", @"icon": @"square.stack.3d.up.fill" },
-            @{ @"name": @"Previous App", @"command": @"previous app", @"icon": @"arrow.uturn.backward" },
-            @{ @"name": @"Control Center", @"command": @"open control center", @"icon": @"gear" },
             @{ @"name": @"Respring Device", @"command": @"respring", @"icon": @"memories" },
             @{ @"name": @"Safe Mode", @"command": @"safemode", @"icon": @"shield.slash.fill" },
             @{ @"name": @"Soft Reboot (ldrestart)", @"command": @"ldrestart", @"icon": @"arrow.clockwise" },
             @{ @"name": @"Userspace Reboot", @"command": @"userspace-reboot", @"icon": @"arrow.clockwise.circle" },
-            @{ @"name": @"Refresh Icon Cache (uicache)", @"command": @"uicache", @"icon": @"square.grid.2x2" },
-            @{ @"name": @"Low Power Mode", @"command": @"low power toggle", @"icon": @"battery.25" },
-            @{ @"name": @"Auto-Lock", @"command": @"autolock toggle", @"icon": @"timer" }
+            @{ @"name": @"Refresh Icon Cache (uicache)", @"command": @"uicache", @"icon": @"square.grid.2x2" }
         ],
         // Integrations
         ({
             NSMutableArray *integrations = [NSMutableArray array];
             if (cm.haEnabled) {
-                [integrations addObject:@{ @"name": @"Home Assistant: Control Entity...", @"command": @"__HA_PICKER__", @"icon": @"house.fill" }];
+                [integrations addObject:@{ @"name": @"Home Assistant: Control Entity...", @"command": @"__HA_PICKER__", @"icon": @"lightbulb.fill" }];
             }
             if (cm.kmEnabled) {
                 [integrations addObject:@{ @"name": @"Keyboard Maestro: Trigger Macro...", @"command": @"__KM_TRIGGER__", @"icon": @"command" }];
             }
             if (cm.mqttEnabled) {
-                [integrations addObject:@{ @"name": @"MQTT: Publish Topic...", @"command": @"__MQTT_PUBLISH__", @"icon": @"antenna.radiowaves.left.and.right" }];
+                [integrations addObject:@{ @"name": @"MQTT: Publish Topic...", @"command": @"__MQTT_PUBLISH__", @"icon": @"dot.radiowaves.left.and.right" }];
             }
-            [integrations addObject:@{ @"name": @"Shortcuts: Run Shortcut...", @"command": @"__SHORTCUT_PICKER__", @"icon": @"command" }];
+            [integrations addObject:@{ @"name": @"Shortcuts: Run Shortcut...", @"command": @"__SHORTCUT_PICKER__", @"icon": @"wand.and.stars" }];
             NSArray *sneakyPaths = @[
                 @"/Library/MobileSubstrate/DynamicLibraries/SneakyCam.dylib",
                 @"/Library/MobileSubstrate/DynamicLibraries/sneakycam.dylib",
@@ -229,7 +234,7 @@
             }
             if (sneakyInstalled) {
                 [integrations addObject:@{ @"name": @"SneakyCam: Take Photo", @"command": @"sneakycam photo", @"icon": @"camera.aperture" }];
-                [integrations addObject:@{ @"name": @"SneakyCam: Toggle Video", @"command": @"sneakycam video", @"icon": @"video.fill" }];
+                [integrations addObject:@{ @"name": @"SneakyCam: Toggle Video", @"command": @"sneakycam video", @"icon": @"eye.slash.fill" }];
             }
             NSArray *snapperPaths = @[
                 @"/Library/MobileSubstrate/DynamicLibraries/Snapper3.dylib",
@@ -269,7 +274,7 @@
                 [integrations addObject:@{ @"name": @"Snapper: Open Area", @"command": @"snapper open", @"icon": @"crop" }];
                 [integrations addObject:@{ @"name": @"Snapper: Freeze Screen", @"command": @"snapper freeze", @"icon": @"snowflake" }];
                 [integrations addObject:@{ @"name": @"Snapper: Instant Snap", @"command": @"snapper instant", @"icon": @"bolt.fill" }];
-                [integrations addObject:@{ @"name": @"Snapper: Close All", @"command": @"snapper close", @"icon": @"xmark.circle" }];
+                [integrations addObject:@{ @"name": @"Snapper: Close All", @"command": @"snapper close", @"icon": @"xmark.rectangle.fill" }];
             }
             [integrations addObject:@{ @"name": @"AudioMix: Toggle", @"command": @"audiomix toggle", @"icon": @"music.note" }];
             integrations;
@@ -278,9 +283,10 @@
         @[
             @{ @"name": @"Custom Lua Script", @"command": @"__LUA_SCRIPT__", @"icon": @"scroll.fill" },
             @{ @"name": @"If Condition...", @"command": @"__IF_CONDITION__", @"icon": @"arrow.triangle.branch" },
-            @{ @"name": @"Delay", @"command": @"__DELAY__", @"icon": @"timer" },
+            @{ @"name": @"Delay", @"command": @"__DELAY__", @"icon": @"hourglass" },
             @{ @"name": @"Terminal Command", @"command": @"__CUSTOM__", @"icon": @"terminal.fill" },
-            @{ @"name": @"Toast...", @"command": @"__TOAST__", @"icon": @"text.bubble.fill" }
+            @{ @"name": @"Toast...", @"command": @"__TOAST__", @"icon": @"text.bubble.fill" },
+            @{ @"name": @"Haptic Feedback", @"command": @"haptic", @"icon": @"hand.tap.fill" }
         ]
     ];
 
