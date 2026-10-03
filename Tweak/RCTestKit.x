@@ -27,6 +27,11 @@
 //                                       and adds "redacted": true if there were any
 //   GET  /api/testkit/reports           saved reports: ids, and a summary of each
 //   POST /api/testkit/report/delete?id= delete a saved report
+//   POST /api/testkit/replay            body (or ?seq=): simulated button presses at exact times, e.g.
+//                                       "vU@0 vD@7 ^D@125 ^U@147" (v = down, ^ = up; U / D = Volume Up /
+//                                       Down, H = Home; @ms from the start). Triggers are captured, not run
+//                                       (&capture=0 runs them); returns what the HID listener saw and which
+//                                       triggers fired within &settle= ms (default 1500) of the last event
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -36,6 +41,8 @@
 #import <notify.h>
 #import <unistd.h>
 #import <sys/utsname.h>
+#import <mach/mach_time.h>
+#import <pthread.h>
 #import "RCTestKit.h"
 
 extern void SRLog(NSString *format, ...);
@@ -1537,13 +1544,134 @@ static NSDictionary *RCTKLua(NSString *code) {
 
 #pragma mark - Routing
 
+#pragma mark - Replay (simulated button presses)
+
+// A press is posted through IOHIDEventSystemClientDispatchEvent - the system-wide path the
+// real buttons report through, which the tweak's HID listener taps and SpringBoard's button
+// handling acts on - so the tweak sees it the way it sees a real press. Volume and Home
+// only: simulated Power presses can start Emergency SOS (5 presses) or the power-off /
+// SOS screens (a hold, or with a volume button).
+typedef struct __IOHIDEvent *RCTKHIDEventRef;
+typedef struct __IOHIDEventSystemClient *RCTKHIDClientRef;
+
+static NSArray<NSDictionary *> *RCTKParseReplay(NSString *seq, NSString **error) {
+    NSDictionary *usages = @{ @"U": @0xE9, @"D": @0xEA, @"H": @0x40 };
+    NSMutableArray *events = [NSMutableArray array];
+    NSMutableSet *held = [NSMutableSet set];
+    double last = 0;
+    for (NSString *token in [seq componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]) {
+        if (!token.length) continue;
+        NSRange at = [token rangeOfString:@"@"];
+        NSString *head = at.location == NSNotFound ? token : [token substringToIndex:at.location];
+        NSString *button = head.length == 2 ? [head substringFromIndex:1] : nil;
+        BOOL down = [head hasPrefix:@"v"];
+        if (at.location == NSNotFound || !button || (!down && ![head hasPrefix:@"^"])) {
+            *error = [NSString stringWithFormat:@"can't read '%@' - use e.g. vU@0 ^U@120", token];
+            return nil;
+        }
+        if (!usages[button]) {
+            *error = [button isEqualToString:@"P"] ? @"Power can't be replayed (it can start Emergency SOS)"
+                                                    : [NSString stringWithFormat:@"unknown button '%@' (U, D, H)", button];
+            return nil;
+        }
+        double ms = [[token substringFromIndex:at.location + 1] doubleValue];
+        if (ms < last || ms > 10000) {
+            *error = [NSString stringWithFormat:@"'%@': times must go up, within 10 s", token];
+            return nil;
+        }
+        if (down == [held containsObject:button]) {
+            *error = [NSString stringWithFormat:@"'%@': %@", token, down ? @"already down" : @"not down"];
+            return nil;
+        }
+        if (down) [held addObject:button]; else [held removeObject:button];
+        last = ms;
+        [events addObject:@{ @"button": button, @"down": @(down), @"ms": @(ms), @"usage": usages[button] }];
+    }
+    if (held.count) {
+        *error = [NSString stringWithFormat:@"%@ never released", [held.allObjects componentsJoinedByString:@", "]];
+        return nil;
+    }
+    if (!events.count) *error = @"no presses";
+    return events.count ? events : nil;
+}
+
+static NSDictionary *RCTKReplay(NSString *seq, NSDictionary *params) {
+    NSString *error = nil;
+    NSArray *events = RCTKParseReplay(seq ?: @"", &error);
+    if (!events) return @{ @"error": error };
+
+    static RCTKHIDClientRef (*clientCreate)(CFAllocatorRef);
+    static RCTKHIDEventRef (*keyboardEvent)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, boolean_t, uint32_t);
+    static void (*dispatchEvent)(RCTKHIDClientRef, RCTKHIDEventRef);
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        void *iokit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
+        clientCreate = dlsym(iokit, "IOHIDEventSystemClientCreate");
+        keyboardEvent = dlsym(iokit, "IOHIDEventCreateKeyboardEvent");
+        dispatchEvent = dlsym(iokit, "IOHIDEventSystemClientDispatchEvent");
+    });
+    if (!clientCreate || !keyboardEvent || !dispatchEvent) return @{ @"error": @"IOHID functions not found" };
+
+    BOOL capture = !params[@"capture"] || [params[@"capture"] boolValue];
+    double settle = params[@"settle"] ? [params[@"settle"] doubleValue] : 1500;
+    BOOL wasCapturing = g_tkCapture;
+    if (capture) g_tkCapture = YES;
+    unsigned long long since = RCTKRecord(@"replay.start", @{ @"seq": seq, @"capture": @(capture) });
+
+    // Posted from a thread of its own, on time to the millisecond
+    __block NSMutableArray *sent = [NSMutableArray array];
+    __block double startMs = 0;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
+        RCTKHIDClientRef client = clientCreate(kCFAllocatorDefault);
+        mach_timebase_info_data_t base;
+        mach_timebase_info(&base);
+        uint64_t t0 = mach_absolute_time();
+        startMs = RCTKNowMs();
+        for (NSDictionary *event in events) {
+            uint64_t due = t0 + (uint64_t)([event[@"ms"] doubleValue] * 1e6 * base.denom / base.numer);
+            mach_wait_until(due);
+            uint64_t now = mach_absolute_time();
+            RCTKHIDEventRef hid = keyboardEvent(kCFAllocatorDefault, now, 0x0C, [event[@"usage"] unsignedIntValue], [event[@"down"] boolValue], 0);
+            if (hid) {
+                dispatchEvent(client, hid);
+                CFRelease(hid);
+            }
+            [sent addObject:[NSString stringWithFormat:@"%@%@@%.0f", [event[@"down"] boolValue] ? @"v" : @"^", event[@"button"],
+                             (double)(now - t0) * base.numer / base.denom / 1e6]];
+        }
+        if (client) CFRelease(client);
+        dispatch_semaphore_signal(done);
+    });
+    dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC));
+    [NSThread sleepForTimeInterval:settle / 1000.0];
+    if (capture) g_tkCapture = wasCapturing;
+
+    // What came back: the presses the HID listener saw, and the triggers that fired
+    NSMutableArray *seen = [NSMutableArray array], *fired = [NSMutableArray array];
+    for (NSDictionary *event in RCTKJournal(since, nil, 0)[@"events"]) {
+        NSString *type = event[@"type"];
+        double ms = [event[@"t"] doubleValue] - startMs;
+        if ([type isEqualToString:@"hid.volume"] || [type isEqualToString:@"hid.home"]) {
+            NSString *button = [type isEqualToString:@"hid.home"] ? @"H" : [event[@"button"] isEqualToString:@"up"] ? @"U" : @"D";
+            [seen addObject:[NSString stringWithFormat:@"%@%@@%.0f", [event[@"down"] boolValue] ? @"v" : @"^", button, ms]];
+        } else if ([type isEqualToString:@"trigger"]) {
+            [fired addObject:[NSString stringWithFormat:@"%@@%.0f", event[@"key"], ms]];
+        }
+    }
+    RCTKRecord(@"replay.end", @{ @"fired": fired });
+    return @{ @"seq": seq, @"sent": [sent componentsJoinedByString:@" "], @"seen": [seen componentsJoinedByString:@" "],
+              @"fired": fired, @"capture": @(capture) };
+}
+
 static NSDictionary *RCTKInfo(void) {
     return @{
         @"testkit": @1,
         @"session": g_tkSession ?: @"",
         @"tweakVersion": RCTKPackageVersion(),
         @"endpoints": @[@"info", @"probe", @"journal", @"journal/clear", @"mark", @"run", @"lua", @"capture", @"snapshot", @"restore",
-                        @"suites", @"suite/steps", @"suite/run", @"suite/skip", @"suite/stop", @"report", @"reports", @"report/delete"]
+                        @"suites", @"suite/steps", @"suite/run", @"suite/skip", @"suite/stop", @"report", @"reports", @"report/delete",
+                        @"replay"]
     };
 }
 
@@ -1593,6 +1721,7 @@ static NSDictionary *RCTKDispatch(NSString *endpoint, NSDictionary<NSString *, N
     }
     if ([endpoint isEqualToString:@"restore"]) return RCTKRestore();
     if ([endpoint isEqualToString:@"lua"]) return RCTKLua(params[@"code"] ?: body);
+    if ([endpoint isEqualToString:@"replay"]) return RCTKReplay(params[@"seq"] ?: body, params);
     if ([endpoint isEqualToString:@"suites"]) return RCTKSuites();
     if ([endpoint isEqualToString:@"suite/run"]) {
         NSString *name = params[@"name"] ?: body;
