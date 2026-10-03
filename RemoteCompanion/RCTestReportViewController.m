@@ -62,7 +62,11 @@ static NSString *RCTestSummary(NSDictionary *test) {
     NSDictionary *d = [test[@"detail"] isKindOfClass:[NSDictionary class]] ? test[@"detail"] : nil;
     if (!d) return nil;
     if ([d[@"reason"] isKindOfClass:[NSString class]]) return d[@"reason"];
-    if ([d[@"problems"] isKindOfClass:[NSArray class]] && [d[@"problems"] count]) return [d[@"problems"] componentsJoinedByString:@"; "];
+    if ([d[@"problems"] isKindOfClass:[NSArray class]] && [d[@"problems"] count]) {
+        NSString *problems = [d[@"problems"] componentsJoinedByString:@"; "];
+        // A replayed step: the presses, to replay it again
+        return [d[@"seq"] isKindOfClass:[NSString class]] ? [NSString stringWithFormat:@"%@ - presses: %@", problems, d[@"seq"]] : problems;
+    }
     NSDictionary *defined = [d[@"defined"] isKindOfClass:[NSDictionary class]] ? d[@"defined"] : nil;
     if ([d[@"differs"] isKindOfClass:[NSArray class]]) {
         NSMutableArray *parts = [NSMutableArray array];

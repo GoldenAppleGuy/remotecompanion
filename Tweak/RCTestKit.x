@@ -29,9 +29,10 @@
 //   POST /api/testkit/report/delete?id= delete a saved report
 //   POST /api/testkit/replay            body (or ?seq=): simulated button presses at exact times, e.g.
 //                                       "vU@0 vD@7 ^D@125 ^U@147" (v = down, ^ = up; U / D = Volume Up /
-//                                       Down, H = Home; @ms from the start). Triggers are captured, not run
+//                                       Down, H = Home, P = Power; @ms from the start). Triggers are captured, not run
 //                                       (&capture=0 runs them); returns what the HID listener saw and which
-//                                       triggers fired within &settle= ms (default 1500) of the last event
+//                                       triggers fired within &settle= ms (default 1500) of the last event;
+//                                       &jitter=N moves every gap by up to +/- N ms, keeping the order
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -1369,6 +1370,7 @@ static NSDictionary *RCTKSuites(void) {
         @{ @"name": @"toggles", @"changesState": @YES, @"description": @"Toggle actions switch and read back, and their conditions follow; state is snapshotted and restored. disruptive=1 adds Wi-Fi, Bluetooth, location, cellular and airplane mode" },
         @{ @"name": @"all", @"changesState": @YES, @"description": @"conditions, then toggles" },
         @{ @"name": @"guided", @"changesState": @YES, @"description": @"Banner prompts for each button and gesture trigger; passes when exactly that trigger fires. Your config is swapped for a test one (with capture on) and restored. suite/skip skips a step, suite/stop ends the run" },
+        @{ @"name": @"replay", @"changesState": @YES, @"description": @"Volume, Home and Power triggers checked by replaying presses at exact times (clean, sloppy, chained, held) - no one presses anything. Repeats move each gap by up to 25 ms. Power is limited so it can't start Emergency SOS, Siri or the power-off screen; Power steps come last and may leave the phone locked. Your config is swapped for a test one (with capture on) and restored" },
         @{ @"name": @"differential", @"changesState": @YES, @"description": @"Each Power / Volume / Home input twice - stock (master switch off) and with the tweak armed but not claiming it - and the outcomes (screen, screenshot, volume, Siri, switcher, front app) must match. Real screenshots may be saved during the run" },
     ] };
 }
@@ -1388,9 +1390,11 @@ static NSDictionary *RCTKSummarize(NSMutableDictionary *run) {
     return report;
 }
 
+static void RCTKSuiteReplay(NSMutableDictionary *run);
+
 static NSDictionary *RCTKRunSuite(NSString *name, NSDictionary *params) {
     BOOL disruptive = [params[@"disruptive"] boolValue], wait = [params[@"wait"] boolValue];
-    if (![@[@"conditions", @"toggles", @"all", @"guided", @"differential"] containsObject:name ?: @""]) {
+    if (![@[@"conditions", @"toggles", @"all", @"guided", @"differential", @"replay"] containsObject:name ?: @""]) {
         return @{ @"error": [NSString stringWithFormat:@"unknown suite '%@'", name ?: @""], @"suites": RCTKSuites()[@"suites"] };
     }
     NSMutableDictionary *run;
@@ -1420,6 +1424,7 @@ static NSDictionary *RCTKRunSuite(NSString *name, NSDictionary *params) {
         if ([name isEqualToString:@"toggles"] || [name isEqualToString:@"all"]) RCTKSuiteToggles(run, disruptive);
         if ([name isEqualToString:@"guided"]) RCTKSuiteGuided(run);
         if ([name isEqualToString:@"differential"]) RCTKSuiteDifferential(run);
+        if ([name isEqualToString:@"replay"]) RCTKSuiteReplay(run);
         if (changesState) {
             NSDictionary *restored = RCTKRestore();
             @synchronized (run) { run[@"restored"] = restored[@"restored"] ?: @[]; }
@@ -1548,14 +1553,55 @@ static NSDictionary *RCTKLua(NSString *code) {
 
 // A press is posted through IOHIDEventSystemClientDispatchEvent - the system-wide path the
 // real buttons report through, which the tweak's HID listener taps and SpringBoard's button
-// handling acts on - so the tweak sees it the way it sees a real press. Volume and Home
-// only: simulated Power presses can start Emergency SOS (5 presses) or the power-off /
-// SOS screens (a hold, or with a volume button).
+// handling acts on - so the tweak sees it the way it sees a real press, and iOS acts on it.
+//
+// Power is guarded so a replay can't do anything a person would regret:
+// - Emergency SOS by presses (5 quick ones; it can call by itself): at most
+//   kRCTKMaxPowerPresses Power presses in any kRCTKPowerWindowMs, counted across replays -
+//   a replay that would go over waits (RCTKReplaySend), one with more is refused.
+// - Emergency SOS / power-off by holding (Power with a volume button, or Power alone, held):
+//   Power held at most kRCTKMaxPowerHoldMs, and down together with another button at most
+//   kRCTKMaxPowerOverlapMs (Power + Home held is also the iPhone 8's force restart).
+static const NSUInteger kRCTKMaxPowerPresses = 4;
+static const double kRCTKPowerWindowMs = 10000;
+static const double kRCTKMaxPowerHoldMs = 1500;
+static const double kRCTKMaxPowerOverlapMs = 800;
+
 typedef struct __IOHIDEvent *RCTKHIDEventRef;
 typedef struct __IOHIDEventSystemClient *RCTKHIDClientRef;
 
+// Why these events break a Power guard (see above), or nil if they don't
+static NSString *RCTKPowerGuardError(NSArray<NSDictionary *> *events) {
+    NSUInteger powerPresses = 0;
+    double powerDownAt = -1, overlapFrom = -1;
+    NSMutableSet *down = [NSMutableSet set];
+    for (NSDictionary *event in events) {
+        NSString *button = event[@"button"];
+        double ms = [event[@"ms"] doubleValue];
+        if ([event[@"down"] boolValue]) [down addObject:button]; else [down removeObject:button];
+        if ([button isEqualToString:@"P"]) {
+            if ([event[@"down"] boolValue]) { powerPresses++; powerDownAt = ms; }
+            else if (ms - powerDownAt > kRCTKMaxPowerHoldMs) {
+                return [NSString stringWithFormat:@"Power held %.0f ms - at most %.0f (a longer hold opens Siri, the power-off screen or Emergency SOS)", ms - powerDownAt, kRCTKMaxPowerHoldMs];
+            }
+        }
+        BOOL together = [down containsObject:@"P"] && down.count > 1;
+        if (together && overlapFrom < 0) overlapFrom = ms;
+        if (!together && overlapFrom >= 0) {
+            if (ms - overlapFrom > kRCTKMaxPowerOverlapMs) {
+                return [NSString stringWithFormat:@"Power held with another button for %.0f ms - at most %.0f (held together they start Emergency SOS or a restart)", ms - overlapFrom, kRCTKMaxPowerOverlapMs];
+            }
+            overlapFrom = -1;
+        }
+    }
+    if (powerPresses > kRCTKMaxPowerPresses) {
+        return [NSString stringWithFormat:@"%lu Power presses - at most %lu (5 start Emergency SOS)", (unsigned long)powerPresses, (unsigned long)kRCTKMaxPowerPresses];
+    }
+    return nil;
+}
+
 static NSArray<NSDictionary *> *RCTKParseReplay(NSString *seq, NSString **error) {
-    NSDictionary *usages = @{ @"U": @0xE9, @"D": @0xEA, @"H": @0x40 };
+    NSDictionary *usages = @{ @"U": @0xE9, @"D": @0xEA, @"H": @0x40, @"P": @0x30 };
     NSMutableArray *events = [NSMutableArray array];
     NSMutableSet *held = [NSMutableSet set];
     double last = 0;
@@ -1570,8 +1616,7 @@ static NSArray<NSDictionary *> *RCTKParseReplay(NSString *seq, NSString **error)
             return nil;
         }
         if (!usages[button]) {
-            *error = [button isEqualToString:@"P"] ? @"Power can't be replayed (it can start Emergency SOS)"
-                                                    : [NSString stringWithFormat:@"unknown button '%@' (U, D, H)", button];
+            *error = [NSString stringWithFormat:@"unknown button '%@' (U, D, H, P)", button];
             return nil;
         }
         double ms = [[token substringFromIndex:at.location + 1] doubleValue];
@@ -1591,15 +1636,19 @@ static NSArray<NSDictionary *> *RCTKParseReplay(NSString *seq, NSString **error)
         *error = [NSString stringWithFormat:@"%@ never released", [held.allObjects componentsJoinedByString:@", "]];
         return nil;
     }
+    NSString *guard = RCTKPowerGuardError(events);
+    if (guard) {
+        *error = guard;
+        return nil;
+    }
     if (!events.count) *error = @"no presses";
     return events.count ? events : nil;
 }
 
-static NSDictionary *RCTKReplay(NSString *seq, NSDictionary *params) {
-    NSString *error = nil;
-    NSArray *events = RCTKParseReplay(seq ?: @"", &error);
-    if (!events) return @{ @"error": error };
-
+// Posts the events at their times, from a thread of its own (on time to the millisecond);
+// returns when the last one is sent, with when each went out ("vU@0 vD@7 ..."), and the
+// wall-clock time of the start in *startMs
+static NSString *RCTKReplaySend(NSArray<NSDictionary *> *events, double *startMs) {
     static RCTKHIDClientRef (*clientCreate)(CFAllocatorRef);
     static RCTKHIDEventRef (*keyboardEvent)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, boolean_t, uint32_t);
     static void (*dispatchEvent)(RCTKHIDClientRef, RCTKHIDEventRef);
@@ -1610,32 +1659,46 @@ static NSDictionary *RCTKReplay(NSString *seq, NSDictionary *params) {
         keyboardEvent = dlsym(iokit, "IOHIDEventCreateKeyboardEvent");
         dispatchEvent = dlsym(iokit, "IOHIDEventSystemClientDispatchEvent");
     });
-    if (!clientCreate || !keyboardEvent || !dispatchEvent) return @{ @"error": @"IOHID functions not found" };
+    if (!clientCreate || !keyboardEvent || !dispatchEvent) return nil;
 
-    BOOL capture = !params[@"capture"] || [params[@"capture"] boolValue];
-    double settle = params[@"settle"] ? [params[@"settle"] doubleValue] : 1500;
-    BOOL wasCapturing = g_tkCapture;
-    if (capture) g_tkCapture = YES;
-    unsigned long long since = RCTKRecord(@"replay.start", @{ @"seq": seq, @"capture": @(capture) });
+    // At most kRCTKMaxPowerPresses Power presses in any kRCTKPowerWindowMs, across replays:
+    // wait for older ones to drop out of the window first. One replay at a time.
+    static NSMutableArray<NSNumber *> *powerPressTimes;
+    static NSObject *sendLock;
+    static dispatch_once_t lockOnce;
+    dispatch_once(&lockOnce, ^{ powerPressTimes = [NSMutableArray array]; sendLock = [NSObject new]; });
+    NSUInteger powerPresses = 0;
+    for (NSDictionary *event in events) if ([event[@"button"] isEqualToString:@"P"] && [event[@"down"] boolValue]) powerPresses++;
+    if (RCTKPowerGuardError(events)) return nil;
+    @synchronized (sendLock) {
+    while (powerPresses) {
+        double now = RCTKNowMs();
+        while (powerPressTimes.count && now - powerPressTimes.firstObject.doubleValue > kRCTKPowerWindowMs) [powerPressTimes removeObjectAtIndex:0];
+        if (powerPressTimes.count + powerPresses <= kRCTKMaxPowerPresses) break;
+        double wait = powerPressTimes.firstObject.doubleValue + kRCTKPowerWindowMs - now + 50;
+        RCTKEvent(@"replay.wait", @{ @"ms": @(round(wait)), @"reason": @"Power press limit" });
+        [NSThread sleepForTimeInterval:wait / 1000.0];
+    }
 
-    // Posted from a thread of its own, on time to the millisecond
-    __block NSMutableArray *sent = [NSMutableArray array];
-    __block double startMs = 0;
+    NSMutableArray *sent = [NSMutableArray array];
+    __block double start = 0;
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
         RCTKHIDClientRef client = clientCreate(kCFAllocatorDefault);
         mach_timebase_info_data_t base;
         mach_timebase_info(&base);
         uint64_t t0 = mach_absolute_time();
-        startMs = RCTKNowMs();
+        start = RCTKNowMs();
         for (NSDictionary *event in events) {
-            uint64_t due = t0 + (uint64_t)([event[@"ms"] doubleValue] * 1e6 * base.denom / base.numer);
-            mach_wait_until(due);
+            mach_wait_until(t0 + (uint64_t)([event[@"ms"] doubleValue] * 1e6 * base.denom / base.numer));
             uint64_t now = mach_absolute_time();
             RCTKHIDEventRef hid = keyboardEvent(kCFAllocatorDefault, now, 0x0C, [event[@"usage"] unsignedIntValue], [event[@"down"] boolValue], 0);
             if (hid) {
                 dispatchEvent(client, hid);
                 CFRelease(hid);
+            }
+            if ([event[@"button"] isEqualToString:@"P"] && [event[@"down"] boolValue]) {
+                @synchronized (powerPressTimes) { [powerPressTimes addObject:@(RCTKNowMs())]; }
             }
             [sent addObject:[NSString stringWithFormat:@"%@%@@%.0f", [event[@"down"] boolValue] ? @"v" : @"^", event[@"button"],
                              (double)(now - t0) * base.numer / base.denom / 1e6]];
@@ -1644,24 +1707,255 @@ static NSDictionary *RCTKReplay(NSString *seq, NSDictionary *params) {
         dispatch_semaphore_signal(done);
     });
     dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC));
+    if (startMs) *startMs = start;
+    return [sent componentsJoinedByString:@" "];
+    }
+}
+
+// The presses the HID listener saw after journal entry `since`, relative to startMs
+static NSString *RCTKReplaySeen(unsigned long long since, double startMs) {
+    NSMutableArray *seen = [NSMutableArray array];
+    for (NSDictionary *event in RCTKJournal(since, @"hid.", 0)[@"events"]) {
+        NSString *type = event[@"type"];
+        if (![@[@"hid.volume", @"hid.home", @"hid.power"] containsObject:type]) continue;
+        NSString *button = [type isEqualToString:@"hid.home"] ? @"H" : [type isEqualToString:@"hid.power"] ? @"P"
+                         : [event[@"button"] isEqualToString:@"up"] ? @"U" : @"D";
+        // ↻: a press the tweak itself posted (its replay of a held-back Power press to iOS)
+        [seen addObject:[NSString stringWithFormat:@"%@%@%@@%.0f", [event[@"replay"] boolValue] ? @"↻" : @"", [event[@"down"] boolValue] ? @"v" : @"^", button,
+                         [event[@"t"] doubleValue] - startMs]];
+    }
+    return [seen componentsJoinedByString:@" "];
+}
+
+// The same presses with every gap moved by up to +/- jitter ms, keeping their order (so
+// what overlaps still overlaps) - a sloppier or tidier version of the same input
+static NSArray<NSDictionary *> *RCTKJitter(NSArray<NSDictionary *> *events, double jitter) {
+    if (jitter <= 0) return events;
+    NSMutableArray *out = [NSMutableArray arrayWithCapacity:events.count];
+    double last = -1;
+    for (NSDictionary *event in events) {
+        double ms = [event[@"ms"] doubleValue] + (jitter > 0 ? ((double)arc4random_uniform(2001) / 1000.0 - 1.0) * jitter : 0);
+        ms = MAX(ms, last + 1);
+        if (!out.count) ms = 0;
+        last = ms;
+        NSMutableDictionary *moved = [event mutableCopy];
+        moved[@"ms"] = @(round(ms));
+        [out addObject:moved];
+    }
+    // Moved past a Power guard (a hold or overlap a little too long): the exact timeline
+    return RCTKPowerGuardError(out) ? events : out;
+}
+
+static NSString *RCTKReplayString(NSArray<NSDictionary *> *events) {
+    NSMutableArray *parts = [NSMutableArray array];
+    for (NSDictionary *event in events) {
+        [parts addObject:[NSString stringWithFormat:@"%@%@@%@", [event[@"down"] boolValue] ? @"v" : @"^", event[@"button"], event[@"ms"]]];
+    }
+    return [parts componentsJoinedByString:@" "];
+}
+
+static NSDictionary *RCTKReplay(NSString *seq, NSDictionary *params) {
+    NSString *error = nil;
+    NSArray *events = RCTKParseReplay(seq ?: @"", &error);
+    if (!events) return @{ @"error": error };
+    if (params[@"jitter"]) events = RCTKJitter(events, [params[@"jitter"] doubleValue]);
+
+    BOOL capture = !params[@"capture"] || [params[@"capture"] boolValue];
+    double settle = params[@"settle"] ? [params[@"settle"] doubleValue] : 1500;
+    BOOL wasCapturing = g_tkCapture;
+    if (capture) g_tkCapture = YES;
+    unsigned long long since = RCTKRecord(@"replay.start", @{ @"seq": RCTKReplayString(events), @"capture": @(capture) });
+    double startMs = 0;
+    NSString *sent = RCTKReplaySend(events, &startMs);
+    if (!sent) {
+        if (capture) g_tkCapture = wasCapturing;
+        return @{ @"error": @"IOHID functions not found" };
+    }
     [NSThread sleepForTimeInterval:settle / 1000.0];
     if (capture) g_tkCapture = wasCapturing;
 
-    // What came back: the presses the HID listener saw, and the triggers that fired
-    NSMutableArray *seen = [NSMutableArray array], *fired = [NSMutableArray array];
-    for (NSDictionary *event in RCTKJournal(since, nil, 0)[@"events"]) {
-        NSString *type = event[@"type"];
-        double ms = [event[@"t"] doubleValue] - startMs;
-        if ([type isEqualToString:@"hid.volume"] || [type isEqualToString:@"hid.home"]) {
-            NSString *button = [type isEqualToString:@"hid.home"] ? @"H" : [event[@"button"] isEqualToString:@"up"] ? @"U" : @"D";
-            [seen addObject:[NSString stringWithFormat:@"%@%@@%.0f", [event[@"down"] boolValue] ? @"v" : @"^", button, ms]];
-        } else if ([type isEqualToString:@"trigger"]) {
-            [fired addObject:[NSString stringWithFormat:@"%@@%.0f", event[@"key"], ms]];
-        }
+    NSMutableArray *fired = [NSMutableArray array];
+    for (NSDictionary *event in RCTKJournal(since, @"trigger", 0)[@"events"]) {
+        if (![event[@"type"] isEqualToString:@"trigger"]) continue;
+        [fired addObject:[NSString stringWithFormat:@"%@@%.0f", event[@"key"], [event[@"t"] doubleValue] - startMs]];
     }
     RCTKRecord(@"replay.end", @{ @"fired": fired });
-    return @{ @"seq": seq, @"sent": [sent componentsJoinedByString:@" "], @"seen": [seen componentsJoinedByString:@" "],
-              @"fired": fired, @"capture": @(capture) };
+    return @{ @"seq": RCTKReplayString(events), @"sent": sent, @"seen": RCTKReplaySeen(since, startMs), @"fired": fired, @"capture": @(capture) };
+}
+
+#pragma mark Replay suite
+
+// Button triggers checked by replaying presses at exact times - no one presses anything.
+// Each step is a timeline and the triggers it must fire (how many times each); any other
+// button trigger firing fails it. The first time a step runs its timeline is exact; repeats
+// move every gap by up to +/- 25 ms (keeping the order), so a run also tries sloppier and
+// tidier versions of the same input. Power steps come last, as they can lock the phone; the
+// screen is woken before each one (a Power press, within the Power guards above).
+static NSArray<NSString *> *RCTKReplayTriggerKeys(BOOL hasHome) {
+    NSArray *keys = @[@"volume_up_hold", @"volume_down_hold", @"volume_both_press", @"volume_up_then_down", @"volume_down_then_up",
+                      @"power_double_tap", @"power_triple_click", @"power_quadruple_click", @"power_long_press",
+                      @"power_volume_up", @"power_volume_down"];
+    return hasHome ? [keys arrayByAddingObjectsFromArray:@[@"trigger_home_double_click", @"trigger_home_triple_click", @"trigger_home_quadruple_click"]] : keys;
+}
+
+// id, prompt (what it does), seq, expect {trigger: times}; optionally bind (only these
+// triggers on), home (Home-button phones only)
+static NSArray<NSDictionary *> *RCTKReplaySteps(BOOL hasHome) {
+    NSArray *steps = @[
+        @{ @"id": @"volume_up_tap", @"prompt": @"Volume Up tap - no trigger", @"seq": @"vU@0 ^U@90", @"expect": @{} },
+        @{ @"id": @"volume_up_hold", @"prompt": @"Volume Up held", @"seq": @"vU@0 ^U@700", @"expect": @{ @"volume_up_hold": @1 } },
+        @{ @"id": @"volume_down_hold", @"prompt": @"Volume Down held", @"seq": @"vD@0 ^D@700", @"expect": @{ @"volume_down_hold": @1 } },
+        @{ @"id": @"volume_up_then_down", @"prompt": @"Volume Up, then Down", @"seq": @"vU@0 ^U@90 vD@200 ^D@290", @"expect": @{ @"volume_up_then_down": @1 } },
+        @{ @"id": @"volume_down_then_up", @"prompt": @"Volume Down, then Up", @"seq": @"vD@0 ^D@90 vU@200 ^U@290", @"expect": @{ @"volume_down_then_up": @1 } },
+        @{ @"id": @"volume_both", @"prompt": @"Both together", @"seq": @"vU@0 vD@5 ^D@150 ^U@155", @"expect": @{ @"volume_both_press": @1 } },
+        @{ @"id": @"volume_both_sloppy", @"prompt": @"Both, sloppy short overlap", @"seq": @"vD@0 vU@76 ^D@123 ^U@182", @"expect": @{ @"volume_both_press": @1 } },
+        @{ @"id": @"volume_both_held", @"prompt": @"Both held for a moment", @"seq": @"vU@0 vD@40 ^U@450 ^D@470", @"expect": @{ @"volume_both_press": @1 } },
+        @{ @"id": @"volume_both_chain", @"prompt": @"Both, then Up again (Up, Down, Up)", @"seq": @"vU@0 vD@112 ^U@124 ^D@221 vU@236 ^U@337", @"expect": @{ @"volume_both_press": @1 } },
+        @{ @"id": @"volume_both_twice", @"prompt": @"Both together, twice quickly", @"seq": @"vU@0 vD@5 ^D@120 ^U@125 vU@250 vD@255 ^D@370 ^U@375", @"expect": @{ @"volume_both_press": @2 } },
+        @{ @"id": @"volume_both_tap_tap", @"prompt": @"Up tap, then Down tap - both, when no sequence is set up",
+           @"seq": @"vU@0 ^U@100 vD@150 ^D@250", @"expect": @{ @"volume_both_press": @1 }, @"bind": @[@"volume_both_press"] },
+        @{ @"id": @"home_double_click", @"prompt": @"Home double-click", @"seq": @"vH@0 ^H@80 vH@180 ^H@260", @"expect": @{ @"trigger_home_double_click": @1 }, @"home": @YES },
+        @{ @"id": @"home_triple_click", @"prompt": @"Home triple-click", @"seq": @"vH@0 ^H@80 vH@180 ^H@260 vH@360 ^H@440", @"expect": @{ @"trigger_home_triple_click": @1 }, @"home": @YES },
+        @{ @"id": @"home_quadruple_click", @"prompt": @"Home clicked 4 times", @"seq": @"vH@0 ^H@80 vH@180 ^H@260 vH@360 ^H@440 vH@540 ^H@620", @"expect": @{ @"trigger_home_quadruple_click": @1 }, @"home": @YES },
+        @{ @"id": @"power_double_tap", @"prompt": @"Power double-press", @"seq": @"vP@0 ^P@80 vP@220 ^P@300", @"expect": @{ @"power_double_tap": @1 } },
+        @{ @"id": @"power_triple_click", @"prompt": @"Power triple-press", @"seq": @"vP@0 ^P@80 vP@220 ^P@300 vP@440 ^P@520", @"expect": @{ @"power_triple_click": @1 } },
+        @{ @"id": @"power_quadruple_click", @"prompt": @"Power pressed 4 times", @"seq": @"vP@0 ^P@80 vP@220 ^P@300 vP@440 ^P@520 vP@660 ^P@740", @"expect": @{ @"power_quadruple_click": @1 } },
+        @{ @"id": @"power_long_press", @"prompt": @"Power held", @"seq": @"vP@0 ^P@900", @"expect": @{ @"power_long_press": @1 } },
+        @{ @"id": @"power_volume_up", @"prompt": @"Power + Volume Up", @"seq": @"vP@0 vU@40 ^U@200 ^P@240", @"expect": @{ @"power_volume_up": @1 } },
+        @{ @"id": @"power_volume_down", @"prompt": @"Power + Volume Down", @"seq": @"vP@0 vD@40 ^D@200 ^P@240", @"expect": @{ @"power_volume_down": @1 } },
+        @{ @"id": @"power_single", @"prompt": @"Power pressed once - no trigger (the phone locks)", @"seq": @"vP@0 ^P@90", @"expect": @{} },
+    ];
+    NSIndexSet *wrongDevice = [steps indexesOfObjectsPassingTest:^BOOL(NSDictionary *step, NSUInteger idx, BOOL *stop) {
+        return step[@"home"] && [step[@"home"] boolValue] != hasHome;
+    }];
+    NSMutableArray *kept = [steps mutableCopy];
+    [kept removeObjectsAtIndexes:wrongDevice];
+    return kept;
+}
+
+// Wakes the screen with a Power press if it's off - with no test triggers bound, so the tweak
+// hands it to iOS, and within the Power guards. YES if the screen is on.
+// Applies a test config and waits until SpringBoard's main thread has taken it in: the tweak
+// reloads the config there (gesture windows and all), which can take longer than a fixed wait,
+// and a press arriving meanwhile is handled late - a held press then reads as a tap
+static void RCTKReplaySetConfig(NSDictionary *config) {
+    RCSetTriggerConfig(config);
+    [NSThread sleepForTimeInterval:0.3]; // the change notification reaches the tweak
+    for (int i = 0; i < 2; i++) dispatch_sync(dispatch_get_main_queue(), ^{}); // and its reload has run
+    [NSThread sleepForTimeInterval:0.2];
+}
+
+static BOOL RCTKReplayWake(NSDictionary *unbound) {
+    if ([RCTKProbeLight()[@"screenOn"] boolValue]) return YES;
+    RCTKReplaySetConfig(unbound);
+    NSString *error = nil;
+    RCTKReplaySend(RCTKParseReplay(@"vP@0 ^P@90", &error), NULL);
+    double start = RCTKNowMs();
+    while (RCTKNowMs() - start < 3000) {
+        if ([RCTKProbeLight()[@"screenOn"] boolValue]) return YES;
+        [NSThread sleepForTimeInterval:0.1];
+    }
+    return NO;
+}
+
+static void RCTKSuiteReplay(NSMutableDictionary *run) {
+    BOOL hasHome = RCTKHasHomeButton();
+    NSArray *steps = RCTKSelectSteps(RCTKReplaySteps(hasHome), run, NO);
+    if (!steps) return;
+    NSArray *keys = RCTKReplayTriggerKeys(hasHome);
+    @synchronized (run) { run[@"homeButton"] = @(hasHome); }
+
+    // A test config with the replayed triggers bound to a placeholder (or only a step's "bind"),
+    // with capture on so nothing runs
+    NSDictionary *saved = RCCopyTriggerConfig() ?: @{};
+    NSDictionary *(^configBinding)(NSArray *) = ^NSDictionary *(NSArray *bound) {
+        NSMutableDictionary *config = [saved mutableCopy];
+        NSMutableDictionary *triggers = [config[@"triggers"] mutableCopy] ?: [NSMutableDictionary dictionary];
+        for (NSString *key in keys) {
+            NSMutableDictionary *trigger = [triggers[key] mutableCopy] ?: [NSMutableDictionary dictionary];
+            trigger[@"enabled"] = @([bound containsObject:key]);
+            trigger[@"actions"] = @[@"testkit noop"];
+            triggers[key] = trigger;
+        }
+        config[@"triggers"] = triggers;
+        config[@"masterEnabled"] = @YES;
+        return config;
+    };
+    g_tkCapture = YES;
+    RCTKEvent(@"testkit.capture", @{ @"on": @YES });
+    RCShowPrompt(@"RemoteCompanion Test", @"Replaying button presses - leave the phone alone", @"play.circle", 3.0);
+    [NSThread sleepForTimeInterval:2.0];
+
+    NSUInteger index = 0, passed = 0;
+    NSMutableDictionary *timesRun = [NSMutableDictionary dictionary];
+    NSArray *boundNow = nil; // the bindings of the config in place; switched only when a step needs others
+    for (NSDictionary *step in steps) {
+        index++;
+        if (g_tkStopRun) break;
+        NSString *testId = [@"replay." stringByAppendingString:step[@"id"]];
+        RCTKSetProgress(run, @"step", index, steps.count, step[@"prompt"]);
+        BOOL power = [step[@"seq"] containsString:@"P@"];
+        if (power) {
+            // A previous Power step may have locked the phone: wake it (the lock screen is fine)
+            if (![RCTKProbeLight()[@"screenOn"] boolValue]) boundNow = @[];
+            if (!RCTKReplayWake(configBinding(@[]))) {
+                RCTKRecordResult(run, testId, @"skip", @{ @"reason": @"the screen stayed off - couldn't wake it" }, -1);
+                continue;
+            }
+        } else {
+            RCTKReturnHome();
+        }
+        NSArray *bound = step[@"bind"] ?: keys;
+        if (![bound isEqualToArray:boundNow ?: @[@""]]) {
+            RCTKReplaySetConfig(configBinding(bound));
+            boundNow = bound;
+        } else {
+            [NSThread sleepForTimeInterval:0.3];
+        }
+
+        // Repeats come as "id#2", "id#3" (RCTKSelectSteps)
+        NSString *baseId = [step[@"id"] componentsSeparatedByString:@"#"].firstObject;
+        NSUInteger attempt = [timesRun[baseId] unsignedIntegerValue] + 1;
+        timesRun[baseId] = @(attempt);
+        NSString *error = nil;
+        NSArray *events = RCTKParseReplay(step[@"seq"], &error);
+        if (attempt > 1) events = RCTKJitter(events, 25);
+        unsigned long long since = RCTKRecord(@"mark", @{ @"label": testId });
+        double startMs = 0;
+        NSString *sent = RCTKReplaySend(events, &startMs);
+        [NSThread sleepForTimeInterval:1.5]; // anything that fires a moment later counts too
+
+        NSCountedSet *got = [[NSCountedSet alloc] init];
+        NSMutableArray *gotList = [NSMutableArray array];
+        for (NSDictionary *event in RCTKJournal(since, @"trigger.captured", 0)[@"events"]) {
+            if (![keys containsObject:event[@"key"]]) continue;
+            [got addObject:event[@"key"]];
+            [gotList addObject:[NSString stringWithFormat:@"%@@%.0f", event[@"key"], [event[@"t"] doubleValue] - startMs]];
+        }
+        NSDictionary *expect = step[@"expect"];
+        NSMutableArray *problems = [NSMutableArray array];
+        for (NSString *key in expect) {
+            NSUInteger want = [expect[key] unsignedIntegerValue], have = [got countForObject:key];
+            if (have != want) [problems addObject:[NSString stringWithFormat:@"%@ fired %lu times, expected %lu", key, (unsigned long)have, (unsigned long)want]];
+        }
+        for (NSString *key in got) if (!expect[key]) [problems addObject:[NSString stringWithFormat:@"unexpected %@", key]];
+        if (!sent) [problems addObject:@"couldn't send the presses (IOHID functions not found)"];
+
+        BOOL pass = problems.count == 0;
+        if (pass) passed++;
+        NSMutableDictionary *detail = [@{ @"seq": RCTKReplayString(events), @"sent": sent ?: @"", @"seen": RCTKReplaySeen(since, startMs),
+                                          @"expected": expect, @"got": gotList, @"attempt": @(attempt) } mutableCopy];
+        if (problems.count) detail[@"problems"] = problems;
+        RCTKRecordResult(run, testId, pass ? @"pass" : @"fail", detail, -1);
+    }
+
+    RCTKReplayWake(configBinding(@[]));
+    RCSetTriggerConfig(saved);
+    g_tkCapture = NO;
+    RCTKEvent(@"testkit.capture", @{ @"on": @NO });
+    RCTKReturnHome();
+    RCShowPrompt(@"RemoteCompanion Test", [NSString stringWithFormat:@"Done: %lu of %lu passed", (unsigned long)passed, (unsigned long)index],
+                 passed == index ? @"checkmark.circle.fill" : @"exclamationmark.circle.fill", 3.0);
 }
 
 static NSDictionary *RCTKInfo(void) {
@@ -1730,11 +2024,12 @@ static NSDictionary *RCTKDispatch(NSString *endpoint, NSDictionary<NSString *, N
     if ([endpoint isEqualToString:@"suite/steps"]) {
         NSString *name = params[@"name"] ?: body;
         BOOL hasHome = RCTKHasHomeButton();
-        NSArray *all = [name isEqualToString:@"guided"] ? RCTKGuidedSteps(hasHome) : [name isEqualToString:@"differential"] ? RCTKDifferentialSteps(hasHome) : nil;
-        if (!all) return @{ @"error": @"steps are listed for guided and differential" };
+        NSArray *all = [name isEqualToString:@"guided"] ? RCTKGuidedSteps(hasHome) : [name isEqualToString:@"differential"] ? RCTKDifferentialSteps(hasHome)
+                     : [name isEqualToString:@"replay"] ? RCTKReplaySteps(hasHome) : nil;
+        if (!all) return @{ @"error": @"steps are listed for guided, differential and replay" };
         NSMutableArray *steps = [NSMutableArray array];
         for (NSDictionary *step in all) {
-            [steps addObject:@{ @"id": step[@"id"], @"prompt": step[@"prompt"], @"group": RCTKStepGroup(step[@"id"]),
+            [steps addObject:@{ @"id": step[@"id"], @"prompt": step[@"prompt"], @"group": RCTKStepGroup(step[@"id"]), @"seq": step[@"seq"] ?: @"",
                                 @"optional": @([step[@"optional"] boolValue]), @"note": step[@"note"] ?: @"" }];
         }
         return @{ @"suite": name, @"steps": steps };

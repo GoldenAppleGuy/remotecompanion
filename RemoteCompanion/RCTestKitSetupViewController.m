@@ -184,6 +184,9 @@ static NSString *RCCountText(NSInteger count) {
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section != 0) return nil;
+    if ([self.suite isEqualToString:@"replay"]) {
+        return @"The presses are sent by the tweak - leave the phone alone while it runs. A step's first run is exact; repeats move each gap by up to 25 ms. Your triggers are swapped for test ones - their actions don't run - and put back after. The volume may change and is put back. Power is limited so it can't start Emergency SOS, Siri or the power-off screen; Power steps run last and may lock the phone or take a screenshot.";
+    }
     NSString *how = [self.suite isEqualToString:@"guided"]
         ? @"Steps done more than once come round again after the rest. Your triggers are swapped for test ones during the run - their actions don't run - and put back after."
         : @"Each input is done twice per run: stock (triggers off), then with the tweak; repeats come in a row. Presses may put the phone to sleep or take real screenshots.";

@@ -27,6 +27,7 @@ typedef NS_ENUM(NSInteger, RCTestKitSection) {
         @"all": @"Conditions + Toggles",
         @"guided": @"Guided Triggers",
         @"differential": @"Stock vs Tweak",
+        @"replay": @"Replayed Presses",
     };
     return names[suite ?: @""] ?: suite ?: @"Test";
 }
@@ -52,13 +53,15 @@ static NSString *RCSuiteBlurb(NSString *suite) {
         @"toggles": @"Switches each toggle action on and off and reads it back, then restores everything. Automatic.",
         @"guided": @"Asks you to press buttons and swipe the status bar, and checks each trigger fires once.",
         @"differential": @"Each button press twice - stock, then with the tweak - and checks they behave the same.",
+        @"replay": @"Replays Volume, Home and Power presses at exact times - clean, sloppy, chained - and checks each fires the right trigger. Hands off.",
     };
     return blurbs[suite] ?: @"";
 }
 
 static NSString *RCSuiteIcon(NSString *suite) {
     NSDictionary *icons = @{ @"conditions": @"questionmark.diamond", @"toggles": @"switch.2", @"all": @"checklist",
-                             @"guided": @"hand.point.up.left", @"differential": @"square.split.2x1" };
+                             @"guided": @"hand.point.up.left", @"differential": @"square.split.2x1",
+                             @"replay": @"play.circle" };
     return icons[suite] ?: @"checklist";
 }
 
@@ -78,7 +81,7 @@ static NSString *RCSuiteIcon(NSString *suite) {
     self.tableView.separatorColor = [cm tweakColorForKey:@"separators" defaultVal:0.30];
 
     // Until the tweak answers: the suites it has had since the start
-    self.suites = @[@{ @"name": @"conditions" }, @{ @"name": @"toggles" }, @{ @"name": @"guided" }, @{ @"name": @"differential" }];
+    self.suites = @[@{ @"name": @"conditions" }, @{ @"name": @"toggles" }, @{ @"name": @"guided" }, @{ @"name": @"differential" }, @{ @"name": @"replay" }];
     self.reports = @[];
     [self loadSuites];
     [self loadReports];
@@ -170,7 +173,7 @@ static NSString *RCSuiteIcon(NSString *suite) {
         [alert addAction:[UIAlertAction actionWithTitle:@"Run, Including Connections" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
             [self startSuite:suite options:@"&disruptive=1"];
         }]];
-    } else if ([suite isEqualToString:@"guided"] || [suite isEqualToString:@"differential"]) {
+    } else if ([suite isEqualToString:@"guided"] || [suite isEqualToString:@"differential"] || [suite isEqualToString:@"replay"]) {
         // Choose the steps and how many times first
         RCTestKitSetupViewController *setup = [[RCTestKitSetupViewController alloc] initWithSuite:suite];
         __weak typeof(self) weakSelf = self;
