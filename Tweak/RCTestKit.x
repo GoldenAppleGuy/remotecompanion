@@ -1043,6 +1043,8 @@ static void RCTKSuiteGuided(NSMutableDictionary *run) {
 // app) must be the same. If the presses themselves differed between the passes, the step is
 // inconclusive rather than failed.
 
+// Never a step: Power + Volume held down - held long enough it starts Emergency SOS, which
+// can call emergency services by itself.
 static NSArray<NSDictionary *> *RCTKDifferentialSteps(BOOL hasHome) {
     NSMutableArray *steps = [NSMutableArray arrayWithArray:@[
         @{ @"id": @"power_single", @"buttons": @[@"power"], @"prompt": @"Press Power once" },
