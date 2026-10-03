@@ -10378,21 +10378,24 @@ static BOOL g_powerPressIsCombo = NO;
 // button, Power + Volume Up takes a screenshot; with one, Power + Home takes the
 // screenshot and Power + Volume Up does nothing; a triple-click can be the
 // Accessibility Shortcut. (Power + Volume Down is an exception - see
-// g_powerReleasedWithVolumeDown.) So an unclaimed sequence replays only as many presses
+// g_powerReleasedWithVolumeHeld.) So an unclaimed sequence replays only as many presses
 // as this counted, which reproduces stock behaviour. Reset when a new sequence starts.
 static NSUInteger g_nativeSinglePressCount = 0;
-// Volume Down was still held when the current Power press was released. iOS (14 and 17)
+// A Volume button (either) was still held when the current Power press was released. iOS
 // fires singlePress: for that press anyway and usually doesn't sleep - but not always: in
-// safe mode, on iOS 17, the same press stayed awake twice and then slept. So rather than
-// follow iOS, such a press never sleeps the phone: it isn't counted for a replay (which
-// would come after Volume Down is released, and sleep), and when it isn't held back its
-// singlePress: is swallowed. (Volume Down clicked and released inside the Power press is
-// different, and left to iOS: iOS 17 sleeps for it, and iOS 14 doesn't fire singlePress:.)
-static BOOL g_powerReleasedWithVolumeDown = NO;
-// Volume Down as the hardware reports it, from the HID listener only. g_volDownIsDown
-// isn't enough here: on iOS 14 SpringBoard ends its Volume Down press itself (the
-// volumeDecreasePressUp hook runs) as soon as Power goes down, while it's still held.
+// safe mode, on iOS 17, the same press with Volume Down stayed awake twice and then slept,
+// and iOS 14 on the lock screen stays awake for Volume Up too. So rather than follow iOS,
+// such a press never sleeps the phone: it isn't counted for a replay (which would come
+// after the Volume button is released, and sleep), and when it isn't held back its
+// singlePress: is swallowed. (A Volume button clicked and released inside the Power press
+// is different, and left to iOS: iOS 17 sleeps for it, and iOS 14 doesn't fire singlePress:.)
+// Set both by the HID listener and by the up hook: either can see the release first.
+static BOOL g_powerReleasedWithVolumeHeld = NO;
+// The Volume buttons as the hardware reports them, from the HID listener only.
+// g_volDownIsDown isn't enough here: on iOS 14 SpringBoard ends its Volume Down press
+// itself (the volumeDecreasePressUp hook runs) as soon as Power goes down, while it's held.
 static BOOL g_volDownHeldOnHID = NO;
+static BOOL g_volUpHeldOnHID = NO;
 // An unclaimed sequence of this many presses is waiting on more of those gestures
 // before replaying (see RC_CheckAndFirePower); 0 when not waiting. The generation
 // lets a stale timeout recognize itself.
@@ -11092,7 +11095,7 @@ static BOOL g_isSwappingVolume = NO;
 
         // No custom combo is configured: hand the press to iOS instead of consuming
         // it (it still steps the volume). Whether the power press then sleeps the
-        // phone is decided in the singlePress: hook (see g_powerReleasedWithVolumeDown).
+        // phone is decided in the singlePress: hook (see g_powerReleasedWithVolumeHeld).
         g_powerVolComboTriggered = NO;
         g_volIsReplaying = YES;
         [self volumeDecreasePressDownWithModifiers:arg1];
@@ -11800,7 +11803,7 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
                     }
                 }
             } else { // UP
-                g_powerReleasedWithVolumeDown = g_volDownHeldOnHID;
+                g_powerReleasedWithVolumeHeld = g_volDownHeldOnHID || g_volUpHeldOnHID;
                 // Power is up, so the screenshot gesture can no longer fire.
                 dispatch_async(dispatch_get_main_queue(), ^{
                     RC_SetScreenshotRecognizerSuppressed(NO);
@@ -11859,6 +11862,7 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
 
             if (mappedUsage == kHIDUsage_Csmr_VolumeIncrement) g_volUpIsDown = !!down;
             if (mappedUsage == kHIDUsage_Csmr_VolumeDecrement) g_volDownIsDown = g_volDownHeldOnHID = !!down;
+            if (mappedUsage == kHIDUsage_Csmr_VolumeIncrement) g_volUpHeldOnHID = !!down;
             
             // Check for Power + Volume combination.
             // FALLBACK ONLY. volumeIncreasePressDownWithModifiers:/volumeDecreasePress-
@@ -12017,7 +12021,7 @@ static void setup_background_hid_listener() {
     g_powerDownAwaitingUp = YES;
     g_replayAwaitingSinglePress = NO; // a new real press; any unclaimed replay slot is stale
     g_powerPressIsCombo = NO;
-    g_powerReleasedWithVolumeDown = NO;
+    g_powerReleasedWithVolumeHeld = NO;
     if (g_powerClickCount == 0) { // a new click sequence
         g_nativeSinglePressCount = 0;
         g_sequencePressCount = 0;
@@ -12141,6 +12145,10 @@ static void setup_background_hid_listener() {
     SRLog(@"performButtonUpPreActions on %@", [self class]);
     SRLog(@"Power Button UP (Actions)");
     g_powerIsDown = NO;
+    // This hook can get the release before the HID listener does (2 ms apart, confirmed with
+    // replayed presses on iOS 14) - then the listener hadn't set it yet, the press was
+    // counted and replayed, and the phone slept. The Volume button is still physically down.
+    if (g_volDownHeldOnHID || g_volUpHeldOnHID) g_powerReleasedWithVolumeHeld = YES;
 
     if (g_lockButtonTimer) {
         [g_lockButtonTimer invalidate];
@@ -12360,15 +12368,15 @@ static void setup_background_hid_listener() {
         SRLog(@"Suppressing native singlePress: - a Power + Volume combo consumed this press");
         return;
     }
-    // Volume Down still held when this press was released: it never sleeps the phone (see
-    // g_powerReleasedWithVolumeDown). A held-back press returns here uncounted, so it isn't
+    // A Volume button still held when this press was released: it never sleeps the phone (see
+    // g_powerReleasedWithVolumeHeld). A held-back press returns here uncounted, so it isn't
     // replayed; any other has iOS's sleep swallowed. After the replay check, so a replay of an
     // earlier press in the same sequence still goes through; a press that wakes the phone, and
     // everything while the master switch is off, are left to iOS.
-    if (g_powerReleasedWithVolumeDown && RC_ScreenIsOn() && !RC_IsForegroundAppExcluded()) {
+    if (g_powerReleasedWithVolumeHeld && RC_ScreenIsOn() && !RC_IsForegroundAppExcluded()) {
         load_trigger_config();
         if ([g_triggerConfig[@"masterEnabled"] boolValue]) {
-            SRLog(@"Suppressing native singlePress: - Volume Down was still held at its release, so it doesn't sleep");
+            SRLog(@"Suppressing native singlePress: - a Volume button was still held at its release, so it doesn't sleep");
             return;
         }
     }
