@@ -10396,6 +10396,37 @@ static BOOL g_powerReleasedWithVolumeHeld = NO;
 // itself (the volumeDecreasePressUp hook runs) as soon as Power goes down, while it's held.
 static BOOL g_volDownHeldOnHID = NO;
 static BOOL g_volUpHeldOnHID = NO;
+// Home + Power (the screenshot chord with a Home button): the current Power press was made
+// with Home down at some point (HID listener). With the master switch on it never sleeps the
+// phone, and if iOS doesn't take the screenshot itself, the tweak does - stock iOS sleeps
+// and then wakes again for a chord it doesn't recognize as one.
+static BOOL g_homeHeldOnHID = NO, g_powerHeldOnHID = NO;
+static BOOL g_powerPressIsHomeChord = NO;
+static BOOL g_homePowerChordOpen = NO;          // both have been down together, not both up yet
+static NSTimeInterval g_homePowerChordTime = 0;
+static NSTimeInterval g_lastIOSScreenshotTime = 0; // iOS recognized its own screenshot gesture
+
+static void RC_NoteHomePowerChord(void) {
+    g_powerPressIsHomeChord = YES;
+    if (g_homePowerChordOpen) return;
+    g_homePowerChordOpen = YES;
+    g_homePowerChordTime = [[NSDate date] timeIntervalSince1970];
+    SRLog(@"[HID] Home + Power together");
+}
+
+// Both released: give iOS a moment to take its screenshot, then take it if it didn't
+static void RC_FinishHomePowerChord(void) {
+    if (!g_homePowerChordOpen || g_homeHeldOnHID || g_powerHeldOnHID) return;
+    g_homePowerChordOpen = NO;
+    NSTimeInterval chordTime = g_homePowerChordTime;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        load_trigger_config();
+        if (![g_triggerConfig[@"masterEnabled"] boolValue] || RC_IsForegroundAppExcluded()) return;
+        if (g_lastIOSScreenshotTime >= chordTime - 0.1) return;
+        SRLog(@"[Screenshot] Home + Power: iOS took no screenshot - taking one");
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ handle_command(@"screenshot"); });
+    });
+}
 // An unclaimed sequence of this many presses is waiting on more of those gestures
 // before replaying (see RC_CheckAndFirePower); 0 when not waiting. The generation
 // lets a stale timeout recognize itself.
@@ -11741,6 +11772,9 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
         // Home Button (Page 0x0C, Usage 0x40)
         if (usagePage == kHIDPage_Consumer && usage == kHIDUsage_Csmr_Menu) {
             NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+            g_homeHeldOnHID = !!down;
+            if (down && g_powerHeldOnHID) RC_NoteHomePowerChord();
+            if (!down) RC_FinishHomePowerChord();
             
             if (down) {
                 if (!g_hidButtonDown) {
@@ -11791,6 +11825,13 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
             }
             NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
             static NSTimeInterval lastPowerDownTime = 0;
+            g_powerHeldOnHID = !!down;
+            if (down) {
+                g_powerPressIsHomeChord = NO;
+                if (g_homeHeldOnHID) RC_NoteHomePowerChord();
+            } else {
+                RC_FinishHomePowerChord();
+            }
             if (down) {
                 if (now - g_hidPowerLastUp > 1.0) g_hidPowerPresses = 0;
                 if (g_hidPowerPresses < RC_MAX_SEQUENCE_PRESSES) {
@@ -12400,7 +12441,27 @@ static void setup_background_hid_listener() {
 
 // [Generic simulation registration handled by catch-all observer in register_simulation_observers]
 
+// iOS recognizing its own screenshot gesture (the chord differs by device) - so a Home + Power
+// chord doesn't get a second screenshot from the tweak (RC_FinishHomePowerChord)
+%hook SBHomeHardwareButton
+- (void)screenshotRecognizerDidRecognize:(id)recognizer {
+    g_lastIOSScreenshotTime = [[NSDate date] timeIntervalSince1970];
+    %orig;
+}
+%end
+
+%hook SBCombinationHardwareButton
+- (void)screenshotGesture:(id)gesture {
+    g_lastIOSScreenshotTime = [[NSDate date] timeIntervalSince1970];
+    %orig;
+}
+%end
+
 %hook SBLockHardwareButton
+- (void)screenshotRecognizerDidRecognize:(id)recognizer {
+    g_lastIOSScreenshotTime = [[NSDate date] timeIntervalSince1970];
+    %orig;
+}
 
 // This gesture-recognizer target-action fires directly off the real hardware
 // press/release, entirely independent of SBLockHardwareButtonActions - none
@@ -12418,6 +12479,15 @@ static void setup_background_hid_listener() {
         SRLog(@"[Power] Native singlePress: fired for a replayed press");
         %orig;
         return;
+    }
+    // Power pressed with Home (the screenshot chord): it doesn't sleep the phone, and isn't
+    // counted for a replay (see g_powerPressIsHomeChord)
+    if (g_powerPressIsHomeChord && !RC_IsForegroundAppExcluded()) {
+        load_trigger_config();
+        if ([g_triggerConfig[@"masterEnabled"] boolValue]) {
+            SRLog(@"Suppressing native singlePress: - Power was pressed with Home (the screenshot chord), so it doesn't sleep");
+            return;
+        }
     }
     // A combo consumed this press. Disabling the screenshot recognizer (which
     // this one waits on) also frees it to fire sooner during the combo.
