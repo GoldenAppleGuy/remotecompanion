@@ -10330,6 +10330,25 @@ static BOOL g_volDownLastPassedThrough = NO;
 static BOOL g_volUpIsDown = NO;
 static BOOL g_volDownIsDown = NO;
 static BOOL g_volComboTriggered = NO;
+// Real Volume presses per button, counted by the HID listener, which sees them ~150 ms
+// before the SpringBoard hooks do. On a quick tap the hooks' presses and releases can
+// arrive bunched: one button's release clears g_volComboTriggered before the other
+// button's late press is handled, which looked like a second Volume Both Press. So the
+// combo needs a real press of both buttons since it last fired - a sloppy Up, Down, Up
+// is one combo, pressing both twice is two.
+static volatile unsigned long g_volUpHIDPressCount = 0, g_volDownHIDPressCount = 0;
+static unsigned long g_volComboUpCount = 0, g_volComboDownCount = 0;
+
+static BOOL RC_VolComboHasNewPress(void) {
+    // No HID presses seen at all (listener not running): don't block on it
+    if (g_volUpHIDPressCount == 0 && g_volDownHIDPressCount == 0) return YES;
+    return g_volUpHIDPressCount != g_volComboUpCount && g_volDownHIDPressCount != g_volComboDownCount;
+}
+
+static void RC_VolComboUsePresses(void) {
+    g_volComboUpCount = g_volUpHIDPressCount;
+    g_volComboDownCount = g_volDownHIDPressCount;
+}
 static NSTimeInterval g_lastVolUpPressTime = 0;
 static NSTimeInterval g_lastVolDownPressTime = 0;
 static BOOL g_hidBothPressPending = NO; // HID listener: a Both Press check is queued
@@ -10829,8 +10848,11 @@ static BOOL g_isSwappingVolume = NO;
         g_volUpTriggered = NO;
         g_volDownTriggered = NO;
 
-        if (comboEnabled && !g_volComboTriggered) {
+        SRLog(@"[Vol] Up: both pressed - combo already fired=%d, real presses Up %lu (used %lu) Down %lu (used %lu)",
+              g_volComboTriggered, g_volUpHIDPressCount, g_volComboUpCount, g_volDownHIDPressCount, g_volComboDownCount);
+        if (comboEnabled && !g_volComboTriggered && RC_VolComboHasNewPress()) {
             g_volComboTriggered = YES;
+            RC_VolComboUsePresses();
             SRLog(@"Volume Both Press combo triggered (from Vol Up Hook)");
             trigger_haptic();
             RCExecuteTrigger(@"volume_both_press");
@@ -11086,8 +11108,11 @@ static BOOL g_isSwappingVolume = NO;
         g_volUpTriggered = NO;
         g_volDownTriggered = NO;
 
-        if (comboEnabled && !g_volComboTriggered) {
+        SRLog(@"[Vol] Down: both pressed - combo already fired=%d, real presses Up %lu (used %lu) Down %lu (used %lu)",
+              g_volComboTriggered, g_volUpHIDPressCount, g_volComboUpCount, g_volDownHIDPressCount, g_volComboDownCount);
+        if (comboEnabled && !g_volComboTriggered && RC_VolComboHasNewPress()) {
             g_volComboTriggered = YES;
+            RC_VolComboUsePresses();
             SRLog(@"Volume Both Press combo triggered (from Vol Down Hook)");
             trigger_haptic();
             RCExecuteTrigger(@"volume_both_press");
@@ -11767,6 +11792,7 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
 
             if (mappedUsage == kHIDUsage_Csmr_VolumeIncrement) g_volUpIsDown = !!down;
             if (mappedUsage == kHIDUsage_Csmr_VolumeDecrement) g_volDownIsDown = !!down;
+            if (down) { if (mappedUsage == kHIDUsage_Csmr_VolumeIncrement) g_volUpHIDPressCount++; else g_volDownHIDPressCount++; }
             if (down && g_powerIsDown) g_volPressedDuringPower = YES;
             
             // Check for Power + Volume combination.
@@ -11797,25 +11823,23 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
                 }
             }
             
-            // Volume Both Press. The volume hooks detect it on the main thread and reset
-            // g_volComboTriggered on release; detecting it here as well fired it twice,
-            // since this background callback runs ahead of the hooks. But iOS 14 never
-            // calls the hooks for a both-buttons press (single presses still reach them),
-            // so hooks that bound can't be relied on for it. Wait a beat on the main
-            // thread, then fire from here only if no hook saw either press.
+            // Volume Both Press. The volume hooks detect it on the main thread, but iOS 14
+            // never calls them for a both-buttons press (single presses still reach them),
+            // so they can't be relied on for it. Wait a beat on the main thread, then fire
+            // from here if no hook has fired a combo for these presses - the press counts
+            // stop a hook that sees them later from firing it again.
             if (g_volUpIsDown && g_volDownIsDown) {
                 if (!g_volComboTriggered && !g_hidBothPressPending) {
                     g_hidBothPressPending = YES;
-                    NSTimeInterval bothDownTime = [[NSDate date] timeIntervalSince1970];
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                         g_hidBothPressPending = NO;
-                        // The hooks record each press they see; the two presses land at most a moment apart
-                        BOOL hooksSawIt = MAX(g_lastVolUpPressTime, g_lastVolDownPressTime) > bothDownTime - 0.3;
-                        if (hooksSawIt || g_volComboTriggered || !RC_TriggerIsActionable(@"volume_both_press")) return;
+                        if (g_volComboTriggered || !RC_VolComboHasNewPress() || !RC_TriggerIsActionable(@"volume_both_press")) return;
                         SRLog(@"[HID] Volume Both Press - the volume hooks didn't see it, firing from HID");
                         // Hold the flag until both buttons are up (reset below), unless they already are
                         g_hidBothPressFired = (g_volUpIsDown || g_volDownIsDown);
                         g_volComboTriggered = g_hidBothPressFired;
+                        // These presses are used: a hook that sees them late doesn't fire again
+                        RC_VolComboUsePresses();
                         cancel_pending_volume_sequences();
                         if (g_volUpTimer) { [g_volUpTimer invalidate]; g_volUpTimer = nil; }
                         if (g_volDownTimer) { [g_volDownTimer invalidate]; g_volDownTimer = nil; }
