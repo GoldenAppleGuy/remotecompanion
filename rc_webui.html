@@ -2697,6 +2697,7 @@ function nameForCmd(cmd) {
   if (lowCmd.startsWith('bt disconnect ')) return `Disconnect ${cmd.slice(14)}`;
   if (lowCmd.startsWith('airplay connect ')) return `AirPlay Connect ${cmd.slice(16)}`;
   if (lowCmd.startsWith('set-vol '))      return `Set Volume ${cmd.slice(8)}%`;
+  if (lowCmd.startsWith('ringer volume ')) return `Set Ringer Volume ${cmd.slice(14)}%`;
   if (lowCmd.startsWith('brightness '))   return `Set Brightness ${cmd.slice(11)}%`;
   if (lowCmd.startsWith('shortcut:'))     return `Shortcut: ${cmd.slice(9)}`;
   if (lowCmd.startsWith('uiopen ')) {
@@ -2826,7 +2827,7 @@ function iconForCmd(cmd) {
     'volume up':'speaker_3_fill','volume down':'speaker_1_fill',
     'queuealbum':'music_note_list','queue album':'music_note_list','queueartist':'music_mic','queue artist':'music_mic','shuffleall':'shuffle','shuffle all songs':'shuffle','deletesong':'trash','delete song':'trash','delete current song':'trash',
     'flashlight':'bolt_fill','flashlight on':'bolt_fill','flashlight off':'bolt_slash_fill','flashlight toggle':'bolt_fill',
-    'appearance dark':'moon_fill','appearance light':'sun_max_fill','appearance toggle':'moon_fill',
+    'appearance dark':'moon_fill','appearance light':'sun_max_fill','appearance toggle':'circle_lefthalf_fill',
     'location on':'location_fill','location off':'location_slash','location toggle':'location_fill',
     'wifi on':'wifi','wifi off':'wifi_slash','wifi toggle':'wifi',
     'bluetooth on':'bolt_horizontal_fill','bluetooth off':'bolt_horizontal','bluetooth toggle':'bolt_horizontal_fill',
@@ -2838,17 +2839,19 @@ function iconForCmd(cmd) {
     'open control center':'gear',
     'low power on':'battery_25','low power off':'battery_100',
     'autolock toggle':'timer','autolock 30s':'timer','autolock 1m':'timer','autolock 2m':'timer','autolock 3m':'timer','autolock 4m':'timer','autolock 5m':'timer','autolock never':'timer',
-    'screenshot':'camera_fill','haptic':'hand_raised_fill',
+    'screenshot':'camera_viewfinder','haptic':'hand_raised_fill',
     'screenrecord':'record_circle_fill','screenrecord toggle':'record_circle_fill','screenrecord start':'record_circle_fill','screenrecord stop':'stop_circle_fill',
-    'snapper':'crop','snapper open':'crop','snapper freeze':'snowflake','snapper instant':'bolt_fill','snapper close':'xmark_circle',
-    'sneakycam photo':'camera_fill','sneakycam video':'video_fill',
+    'snapper':'crop','snapper open':'crop','snapper freeze':'snowflake','snapper instant':'bolt_circle_fill','snapper close':'xmark_rectangle_fill',
+    'sneakycam photo':'camera_filters','sneakycam video':'eye_slash_fill',
     'mute':'speaker_slash_fill','mute on':'speaker_slash_fill','mute off':'speaker_3_fill','mute toggle':'speaker_slash_fill',
   };
   const lowCmd = cmd.toLowerCase().trim();
   if (lowCmd.startsWith('snapper freeze')) return { icon:'snowflake', cls:'icon-blue' };
-  if (lowCmd.startsWith('snapper instant')) return { icon:'bolt_fill', cls:'icon-orange' };
-  if (lowCmd.startsWith('snapper close')) return { icon:'xmark_circle', cls:'icon-red' };
+  if (lowCmd.startsWith('snapper instant')) return { icon:'bolt_circle_fill', cls:'icon-orange' };
+  if (lowCmd.startsWith('snapper close')) return { icon:'xmark_rectangle_fill', cls:'icon-red' };
   if (lowCmd.startsWith('snapper')) return { icon:'crop', cls:'icon-purple' };
+  if (lowCmd === 'camera record') return { icon:'videocam_circle_fill', cls:'icon-indigo' };
+  if (lowCmd === 'camera shutter') return { icon:'camera_circle_fill', cls:'icon-indigo' };
   if (lowCmd.startsWith('camera') || lowCmd.startsWith('open camera')) {
     if (lowCmd.includes('flash') || lowCmd.includes('torch')) return { icon:'bolt_fill', cls:'icon-orange' };
     if (lowCmd.includes('front') || lowCmd.includes('selfie')) return { icon:'person_fill', cls:'icon-blue' };
@@ -2856,26 +2859,27 @@ function iconForCmd(cmd) {
     if (lowCmd.includes('video') || lowCmd.includes('slomo') || lowCmd.includes('timelapse') || lowCmd.includes('cinematic') || lowCmd.includes('2x')) return { icon:'video_fill', cls:'icon-indigo' };
     return { icon:'camera_fill', cls:'icon-indigo' };
   }
-  if (lowCmd.startsWith('sneakycam photo') || lowCmd === 'sneakycam takephoto') return { icon:'camera_fill', cls:'icon-purple' };
-  if (lowCmd.startsWith('sneakycam video') || lowCmd === 'sneakycam record' || lowCmd === 'sneakycam startstopvideo') return { icon:'video_fill', cls:'icon-indigo' };
+  if (lowCmd.startsWith('sneakycam photo') || lowCmd === 'sneakycam takephoto') return { icon:'camera_filters', cls:'icon-purple' };
+  if (lowCmd.startsWith('sneakycam video') || lowCmd === 'sneakycam record' || lowCmd === 'sneakycam startstopvideo') return { icon:'eye_slash_fill', cls:'icon-indigo' };
   if (map[lowCmd]) return { icon:map[lowCmd], cls:'icon-dark' };
   const toggleInfo = parseToggleCmd(cmd);
   if (toggleInfo) return { icon:toggleInfo.icon, cls:'icon-dark' };
-  if (lowCmd.startsWith('ha ') || lowCmd === 'ha') return { icon:'house_fill', cls:'icon-blue' };
+  if (lowCmd.startsWith('ha ') || lowCmd === 'ha') return { icon:'lightbulb_fill', cls:'icon-blue' };
   if (lowCmd.startsWith('km ') || lowCmd === 'km') return { icon:'command', cls:'icon-yellow' };
-  if (lowCmd.startsWith('mqtt ') || lowCmd === 'mqtt') return { icon:'antenna_radiowaves_left_right', cls:'icon-blue' };
+  if (lowCmd.startsWith('mqtt ') || lowCmd === 'mqtt') return { icon:'dot_radiowaves_left_right', cls:'icon-blue' };
   if (lowCmd.startsWith('flashlight ')) return { icon:'bolt_fill',       cls:'icon-orange' };
   if (lowCmd.startsWith('toast'))         return { icon:'text_bubble',     cls:'icon-orange' };
-  if (lowCmd.startsWith('lua:'))          return { icon:'command',         cls:'icon-purple' };
-  if (lowCmd.startsWith('delay '))        return { icon:'timer',           cls:'icon-orange' };
+  if (lowCmd.startsWith('lua:'))          return { icon:'doc_text_fill',         cls:'icon-purple' };
+  if (lowCmd.startsWith('delay '))        return { icon:'hourglass',           cls:'icon-orange' };
   if (lowCmd.startsWith('bt connect '))   return { icon:'link',            cls:'icon-indigo' };
   if (lowCmd.startsWith('airplay connect ')) return { icon:'airplayvideo',     cls:'icon-blue' };
-  if (lowCmd.startsWith('set-vol '))      return { icon:'speaker_3_fill',  cls:'icon-blue' };
+  if (lowCmd.startsWith('set-vol '))      return { icon:'slider_horizontal_3',  cls:'icon-blue' };
+  if (lowCmd.startsWith('ringer volume ')) return { icon:'bell_fill',       cls:'icon-blue' };
   if (lowCmd.startsWith('brightness '))   return { icon:'sun_max_fill',    cls:'icon-yellow' };
-  if (lowCmd.startsWith('shortcut:'))     return { icon:'command',         cls:'icon-indigo' };
+  if (lowCmd.startsWith('shortcut:'))     return { icon:'wand_stars',         cls:'icon-indigo' };
   if (lowCmd.startsWith('uiopen '))       return { icon:'app_badge_fill',  cls:'icon-pink' };
   if (lowCmd.startsWith('kill '))         return { icon:'xmark_circle_fill', cls:'icon-red' };
-  if (lowCmd.startsWith('exec ') || lowCmd.startsWith('root ')) return { icon:'command', cls:'icon-dark' };
+  if (lowCmd.startsWith('exec ') || lowCmd.startsWith('root ')) return { icon:'chevron_right_square_fill', cls:'icon-dark' };
   if (lowCmd.startsWith('trigger_bottom_swipe_up')) return { icon:'arrow_up_to_line', cls:'icon-indigo' };
   if (lowCmd.startsWith('trigger_bottombar')) return { icon:'square_stack_3d_up_fill', cls:'icon-gray' };
   // Touch gestures
@@ -2893,25 +2897,51 @@ const ACTION_SECTIONS = [
     { name:'Play/Pause',        cmd:'playpause',    icon:'playpause_fill' },
     { name:'Next Track',        cmd:'next',         icon:'forward_fill' },
     { name:'Previous Track',    cmd:'prev',         icon:'backward_fill' },
-    { name:'Volume Up',         cmd:'volume up',    icon:'speaker_3_fill' },
-    { name:'Volume Down',       cmd:'volume down',  icon:'speaker_1_fill' },
-    { name:'Set Volume…',       cmd:'__SET_VOLUME__',icon:'speaker_3_fill', needs_input:true },
-    { name:'Set Brightness…',   cmd:'__SET_BRIGHTNESS__',icon:'sun_max_fill', needs_input:true },
-    { name:'Mute',              cmd:'mute toggle',  icon:'speaker_slash_fill', is_toggle:true },
-    { name:'Open Camera…',       cmd:'__CAMERA_PICKER__', icon:'camera_fill', needs_input:true },
-    { name:'Open Video Camera…', cmd:'__CAMERA_VIDEO_PICKER__', icon:'video_fill', needs_input:true },
-    { name:'Camera Shutter / Snap', cmd:'camera shutter', icon:'camera_fill' },
-    { name:'Camera Record Toggle', cmd:'camera record', icon:'circle_fill' },
     { name:'Queue Current Album', cmd:'queuealbum', icon:'music_note_list' },
     { name:'Queue Artist (Shuffle)', cmd:'queueartist', icon:'music_mic' },
     { name:'Shuffle All Songs', cmd:'shuffleall',   icon:'shuffle' },
     { name:'Delete Currently Playing Song', cmd:'deletesong', icon:'trash' },
   ]},
+  { title:'Sound', actions:[
+    { name:'Volume Up',         cmd:'volume up',    icon:'speaker_3_fill' },
+    { name:'Volume Down',       cmd:'volume down',  icon:'speaker_1_fill' },
+    { name:'Set Volume…',       cmd:'__SET_VOLUME__',icon:'slider_horizontal_3', needs_input:true },
+    { name:'Set Ringer Volume…', cmd:'__SET_RINGER_VOLUME__',icon:'bell_fill', needs_input:true },
+    { name:'Mute',              cmd:'mute toggle',  icon:'speaker_slash_fill', is_toggle:true },
+    { name:'Noise Control',     cmd:'anc on',       icon:'ear', is_toggle:true },
+    { name:'Silent Mode',       cmd:'ringer toggle', icon:'bell_slash_fill', is_toggle:true },
+    { name:'Haptics',           cmd:'haptics always', icon:'waveform_path_ecg', is_toggle:true },
+    { name:'Silent Vibration',  cmd:'vibration silent-toggle', icon:'bell_slash', is_toggle:true },
+    { name:'Ring Vibration',    cmd:'vibration ring-toggle', icon:'bell', is_toggle:true },
+  ]},
+  { title:'Capture', actions:[
+    { name:'Screenshot',        cmd:'screenshot',    icon:'camera_viewfinder' },
+    { name:'Screen Recording',  cmd:'screenrecord toggle', icon:'record_circle_fill', is_toggle:true },
+    { name:'Open Camera…',       cmd:'__CAMERA_PICKER__', icon:'camera_fill', needs_input:true },
+    { name:'Open Video Camera…', cmd:'__CAMERA_VIDEO_PICKER__', icon:'video_fill', needs_input:true },
+    { name:'Camera Shutter / Snap', cmd:'camera shutter', icon:'camera_circle_fill' },
+    { name:'Camera Record Toggle', cmd:'camera record', icon:'videocam_circle_fill' },
+  ]},
+  { title:'Apps & Navigation', actions:[
+    { name:'Open App…',         cmd:'__OPEN_APP__',  icon:'square_grid_2x2_fill', needs_input:true },
+    { name:'Kill App…',         cmd:'__KILL_APP__',  icon:'xmark_circle_fill', needs_input:true },
+    { name:'Home Button',       cmd:'home',          icon:'house_fill' },
+    { name:'App Switcher',      cmd:'switcher',      icon:'square_stack_3d_up_fill' },
+    { name:'Previous App',      cmd:'previous app',  icon:'arrow_uturn_backward' },
+    { name:'Control Center',    cmd:'open control center',icon:'gear' },
+    { name:'Activate Siri',     cmd:'siri',          icon:'mic_fill' },
+  ]},
   { title:'Device Controls', actions:[
-    { name:'Appearance',        cmd:'appearance toggle', icon:'moon_fill', is_toggle:true },
+    { name:'Appearance',        cmd:'appearance toggle', icon:'circle_lefthalf_fill', is_toggle:true },
+    { name:'Set Brightness…',   cmd:'__SET_BRIGHTNESS__',icon:'sun_max_fill', needs_input:true },
     { name:'Flashlight',        cmd:'flashlight toggle', icon:'bolt_fill', is_toggle:true },
-    { name:'Flashlight Intensity…', cmd:'__SET_FLASHLIGHT__', icon:'bolt_fill', needs_input:true },
+    { name:'Flashlight Intensity…', cmd:'__SET_FLASHLIGHT__', icon:'dial_fill', needs_input:true },
     { name:'Rotation Lock',     cmd:'rotate toggle',     icon:'lock_rotation', is_toggle:true },
+    { name:'Lock Device',       cmd:'lock',          icon:'lock_fill' },
+    { name:'Unlock Device',     cmd:'unlock',        icon:'lock_open_fill' },
+    { name:'Do Not Disturb',    cmd:'dnd toggle',    icon:'moon_circle_fill', is_toggle:true },
+    { name:'Low Power Mode',    cmd:'low power toggle',icon:'battery_25', is_toggle:true },
+    { name:'Auto-Lock',         cmd:'autolock toggle', icon:'timer', is_toggle:true },
   ]},
   { title:'Connectivity', actions:[
     { name:'Wi-Fi',             cmd:'wifi toggle',  icon:'wifi', is_toggle:true },
@@ -2924,47 +2954,32 @@ const ACTION_SECTIONS = [
     { name:'Disconnect AirPlay',cmd:'airplay disconnect',icon:'airplayaudio' },
   ]},
   { title:'System', actions:[
-    { name:'Haptic Feedback',   cmd:'haptic',        icon:'hand_raised_fill' },
-    { name:'Screenshot',        cmd:'screenshot',    icon:'camera_fill' },
-    { name:'Screen Recording',  cmd:'screenrecord toggle', icon:'record_circle_fill', is_toggle:true },
-    { name:'Open App…',         cmd:'__OPEN_APP__',  icon:'square_grid_2x2_fill', needs_input:true },
-    { name:'Kill App…',         cmd:'__KILL_APP__',  icon:'xmark_circle_fill', needs_input:true },
-    { name:'Lock Device',       cmd:'lock',          icon:'lock_fill' },
-    { name:'Unlock Device',     cmd:'unlock',        icon:'lock_open_fill' },
-    { name:'Do Not Disturb',    cmd:'dnd toggle',    icon:'moon_fill', is_toggle:true },
-    { name:'Activate Siri',     cmd:'siri',          icon:'mic_fill' },
-    { name:'Home Button',       cmd:'home',          icon:'house_fill' },
-    { name:'App Switcher',      cmd:'switcher',      icon:'square_stack_3d_up_fill' },
-    { name:'Previous App',      cmd:'previous app',  icon:'arrow_uturn_backward' },
-    { name:'Control Center',    cmd:'open control center',icon:'gear' },
     { name:'Respring',          cmd:'respring',      icon:'arrow_2_circlepath' },
     { name:'Safe Mode',         cmd:'safemode',      icon:'shield_slash_fill' },
     { name:'Soft Reboot',       cmd:'ldrestart',     icon:'arrow_clockwise' },
-    { name:'Low Power Mode',    cmd:'low power toggle',icon:'battery_25', is_toggle:true },
-    { name:'Auto-Lock',         cmd:'autolock toggle', icon:'timer', is_toggle:true },
-    { name:'Silent Vibration',  cmd:'vibration silent-toggle', icon:'bell_slash', is_toggle:true },
-    { name:'Ring Vibration',    cmd:'vibration ring-toggle', icon:'bell', is_toggle:true },
   ]},
   { title:'Integrations', actions:[
-    { name:'Home Assistant: Control Entity…',  cmd:'__HA_PICKER__', icon:'house_fill', needs_input:true },
+    { name:'Home Assistant: Control Entity…',  cmd:'__HA_PICKER__', icon:'lightbulb_fill', needs_input:true },
     { name:'Keyboard Maestro: Trigger Macro…',cmd:'__KM_TRIGGER__', icon:'command', needs_input:true },
-    { name:'MQTT: Publish Topic…',            cmd:'__MQTT_PUBLISH__', icon:'antenna_radiowaves_left_right', needs_input:true },
-    { name:'Shortcuts: Run Shortcut…',        cmd:'__SHORTCUT__',  icon:'command', needs_input:true },
+    { name:'MQTT: Publish Topic…',            cmd:'__MQTT_PUBLISH__', icon:'dot_radiowaves_left_right', needs_input:true },
+    { name:'Shortcuts: Run Shortcut…',        cmd:'__SHORTCUT__',  icon:'wand_stars', needs_input:true },
     { name:'Snapper: Open Area',              cmd:'snapper open',  icon:'crop' },
     { name:'Snapper: Freeze Screen',          cmd:'snapper freeze', icon:'snowflake' },
-    { name:'Snapper: Instant Snap',           cmd:'snapper instant', icon:'bolt_fill' },
-    { name:'Snapper: Close All',              cmd:'snapper close', icon:'xmark_circle' },
-    { name:'SneakyCam: Take Photo',           cmd:'sneakycam photo', icon:'camera_fill' },
-    { name:'SneakyCam: Toggle Video',         cmd:'sneakycam video', icon:'video_fill' },
+    { name:'Snapper: Instant Snap',           cmd:'snapper instant', icon:'bolt_circle_fill' },
+    { name:'Snapper: Close All',              cmd:'snapper close', icon:'xmark_rectangle_fill' },
+    { name:'SneakyCam: Take Photo',           cmd:'sneakycam photo', icon:'camera_filters' },
+    { name:'SneakyCam: Toggle Video',         cmd:'sneakycam video', icon:'eye_slash_fill' },
     { name:'AudioMix: Toggle',                cmd:'audiomix toggle',icon:'equalizer', is_toggle:true },
   ]},
   { title:'Scripting & Logic', actions:[
     { name:'If Condition…',     cmd:'__IF_CONDITION__',icon:'arrow_triangle_branch', needs_input:true },
-    { name:'Delay…',            cmd:'__DELAY__',     icon:'timer', needs_input:true },
-    { name:'Terminal Command…', cmd:'__CUSTOM__',    icon:'command', needs_input:true },
-    { name:'Lua Script…',       cmd:'__LUA_SCRIPT__',icon:'command', needs_input:true },
+    { name:'Delay…',            cmd:'__DELAY__',     icon:'hourglass', needs_input:true },
+    { name:'Terminal Command…', cmd:'__CUSTOM__',    icon:'chevron_right_square_fill', needs_input:true },
+    { name:'Lua Script…',       cmd:'__LUA_SCRIPT__',icon:'doc_text_fill', needs_input:true },
     { name:'HUD Toast…',        cmd:'__TOAST__',     icon:'text_bubble', needs_input:true },
-    { name:'Set Volume…',       cmd:'__SET_VOLUME__',icon:'speaker_3_fill', needs_input:true },
+    { name:'Haptic Feedback',   cmd:'haptic',        icon:'hand_raised_fill' },
+    { name:'Set Volume…',       cmd:'__SET_VOLUME__',icon:'slider_horizontal_3', needs_input:true },
+    { name:'Set Ringer Volume…', cmd:'__SET_RINGER_VOLUME__',icon:'bell_fill', needs_input:true },
   ]},
 ];
 
@@ -2980,6 +2995,7 @@ const CONDITION_DEFS = [
   { key:'airplane',   title:'Airplane Mode',values:[{value:'ON',title:'On'},{value:'OFF',title:'Off'}] },
   { key:'silent_vibration', title:'Silent Vibration', values:[{value:'ON',title:'On'},{value:'OFF',title:'Off'}] },
   { key:'ring_vibration',   title:'Ring Vibration',   values:[{value:'ON',title:'On'},{value:'OFF',title:'Off'}] },
+  { key:'haptics',    title:'Haptics', values:[{value:'ALWAYS',title:'Always Play'},{value:'SILENT_ONLY',title:'Play in Silent Mode'},{value:'RING_ONLY',title:"Don't Play in Silent Mode"},{value:'NEVER',title:'Never Play'}] },
   { key:'orientation',title:'Orientation',  values:[{value:'PORTRAIT',title:'Portrait'},{value:'LANDSCAPE',title:'Landscape'}] },
   { key:'wifi_network', title:'Wi-Fi Network is', values:null, freeText:true },
   { key:'bt_device', title:'Bluetooth Device Connected', values:null, freeText:true },
@@ -3764,17 +3780,20 @@ function parseToggleCmd(cmd) {
     { key:'airplane', name:'Airplane Mode', icon:'airplane', prefixes:['airplane '], suffixes:['on','off','toggle'], displaySuffixes:['On','Off','Toggle'] },
     { key:'low_power', name:'Low Power Mode', icon:'battery_25', prefixes:['low power ','lpm ','low power mode '], suffixes:['on','off','toggle'], displaySuffixes:['On','Off','Toggle'] },
     { key:'autolock', name:'Auto-Lock', icon:'timer', prefixes:['autolock ','auto-lock '], suffixes:['toggle','30s','1m','2m','3m','4m','5m','never'], displaySuffixes:['Toggle (Never / Previous)','30 Seconds','1 Minute','2 Minutes','3 Minutes','4 Minutes','5 Minutes','Never'] },
-    { key:'dnd', name:'Do Not Disturb', icon:'moon_fill', prefixes:['dnd '], suffixes:['on','off','toggle'], displaySuffixes:['On','Off','Toggle'] },
+    { key:'dnd', name:'Do Not Disturb', icon:'moon_circle_fill', prefixes:['dnd '], suffixes:['on','off','toggle'], displaySuffixes:['On','Off','Toggle'] },
     { key:'wifi', name:'Wi-Fi', icon:'wifi', prefixes:['wifi '], suffixes:['on','off','toggle'], displaySuffixes:['On','Off','Toggle'] },
     { key:'cellular', name:'Cellular Data', icon:'antenna_radiowaves_left_right', prefixes:['cellular ','cell '], suffixes:['on','off','toggle'], displaySuffixes:['On','Off','Toggle'] },
     { key:'bluetooth', name:'Bluetooth', icon:'bolt_horizontal_fill', prefixes:['bluetooth ','bt '], suffixes:['on','off','toggle'], displaySuffixes:['On','Off','Toggle'] },
     { key:'location', name:'Location Services', icon:'location_fill', prefixes:['location ','locationservices ','location services ','gps '], suffixes:['on','off','toggle'], displaySuffixes:['On','Off','Toggle'] },
     { key:'flashlight', name:'Flashlight', icon:'bolt_fill', prefixes:['flashlight ','flash '], suffixes:['on','off','toggle'], displaySuffixes:['On','Off','Toggle'] },
-    { key:'appearance', name:'Appearance', icon:'moon_fill', prefixes:['appearance '], suffixes:['dark','light','toggle'], displaySuffixes:['Dark','Light','Toggle'] },
+    { key:'appearance', name:'Appearance', icon:'circle_lefthalf_fill', prefixes:['appearance '], suffixes:['dark','light','toggle'], displaySuffixes:['Dark','Light','Toggle'] },
     { key:'audiomix', name:'AudioMix', icon:'equalizer', prefixes:['audiomix '], suffixes:['on','off','toggle'], displaySuffixes:['On','Off','Toggle'], exactMatches: { 'audiomix':'toggle' } },
     { key:'rotate', name:'Rotation Lock', icon:'lock_rotation', prefixes:['rotate '], suffixes:['lock','unlock','toggle'], displaySuffixes:['Lock','Unlock','Toggle'] },
     { key:'vibration_silent', name:'Silent Vibration', icon:'bell_slash', prefixes:['vibration silent-'], suffixes:['on','off','toggle'], displaySuffixes:['On','Off','Toggle'] },
     { key:'vibration_ring', name:'Ring Vibration', icon:'bell', prefixes:['vibration ring-'], suffixes:['on','off','toggle'], displaySuffixes:['On','Off','Toggle'] },
+    { key:'haptics', name:'Haptics', icon:'waveform_path_ecg', prefixes:['haptics '], suffixes:['always','silent-only','ring-only','never'], displaySuffixes:['Always Play','Play in Silent Mode',"Don't Play in Silent Mode",'Never Play'] },
+    { key:'ringer', name:'Silent Mode', icon:'bell_slash_fill', prefixes:['ringer '], suffixes:['silent','ring','toggle'], displaySuffixes:['On','Off','Toggle'] },
+    { key:'anc', name:'Noise Control', icon:'ear', prefixes:['anc '], suffixes:['on','transparency','off'], displaySuffixes:['Noise Cancellation','Transparency','Off'] },
     {
       key: 'camera_video',
       name: 'Open Video Camera',
@@ -4587,6 +4606,12 @@ function editAction(idx) {
         actions[idx] = `set-vol ${val}`;
         saveConfig(); renderActionList();
       }, true);
+    } else if (low.startsWith('ringer volume ')) {
+      showDialog('Edit Ringer Volume', 'Ringer volume % (0-100):', act.slice(14), 'Save', val => {
+        if (!val) return;
+        actions[idx] = `ringer volume ${val}`;
+        saveConfig(); renderActionList();
+      }, true);
     } else if (low.startsWith('brightness ')) {
       showDialog('Edit Brightness Level', 'Brightness % (0-100):', act.slice(11), 'Save', val => {
         if (!val) return;
@@ -4832,6 +4857,10 @@ function selectPickerAction(act) {
   } else if (c === '__SET_VOLUME__') {
     showDialog('Set Volume', 'Volume percentage (0-100):', '50', 'Add', val => {
       if (val) addActionToCurrent(`set-vol ${val}`);
+    }, true);
+  } else if (c === '__SET_RINGER_VOLUME__') {
+    showDialog('Set Ringer Volume', 'Ringer volume percentage (0-100):', '50', 'Add', val => {
+      if (val) addActionToCurrent(`ringer volume ${val}`);
     }, true);
   } else if (c === '__SET_BRIGHTNESS__') {
     showDialog('Set Brightness', 'Brightness percentage (0-100):', '50', 'Add', val => {

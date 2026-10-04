@@ -135,6 +135,9 @@ static id g_actionClipboard = nil;
     if ([lower hasPrefix:@"set-vol "]) {
         baseText = @"Set Volume ";
         paramText = [NSString stringWithFormat:@"%@%%", [cmd substringFromIndex:8]];
+    } else if ([lower hasPrefix:@"ringer volume "]) {
+        baseText = @"Set Ringer Volume ";
+        paramText = [NSString stringWithFormat:@"%@%%", [cmd substringFromIndex:14]];
     } else if ([lower hasPrefix:@"brightness "]) {
         baseText = @"Set Brightness ";
         paramText = [NSString stringWithFormat:@"%@%%", [cmd substringFromIndex:11]];
@@ -993,8 +996,37 @@ static id g_actionClipboard = nil;
     return depth;
 }
 
+// The vibration conditions as this iOS version's Settings shows them: iOS 17's one Haptics
+// setting in place of the two switches, or the switches by their name for this version
+static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary *> *definitions) {
+    NSMutableArray *adapted = [NSMutableArray array];
+    for (NSDictionary *def in definitions) {
+        BOOL silent = [def[@"key"] isEqualToString:@"silent_vibration"], ring = [def[@"key"] isEqualToString:@"ring_vibration"];
+        if (!silent && !ring) { [adapted addObject:def]; continue; }
+        if ([RCConfigManager usesHapticsMenu]) {
+            if (silent) [adapted addObject:@{
+                @"key": @"haptics",
+                @"title": @"Haptics",
+                @"icon": @"iphone.radiowaves.left.and.right",
+                @"section": def[@"section"] ?: @"Sound",
+                @"values": @[
+                    @{ @"value": @"ALWAYS", @"title": @"Always Play" },
+                    @{ @"value": @"SILENT_ONLY", @"title": @"Play in Silent Mode" },
+                    @{ @"value": @"RING_ONLY", @"title": @"Don't Play in Silent Mode" },
+                    @{ @"value": @"NEVER", @"title": @"Never Play" }
+                ]
+            }];
+            continue;
+        }
+        NSMutableDictionary *renamed = [def mutableCopy];
+        renamed[@"title"] = [RCConfigManager vibrationNameForSilentMode:silent];
+        [adapted addObject:renamed];
+    }
+    return adapted;
+}
+
 - (NSArray<NSDictionary *> *)ifConditionDefinitions {
-    return @[
+    return RCAdaptVibrationConditions(@[
         @{
             @"key": @"time_between",
             @"title": @"Time of Day (Between)",
@@ -1268,7 +1300,7 @@ static id g_actionClipboard = nil;
                 @{ @"value": @"OFF", @"title": @"Off" }
             ]
         }
-    ];
+    ]);
 }
 
 - (void)configurePopoverSourceForAlert:(UIAlertController *)alert {
@@ -1958,11 +1990,11 @@ static id g_actionClipboard = nil;
         
         UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:inputVC];
         [self presentViewController:nav animated:YES completion:nil];
-    } else if ([currentAction hasPrefix:@"set-vol "] || [currentAction hasPrefix:@"brightness "]) {
-        // Edit Volume/Brightness
-        BOOL isVolume = [currentAction hasPrefix:@"set-vol "];
-        NSString *title = isVolume ? @"Edit Volume" : @"Edit Brightness";
-        NSString *prefix = isVolume ? @"set-vol " : @"brightness ";
+    } else if ([currentAction hasPrefix:@"set-vol "] || [currentAction hasPrefix:@"ringer volume "] || [currentAction hasPrefix:@"brightness "]) {
+        // Edit Volume/Ringer Volume/Brightness
+        BOOL isVolume = [currentAction hasPrefix:@"set-vol "], isRinger = [currentAction hasPrefix:@"ringer volume "];
+        NSString *title = isVolume ? @"Edit Volume" : isRinger ? @"Edit Ringer Volume" : @"Edit Brightness";
+        NSString *prefix = isVolume ? @"set-vol " : isRinger ? @"ringer volume " : @"brightness ";
         NSString *currentValue = [currentAction substringFromIndex:prefix.length];
         
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:title 

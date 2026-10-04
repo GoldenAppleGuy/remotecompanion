@@ -82,6 +82,8 @@ static NSArray<NSArray<NSDictionary *> *> *RCBannerCatalog(NSArray<NSString *> *
     for (NSDictionary *entry in cm.bannerActions) {
         if ([entry[@"id"] isKindOfClass:[NSString class]]) [self.selectedIds addObject:entry[@"id"]];
     }
+    // ANC Off and Transparency Mode were their own entries before Noise Control took all three modes
+    if ([self.selectedIds containsObject:@"anc off"] || [self.selectedIds containsObject:@"anc transparency"]) [self.selectedIds addObject:@"anc on"];
     self.optedOutIds = [NSMutableSet setWithArray:cm.bannerOptOut];
 }
 
@@ -114,6 +116,7 @@ static NSArray<NSArray<NSDictionary *> *> *RCBannerCatalog(NSArray<NSString *> *
     dispatch_once(&once, ^{
         placeholders = @{
             @"__SET_VOLUME__": @[@"set-vol "],
+            @"__SET_RINGER_VOLUME__": @[@"ringer volume "],
             @"__SET_BRIGHTNESS__": @[@"brightness "],
             @"__CAMERA_PICKER__": @[@"camera ", @"open camera ", @"camera", @"open camera"],
             @"__CAMERA_VIDEO_PICKER__": @[@"camera video ", @"open camera video ", @"camera video", @"open camera video", @"camera 2x"],
