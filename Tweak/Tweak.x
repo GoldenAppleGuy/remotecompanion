@@ -12346,6 +12346,8 @@ static BOOL g_bottomBarTouchActive = NO;
 static BOOL g_bottomBarHapticFired = NO;
 static NSString *g_pendingBottomBarSwipeUpTrigger = nil;
 static BOOL g_bottomBarSwipeUpTriggered = NO;
+static CGFloat g_bottomBarUserDX = 0; // latest movement of the bottom bar touch, as the user sees it
+static CGFloat g_bottomBarUserDY = 0;
 
 // Status Bar Extended State
 static BOOL g_statusBarSwipeHapticFired = NO;
@@ -12591,6 +12593,8 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                 g_bottomBarHapticFired = NO;
                 g_bottomBarSwipeUpTriggered = NO;
                 g_pendingBottomBarSwipeUpTrigger = nil;
+                g_bottomBarUserDX = 0;
+                g_bottomBarUserDY = 0;
                 
                 CGFloat progress = 0;
                 if (orientation == UIInterfaceOrientationPortrait) {
@@ -12653,6 +12657,10 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                 CGFloat abs_udy = fabs(user_dy);
                 BOOL isHoz = (abs_udx > abs_udy * 1.8);
                 BOOL isVertUp = (user_dy < -15 && abs_udy > abs_udx * 1.5);
+                if (g_bottomBarTouchActive) {
+                    g_bottomBarUserDX = user_dx;
+                    g_bottomBarUserDY = user_dy;
+                }
                 
                 // --- Status Bar Moves ---
                 if (g_statusBarTouchActive && !g_statusBarHoldTriggered) {
@@ -13362,6 +13370,44 @@ static void rc_camera_launched_notification_callback(CFNotificationCenterRef cen
         return NO;
     }
     return %orig;
+}
+
+%end
+
+// On a phone without a Home button, a sideways swipe along the bottom edge is also iOS's own
+// home bar gesture for switching apps. It claims the touch about 15-40 pt in and iOS cancels the
+// touch everywhere else, so the Bottom Bar Swipe Left/Right triggers (which fire when the finger
+// lifts) never fired. When the trigger for that direction will do something, keep the home bar
+// gesture from starting on a sideways swipe; swiping up to go home is left alone.
+static BOOL RC_ShouldKeepBottomBarSideSwipe(void) {
+    if (!g_bottomBarTouchActive) return NO;
+    CGFloat ax = fabs(g_bottomBarUserDX), ay = fabs(g_bottomBarUserDY);
+    if (!(ax > ay * 1.8)) return NO; // the same "sideways" test the trigger uses
+    return RC_TriggerIsActionable(g_bottomBarUserDX > 0 ? @"trigger_bottombar_swipe_right" : @"trigger_bottombar_swipe_left");
+}
+
+%hook SBFluidSwitcherScreenEdgePanGestureRecognizer
+
+- (void)setState:(UIGestureRecognizerState)state {
+    if (state == UIGestureRecognizerStateBegan && RC_ShouldKeepBottomBarSideSwipe()) {
+        SRLog(@"[RCBottom] Home bar gesture stopped: sideways swipe kept for the Bottom Bar trigger");
+        %orig(UIGestureRecognizerStateFailed);
+        return;
+    }
+    %orig;
+}
+
+%end
+
+%hook SBCoverSheetScreenEdgePanGestureRecognizer
+
+- (void)setState:(UIGestureRecognizerState)state {
+    if (state == UIGestureRecognizerStateBegan && RC_ShouldKeepBottomBarSideSwipe()) {
+        SRLog(@"[RCBottom] Cover sheet edge gesture stopped: sideways swipe kept for the Bottom Bar trigger");
+        %orig(UIGestureRecognizerStateFailed);
+        return;
+    }
+    %orig;
 }
 
 %end
