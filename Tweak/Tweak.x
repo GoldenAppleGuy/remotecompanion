@@ -10554,6 +10554,7 @@ static void RC_VolComboUsePresses(void) {
 static volatile BOOL g_volUpHeldOnHIDBus = NO, g_volDownHeldOnHIDBus = NO;
 static volatile NSTimeInterval g_volUpDownOnHIDTime = 0, g_volDownDownOnHIDTime = 0;
 static volatile NSTimeInterval g_volBothHeldOnHIDTime = 0;
+static volatile BOOL g_volPressedDuringPower = NO;
 
 // How long to wait for a hold, counted from when the button really went down. The hooks can
 // get a press ~0.5 s late (iOS 17 did, for a press right after a hold the tweak used), so a
