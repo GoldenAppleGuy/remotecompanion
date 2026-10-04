@@ -176,7 +176,7 @@
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 4; // Master + NFC + WebUI + Banners
+    if (section == 0) return 5; // Master + NFC + WebUI + Banners + Logging
     if (section == 1) return 1; // Integrations Submenu Row
     return 2; // Export, Import
 }
@@ -184,8 +184,8 @@
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     RCConfigManager *cm = [RCConfigManager sharedManager];
     
-    BOOL isBannersRow = (indexPath.section == 0 && indexPath.row == 3);
-    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:isBannersRow ? UITableViewCellStyleValue1 : UITableViewCellStyleDefault reuseIdentifier:nil];
+    BOOL isValueRow = (indexPath.section == 0 && indexPath.row >= 3); // Banners, Logging
+    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:isValueRow ? UITableViewCellStyleValue1 : UITableViewCellStyleDefault reuseIdentifier:nil];
     cell.backgroundColor = [cm tweakColorForKey:@"blockBackground" defaultVal:0.12];
     
     UIView *selBg = [[UIView alloc] init];
@@ -228,6 +228,10 @@
             NSUInteger count = [RCBannersViewController checkedCount];
             cell.detailTextLabel.text = count ? [NSString stringWithFormat:@"%lu", (unsigned long)count] : @"Off";
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        } else if (indexPath.row == 4) {
+            cell.textLabel.text = @"Logging";
+            cell.detailTextLabel.text = [cm.logLevel capitalizedString];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         }
     } else if (indexPath.section == 1) {
         cell.textLabel.text = @"Integrations";
@@ -260,6 +264,8 @@
 
     if (indexPath.section == 0 && indexPath.row == 3) {
         [self.navigationController pushViewController:[[RCBannersViewController alloc] init] animated:YES];
+    } else if (indexPath.section == 0 && indexPath.row == 4) {
+        [self chooseLogLevelFromView:[tableView cellForRowAtIndexPath:indexPath]];
     } else if (indexPath.section == 1) {
         RCIntegrationsViewController *integrationsVC = [[RCIntegrationsViewController alloc] init];
         [self.navigationController pushViewController:integrationsVC animated:YES];
@@ -284,6 +290,24 @@
 
 - (void)webUIToggleChanged:(UISwitch *)sender {
     [RCConfigManager sharedManager].webUIEnabled = sender.on;
+}
+
+- (void)chooseLogLevelFromView:(UIView *)sourceView {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Logging"
+        message:@"Minimal records triggers, their actions and conditions, and errors. Full records every step, for tracking down a problem."
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    NSString *current = [RCConfigManager sharedManager].logLevel;
+    for (NSString *level in @[@"off", @"minimal", @"full"]) {
+        NSString *title = [level isEqualToString:current] ? [NSString stringWithFormat:@"%@ \u2713", [level capitalizedString]] : [level capitalizedString];
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [RCConfigManager sharedManager].logLevel = level;
+            [self.tableView reloadData];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = sourceView;
+    sheet.popoverPresentationController.sourceRect = sourceView.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 - (void)exportConfig {

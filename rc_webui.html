@@ -1619,6 +1619,16 @@
           <span id="setting-banners-count">Off</span><i class="f7-icons" style="font-size:14px;color:#48484a">chevron_right</i>
         </div>
       </div>
+      <div class="settings-row">
+        <span class="settings-label">Logging</span>
+        <div class="settings-btn">
+          <select id="setting-loglevel" onchange="config.logLevel=this.value;saveConfig()" style="appearance:none;-webkit-appearance:none;background:none;border:none;color:#8e8e93;font-size:17px;font-family:inherit;text-align:right;outline:none;cursor:pointer">
+            <option value="off">Off</option>
+            <option value="minimal">Minimal</option>
+            <option value="full">Full</option>
+          </select>
+        </div>
+      </div>
 
     </div>
 
@@ -5111,6 +5121,7 @@ function openSettings() {
   document.getElementById('setting-master').checked = !!config.masterEnabled;
   document.getElementById('setting-nfc').checked    = !!config.nfcEnabled;
   document.getElementById('setting-webui').checked  = !!config.webUIEnabled;
+  document.getElementById('setting-loglevel').value = ['off','minimal','full'].includes(config.logLevel) ? config.logLevel : 'minimal';
   updateBannersCount();
 
   const haToggle = document.getElementById('setting-ha');
