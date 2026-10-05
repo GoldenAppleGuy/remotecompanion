@@ -1581,6 +1581,30 @@ static void send_notification(NSString *title, NSString *message, BOOL urgent) {
 static NSDictionary *g_triggerConfig = nil;
 static NSString *g_resolvedConfigPath = nil;
 
+// g_triggerConfig is read on many threads (main, the web server, HID callbacks) without a lock.
+// Replacing it frees the old dictionary, so a reader that had just picked it up would use freed
+// memory (crashed SpringBoard on iOS 14 when the web UI saved the config). Replacements are
+// serialized by this lock, and the old dictionary is kept alive a while for those readers.
+static NSObject *rc_trigger_config_lock(void) {
+    static NSObject *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSObject new]; });
+    return lock;
+}
+
+static void rc_set_trigger_config(NSDictionary *config) {
+    NSDictionary *old;
+    @synchronized (rc_trigger_config_lock()) {
+        old = g_triggerConfig;
+        g_triggerConfig = config;
+    }
+    if (old) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            (void)old;
+        });
+    }
+}
+
 // Find config file - check shared path first, then search app containers
 static NSString *find_config_path() {
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -1760,27 +1784,32 @@ static void load_trigger_config() {
             static struct timespec loadedTime;
             static off_t loadedSize = -1;
             static ino_t loadedInode;
-            struct stat st;
-            BOOL haveStat = stat([path fileSystemRepresentation], &st) == 0;
-            if (haveStat && g_triggerConfig && [path isEqualToString:loadedPath] && st.st_ino == loadedInode && st.st_size == loadedSize &&
-                st.st_mtimespec.tv_sec == loadedTime.tv_sec && st.st_mtimespec.tv_nsec == loadedTime.tv_nsec) {
-                return;
-            }
-            NSDictionary *newConfig = [NSDictionary dictionaryWithContentsOfFile:path];
-            if (newConfig) {
-                // Thread-safe update: replace the pointer
-                g_triggerConfig = newConfig;
-                g_resolvedConfigPath = path;
-                g_rcLogLevel = rc_log_level_from_config(newConfig);
-                if (haveStat) {
-                    loadedPath = path;
-                    loadedTime = st.st_mtimespec;
-                    loadedSize = st.st_size;
-                    loadedInode = st.st_ino;
+            NSDictionary *newConfig;
+            // Called on several threads: one checks and reloads at a time
+            @synchronized (rc_trigger_config_lock()) {
+                struct stat st;
+                BOOL haveStat = stat([path fileSystemRepresentation], &st) == 0;
+                if (haveStat && g_triggerConfig && [path isEqualToString:loadedPath] && st.st_ino == loadedInode && st.st_size == loadedSize &&
+                    st.st_mtimespec.tv_sec == loadedTime.tv_sec && st.st_mtimespec.tv_nsec == loadedTime.tv_nsec) {
+                    return;
                 }
+                newConfig = [NSDictionary dictionaryWithContentsOfFile:path];
+                if (newConfig) {
+                    rc_set_trigger_config(newConfig);
+                    if (![g_resolvedConfigPath isEqualToString:path]) g_resolvedConfigPath = path;
+                    g_rcLogLevel = rc_log_level_from_config(newConfig);
+                    if (haveStat) {
+                        if (![loadedPath isEqualToString:path]) loadedPath = path;
+                        loadedTime = st.st_mtimespec;
+                        loadedSize = st.st_size;
+                        loadedInode = st.st_ino;
+                    }
+                }
+            }
+            if (newConfig) {
                 SRLogMin(@"Loaded trigger config from %@: triggers=%lu",
                       path,
-                      (unsigned long)[g_triggerConfig[@"triggers"] count]);
+                      (unsigned long)[newConfig[@"triggers"] count]);
             } else {
                 SRLogMin(@"Failed to parse config at %@", path);
             }
@@ -1830,10 +1859,12 @@ static void config_changed_callback(CFNotificationCenterRef center, void *observ
 }
 
 static void save_trigger_config() {
-    if (!g_triggerConfig) return;
+    NSDictionary *config;
+    @synchronized (rc_trigger_config_lock()) { config = g_triggerConfig; }
+    if (!config) return;
     NSString *sharedPath = @"/var/mobile/Documents/rc_triggers.plist";
     NSError *error = nil;
-    NSData *data = [NSPropertyListSerialization dataWithPropertyList:g_triggerConfig
+    NSData *data = [NSPropertyListSerialization dataWithPropertyList:config
                                                               format:NSPropertyListXMLFormat_v1_0
                                                              options:0
                                                                error:&error];
@@ -9334,12 +9365,12 @@ static NSString *handle_command(NSString *cmd) {
         
         if ([sub isEqualToString:@"on"] || [sub isEqualToString:@"enable"]) {
             mConfig[@"webUIEnabled"] = @YES;
-            g_triggerConfig = [mConfig copy];
+            rc_set_trigger_config([mConfig copy]);
             save_trigger_config();
             return @"Web UI Enabled\n";
         } else if ([sub isEqualToString:@"off"] || [sub isEqualToString:@"disable"]) {
             mConfig[@"webUIEnabled"] = @NO;
-            g_triggerConfig = [mConfig copy];
+            rc_set_trigger_config([mConfig copy]);
             save_trigger_config();
             return @"Web UI Disabled\n";
         } else if ([sub isEqualToString:@"status"]) {
@@ -9914,7 +9945,7 @@ static void start_web_server() {
                                             NSError *err;
                                             id jsonObj = [NSJSONSerialization JSONObjectWithData:bodyData options:NSJSONReadingMutableContainers error:&err];
                                             if (jsonObj && [jsonObj isKindOfClass:[NSDictionary class]]) {
-                                                g_triggerConfig = [jsonObj mutableCopy];
+                                                rc_set_trigger_config([jsonObj copy]);
                                                 save_trigger_config();
                                                 responseString = [NSString stringWithFormat:@"HTTP/1.1 200 OK\r\n%@Content-Type: application/json\r\nContent-Length: 12\r\n\r\n{\"ok\": true}", cors];
                                             } else {
