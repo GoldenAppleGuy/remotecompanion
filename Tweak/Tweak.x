@@ -2731,9 +2731,9 @@ NSString *RCHandleCommand(NSString *cmd) {
     return handle_command(cmd);
 }
 
-// g_triggerConfig belongs to the main thread: it's replaced there by load_trigger_config()
-// (every button press, and the reload a save posts), which frees the old dictionary, so the
-// test kit's runner thread must not read or save it directly.
+// The test kit reads and saves the config on the main thread, where the reload a save posts
+// runs, so a read right after a save sees it (rc_set_trigger_config makes the swap itself safe
+// on any thread).
 static void RCOnMainThreadSync(dispatch_block_t block) {
     if ([NSThread isMainThread]) block();
     else dispatch_sync(dispatch_get_main_queue(), block);
@@ -2750,7 +2750,7 @@ NSDictionary *RCCopyTriggerConfig(void) {
 
 void RCSetTriggerConfig(NSDictionary *config) {
     RCOnMainThreadSync(^{
-        g_triggerConfig = [config mutableCopy];
+        rc_set_trigger_config([config copy]);
         save_trigger_config();
     });
 }
