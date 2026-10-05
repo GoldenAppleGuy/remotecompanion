@@ -13,7 +13,8 @@
 //   POST /api/testkit/mark?label=...    a labelled marker, e.g. the start of a test step
 //   POST /api/testkit/run               body (or ?cmd=): a command; returns its output
 //   POST /api/testkit/capture?on=1|0    dry-run: triggers are recorded, actions don't run
-//   POST /api/testkit/snapshot          save device state and config
+//   POST /api/testkit/snapshot          save device state and config (a restore is owed until restore runs;
+//                                       if SpringBoard restarts first, the tweak restores at launch)
 //   POST /api/testkit/restore           put them back
 //   POST /api/testkit/lua               body (or ?code=): Lua; returns what it printed and returned
 //   GET  /api/testkit/suites            the test suites
@@ -372,7 +373,37 @@ static NSDictionary *RCTKProbe(void) {
 
 #pragma mark - Snapshot / restore
 
+// A trigger config with the test kit's own bindings taken out: a trigger whose only action is
+// the test kit's placeholder is off, with no actions. A real config never has them, so if the
+// live one does, an earlier run's restore was missed - they must not be saved as the user's.
+static NSDictionary *RCTKWithoutTestBindings(NSDictionary *config) {
+    NSMutableDictionary *triggers = [config[@"triggers"] mutableCopy];
+    BOOL changed = NO;
+    for (NSString *key in [triggers allKeys]) {
+        NSDictionary *trigger = triggers[key];
+        if (![trigger isKindOfClass:[NSDictionary class]] || ![trigger[@"actions"] isEqual:@[@"testkit noop"]]) continue;
+        NSMutableDictionary *clean = [trigger mutableCopy];
+        clean[@"enabled"] = @NO;
+        clean[@"actions"] = @[];
+        triggers[key] = clean;
+        changed = YES;
+    }
+    if (!changed) return config;
+    NSMutableDictionary *clean = [config mutableCopy];
+    clean[@"triggers"] = triggers;
+    return clean;
+}
+
+// The snapshot on disk says whether a restore is still owed ("restorePending"): a run that
+// SpringBoard restarted in the middle of never got to restore, so the tweak does it at launch
+// (see the %ctor), and a new snapshot doesn't replace one that's still owed - the earlier one is
+// the user's real state.
 static NSDictionary *RCTKTakeSnapshot(void) {
+    NSDictionary *owed = [NSDictionary dictionaryWithContentsOfFile:kRCTKSnapshotPath];
+    if ([owed[@"restorePending"] boolValue]) {
+        RCTKEvent(@"testkit.snapshot", @{ @"kept": @"an earlier snapshot still owed a restore" });
+        return owed;
+    }
     NSDictionary *probe = RCTKProbe();
     NSMutableDictionary *snapshot = [NSMutableDictionary dictionary];
     snapshot[@"t"] = probe[@"t"];
@@ -382,7 +413,8 @@ static NSDictionary *RCTKTakeSnapshot(void) {
     NSString *dnd = [probe[@"status"][@"dnd"] uppercaseString];
     if ([dnd containsString:@"ON"] || [dnd containsString:@"OFF"]) snapshot[@"dndOn"] = @((BOOL)([dnd containsString:@"ON"] && ![dnd containsString:@"OFF"]));
     NSDictionary *config = RCCopyTriggerConfig();
-    if (config) snapshot[@"config"] = config;
+    if (config) snapshot[@"config"] = RCTKWithoutTestBindings(config);
+    snapshot[@"restorePending"] = @YES;
     [snapshot writeToFile:kRCTKSnapshotPath atomically:YES];
     RCTKEvent(@"testkit.snapshot", nil);
     return snapshot;
@@ -428,6 +460,9 @@ static NSDictionary *RCTKRestore(void) {
         if ([command hasPrefix:@"("]) { [results addObject:@{ @"command": command }]; continue; }
         [results addObject:@{ @"command": command, @"output": RCTKStatus(command) }];
     }
+    NSMutableDictionary *done = [snapshot mutableCopy];
+    done[@"restorePending"] = @NO;
+    [done writeToFile:kRCTKSnapshotPath atomically:YES];
     RCTKEvent(@"testkit.restore", @{ @"commands": commands });
     return @{ @"restored": results };
 }
@@ -2685,4 +2720,14 @@ NSString *RCTKHandleCommand(NSString *args) {
         RCTKEvent(@"screen", @{ @"on": @((BOOL)(blanked == 0)) });
     });
     RCTKEvent(@"testkit.loaded", @{ @"tweakVersion": RCTKPackageVersion() });
+
+    // A run that SpringBoard restarted in the middle of still owes the user their settings
+    // back (see RCTKTakeSnapshot): put them back once SpringBoard has settled
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSDictionary *snapshot = [NSDictionary dictionaryWithContentsOfFile:kRCTKSnapshotPath];
+        if (![snapshot[@"restorePending"] boolValue]) return;
+        NSDictionary *restored = RCTKRestore();
+        SRLog(@"[TestKit] Restored the settings an interrupted run owed: %@", restored[@"restored"]);
+        RCTKEvent(@"testkit.restoredAfterRestart", @{ @"restored": restored[@"restored"] ?: @[] });
+    });
 }
