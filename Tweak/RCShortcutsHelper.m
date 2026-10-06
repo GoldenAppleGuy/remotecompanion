@@ -50,20 +50,18 @@ static void rc_announce_ready(void) {
 // The class comes with a framework siriactionsd links, so it's normally there already
 static void rc_retry_add(int attemptsLeft) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (rc_add_initWithWorkflowIdentifier()) {
-            rc_announce_ready();
-        } else if (attemptsLeft > 1) {
-            rc_retry_add(attemptsLeft - 1);
-        }
+        if (!rc_add_initWithWorkflowIdentifier() && attemptsLeft > 1) rc_retry_add(attemptsLeft - 1);
     });
 }
 
 __attribute__((constructor))
 static void rc_shortcuts_helper_init(void) {
     BOOL added = rc_add_initWithWorkflowIdentifier();
-    // Ready once siriactionsd's main queue runs: every tweak (SpringCuts' runner too) has loaded
+    // Ready once siriactionsd's main queue runs: every tweak (SpringCuts' runner too) has loaded.
+    // Without the class (another iOS, or SpringCuts not using it) there's nothing to add, but
+    // RemoteCompanion still waits for this
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (added) rc_announce_ready();
-        else rc_retry_add(120);
+        rc_announce_ready();
+        if (!added) rc_retry_add(120);
     });
 }
