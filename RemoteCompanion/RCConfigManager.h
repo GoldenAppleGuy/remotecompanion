@@ -71,6 +71,8 @@
 + (BOOL)hasHomeButton;
 + (BOOL)usesHapticsMenu;
 + (NSString *)vibrationNameForSilentMode:(BOOL)silent;
+// Focus modes (the Set Focus action, the Focus condition) came with iOS 15
++ (BOOL)supportsFocus;
 - (BOOL)isActionDisabled:(id)actionItem;
 - (id)toggleActionDisabled:(id)actionItem;
 - (void)registerKMMacroName:(NSString *)name forUid:(NSString *)uid;

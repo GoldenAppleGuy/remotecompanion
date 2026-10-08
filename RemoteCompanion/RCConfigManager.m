@@ -949,6 +949,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"dnd on": @"Do Not Disturb On",
         @"dnd off": @"Do Not Disturb Off",
         @"dnd toggle": @"Do Not Disturb Toggle",
+        @"focus off": @"Focus Off",
         @"respring": @"Respring",
         @"safemode": @"Safe Mode",
         @"safe-mode": @"Safe Mode",
@@ -1106,6 +1107,10 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         } else if ([cmd hasPrefix:@"bt disconnect "] || [cmd hasPrefix:@"bluetooth disconnect "]) {
             NSString *val = [cmd hasPrefix:@"bluetooth disconnect "] ? [cmd substringFromIndex:21] : [cmd substringFromIndex:14];
             result = [NSString stringWithFormat:@"Disconnect %@", val];
+        } else if ([cmd hasPrefix:@"focus on "]) {
+            result = [NSString stringWithFormat:@"Turn On %@", [cmd substringFromIndex:9]];
+        } else if ([cmd hasPrefix:@"focus toggle "]) {
+            result = [NSString stringWithFormat:@"Toggle %@", [cmd substringFromIndex:13]];
         } else if ([cmd hasPrefix:@"airplay connect "]) {
             NSString *val = [cmd substringFromIndex:16];
             if ([val containsString:@" # "]) {
@@ -1362,6 +1367,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     if ([cmd hasPrefix:@"bt connect "] || [cmd hasPrefix:@"bluetooth connect "]) return @"link";
     if ([cmd hasPrefix:@"bt disconnect "] || [cmd hasPrefix:@"bluetooth disconnect "]) return @"xmark.circle";
     if ([cmd hasPrefix:@"airplay connect "]) return @"airplayaudio";
+    if ([cmd hasPrefix:@"focus "]) return @"moon.circle";
     if ([cmd hasPrefix:@"shortcut:"]) return @"wand.and.stars";
     if ([cmd hasPrefix:@"set-vol "]) return @"slider.horizontal.3";
     if ([cmd hasPrefix:@"ringer volume "]) return @"bell.fill";
@@ -1535,6 +1541,10 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
 
 + (BOOL)usesHapticsMenu {
     return [[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){17, 0, 0}];
+}
+
++ (BOOL)supportsFocus {
+    return [[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){15, 0, 0}];
 }
 
 + (NSString *)vibrationNameForSilentMode:(BOOL)silent {
