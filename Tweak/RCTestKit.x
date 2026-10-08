@@ -654,6 +654,22 @@ static void RCTKSuiteConditions(NSMutableDictionary *run) {
     expect(@"conditions.wifi_network.other", @"wifi_network", @"RCTK No Such Network", NO);
     expect(@"conditions.bt_device.other", @"bt_device", @"RCTK No Such Device", NO);
 
+    // Focus (iOS 15+): Off / Any Focus / the active one by name, against "focus status". A
+    // build without Focus answers nothing; iOS 14 says it needs iOS 15.
+    NSString *focus = RCTKStatus(@"focus status");
+    if (focus.length == 0 || [focus hasPrefix:@"Focus requires"] || [focus hasPrefix:@"Error"]) {
+        RCTKRecordResult(run, @"conditions.focus", @"skip", @{ @"reason": focus.length ? focus : @"no Focus support in this build" }, -1);
+    } else {
+        BOOL off = [focus isEqualToString:@"Off"];
+        expect(@"conditions.focus.off", @"focus", @"OFF", off);
+        expect(@"conditions.focus.any", @"focus", @"ON", !off);
+        if (!off) {
+            expect(@"conditions.focus.current", @"focus", focus, YES);
+            expect(@"conditions.focus.caseInsensitive", @"focus", focus.lowercaseString, YES);
+        }
+        expect(@"conditions.focus.other", @"focus", @"RCTK No Such Focus", NO);
+    }
+
     NSString *front = p[@"frontApp"];
     if (front.length && ![front isEqualToString:@"com.apple.springboard"]) {
         expect(@"conditions.front_app.current", @"front_app", front, YES);
@@ -1975,10 +1991,14 @@ static NSDictionary *RCTKRedact(NSDictionary *report) {
         if ([name isKindOfClass:[NSString class]] && [name length] >= 2 && ![name hasPrefix:@"RCTK "]) [names addObject:@[name, placeholder]];
     };
     add(RCTKProbeLight()[@"wifiNetwork"], @"<Wi-Fi network>");
-    NSDictionary *placeholders = @{ @"wifi_network": @"<Wi-Fi network>", @"bt_device": @"<Bluetooth device>", @"airplay": @"<AirPlay device>" };
+    NSDictionary *placeholders = @{ @"wifi_network": @"<Wi-Fi network>", @"bt_device": @"<Bluetooth device>", @"airplay": @"<AirPlay device>", @"focus": @"<Focus>" };
     for (NSDictionary *test in report[@"tests"]) {
-        NSString *placeholder = placeholders[test[@"detail"][@"condition"] ?: @""];
-        if (placeholder) add(test[@"detail"][@"value"], placeholder);
+        NSString *condition = test[@"detail"][@"condition"] ?: @"";
+        id value = test[@"detail"][@"value"];
+        // A Focus condition's Off and Any Focus values aren't names
+        if ([condition isEqual:@"focus"] && ([value isEqual:@"OFF"] || [value isEqual:@"ON"])) continue;
+        NSString *placeholder = placeholders[condition];
+        if (placeholder) add(value, placeholder);
     }
     // Longest first, so a name containing another is replaced whole
     [names sortUsingComparator:^NSComparisonResult(NSArray *a, NSArray *b) { return [@([b[0] length]) compare:@([a[0] length])]; }];
