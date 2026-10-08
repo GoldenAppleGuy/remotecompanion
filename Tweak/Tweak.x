@@ -823,7 +823,17 @@ static void toggle_location_services(BOOL state) {
     });
 }
 
+static BOOL rc_focus_supported(void);
+static NSString *rc_focus_active_identifier(BOOL *known);
+
 static BOOL get_dnd_state() {
+    // iOS 15+: Do Not Disturb is one Focus among others - on only while it's the active one
+    // (another Focus turned on from Control Center read as Do Not Disturb)
+    if (rc_focus_supported()) {
+        BOOL known = NO;
+        NSString *active = rc_focus_active_identifier(&known);
+        if (known) return [active isEqualToString:@"com.apple.donotdisturb.mode.default"];
+    }
     Class ServiceClass = objc_getClass("DNDModeAssertionService");
     if (ServiceClass) {
         id service = [ServiceClass serviceForClientIdentifier:@"com.apple.donotdisturb.control-center.module"];
@@ -898,8 +908,8 @@ static NSDictionary *rc_focus_mode_named(NSString *name, NSError **error) {
     return nil;
 }
 
-// The active Focus's name, or nil when none is on. *known is NO when the state can't be read.
-static NSString *rc_focus_active_name(BOOL *known) {
+// The state while a Focus is on, or nil when none is. *known is NO when it can't be read.
+static id rc_focus_active_state(BOOL *known) {
     if (known) *known = NO;
     if (!rc_focus_supported()) return nil;
     id service = [objc_getClass("DNDStateService") serviceForClientIdentifier:kRCFocusClient];
@@ -909,12 +919,28 @@ static NSString *rc_focus_active_name(BOOL *known) {
     if (known) *known = YES;
     SEL isActive = NSSelectorFromString(@"isActive");
     if ([state respondsToSelector:isActive] && !((BOOL (*)(id, SEL))objc_msgSend)(state, isActive)) return nil;
+    return state;
+}
 
+static NSString *rc_focus_state_identifier(id state) {
     NSString *identifier = rc_focus_value(state, @"activeModeIdentifier");
     if (![identifier isKindOfClass:[NSString class]]) {
         NSArray *identifiers = rc_focus_value(state, @"activeModeIdentifiers");
         identifier = [identifiers isKindOfClass:[NSArray class]] ? identifiers.firstObject : nil;
     }
+    return [identifier isKindOfClass:[NSString class]] ? identifier : nil;
+}
+
+// The active Focus's mode identifier, or nil when none is on
+static NSString *rc_focus_active_identifier(BOOL *known) {
+    return rc_focus_state_identifier(rc_focus_active_state(known));
+}
+
+// The active Focus's name, or nil when none is on. *known is NO when the state can't be read.
+static NSString *rc_focus_active_name(BOOL *known) {
+    id state = rc_focus_active_state(known);
+    if (!state) return nil;
+    NSString *identifier = rc_focus_state_identifier(state);
     NSString *name = rc_focus_value(rc_focus_value(rc_focus_value(state, @"activeModeConfiguration"), @"mode"), @"name");
     if ([name isKindOfClass:[NSString class]] && name.length) return name;
     for (NSDictionary *mode in rc_focus_modes(nil)) {
@@ -8031,7 +8057,8 @@ static NSString *handle_command(NSString *cmd) {
             toggle_dnd(YES);
             return @"DND Enabled\n";
         } else if ([subCmd isEqualToString:@"off"]) {
-            toggle_dnd(NO);
+            // Only Do Not Disturb: another Focus stays on ("focus off" turns that off)
+            if (!rc_focus_supported() || get_dnd_state()) toggle_dnd(NO);
             return @"DND Disabled\n";
         } else if ([subCmd isEqualToString:@"status"]) {
             BOOL current = get_dnd_state();
