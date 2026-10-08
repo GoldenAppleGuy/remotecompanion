@@ -296,11 +296,13 @@ static NSDictionary *RCTKProbeWith(BOOL light) {
         id media = RCTKShared(@"SBMediaController", @"sharedInstance");
         NSNumber *playing = RCTKSendBool(media, @"isPlaying");
         id nowPlaying = RCTKSend(media, @"nowPlayingApplication");
-        // Paused counts without a now-playing app too: a paused session can outlive its app's
-        // place as the now-playing one (MediaRemote still says Paused then)
+        // Without a now-playing app, SpringBoard's paused flag can't be trusted either way: it
+        // was set with MediaRemote saying Paused (a session that outlived its app) and with
+        // MediaRemote saying Unknown (nothing played since a respring). Unknown then.
+        BOOL paused = [RCTKSendBool(media, @"isPaused") boolValue];
         if (playing.boolValue) ui[@"player"] = @"PLAYING";
-        else if ([RCTKSendBool(media, @"isPaused") boolValue]) ui[@"player"] = @"PAUSED";
-        else if (nowPlaying) ui[@"player"] = [NSNull null];
+        else if (nowPlaying) ui[@"player"] = paused ? @"PAUSED" : [NSNull null];
+        else if (paused) ui[@"player"] = [NSNull null];
         else ui[@"player"] = playing ? @"STOPPED" : [NSNull null];
         // The status bar's orientation (the condition asks SpringBoard's active orientation)
         NSNumber *orientation = RCTKSendLong(sb, @"statusBarOrientation");
