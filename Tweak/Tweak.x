@@ -3206,7 +3206,10 @@ static void rc_check_audio_output(BOOL silent) {
                 if (!route.picked) continue;
                 if (!picked || (picked.isDeviceRoute && !route.isDeviceRoute)) picked = route;
             }
+            // The phone's own speaker is called "iPhone" or "Speaker" depending on the device and
+            // the moment; one name keeps a trigger matching
             NSString *current = picked.routeName.length ? picked.routeName : nil;
+            if (picked && [picked.routeUID isEqualToString:@"Speaker"]) current = @"iPhone";
             NSString *previous = g_lastAudioOutput;
             if ((current == previous) || [current isEqualToString:previous]) return;
             g_lastAudioOutput = [current copy];
