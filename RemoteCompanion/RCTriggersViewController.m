@@ -8,6 +8,7 @@
 #import "RCWiFiTriggerViewController.h"
 #import "RCBluetoothTriggerViewController.h"
 #import "RCAudioOutputTriggerViewController.h"
+#import "RCWrapSizing.h"
 #import "RCAppPickerViewController.h"
 #import "RCNotificationTriggerViewController.h"
 #import "RCScheduledTriggerViewController.h"
@@ -15,6 +16,16 @@
 #import "RCCategoryBar.h"
 
 #define kSimulateNotificationPrefix "com.pizzaman.rc.simulate."
+
+// Grows to show the whole title and subtitle, never below the usual row height
+@interface RCTriggerCell : UITableViewCell
+@end
+
+@implementation RCTriggerCell
+- (CGSize)systemLayoutSizeFittingSize:(CGSize)targetSize withHorizontalFittingPriority:(UILayoutPriority)horizontalFittingPriority verticalFittingPriority:(UILayoutPriority)verticalFittingPriority {
+    return CGSizeMake(targetSize.width, RCWrappedCellHeight(self, targetSize.width, 64.0));
+}
+@end
 
 @interface RCTriggersViewController ()
 @property (nonatomic, strong) NSArray<NSArray<NSString *> *> *sections;
@@ -99,7 +110,9 @@
 
     self.navigationItem.rightBarButtonItems = @[settingsItem, addItem];
     
-    self.tableView.rowHeight = 64;
+    // Long names (a device or app name, a chain of actions) wrap, and the row grows with them
+    self.tableView.rowHeight = UITableViewAutomaticDimension;
+    self.tableView.estimatedRowHeight = 64;
     if (@available(iOS 15.0, *)) {
         // Spacing above headers is built into the header views instead (see
         // heightForHeaderInSection:), so the first one can sit close to the category bar
@@ -753,7 +766,9 @@
     NSString *triggerKey = [self triggerKeyAtIndexPath:indexPath];
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"TriggerCell"];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"TriggerCell"];
+        cell = [[RCTriggerCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"TriggerCell"];
+        cell.textLabel.numberOfLines = 0;
+        cell.detailTextLabel.numberOfLines = 0;
     }
     
     RCConfigManager *config = [RCConfigManager sharedManager];
