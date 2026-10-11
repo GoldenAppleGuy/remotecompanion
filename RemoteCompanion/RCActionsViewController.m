@@ -306,7 +306,8 @@ static id g_actionClipboard = nil;
                           [_triggerKey hasPrefix:@"notify_"] ||
                           [_triggerKey hasPrefix:@"wifi_"] ||
                           [_triggerKey hasPrefix:@"bt_"] ||
-                          [_triggerKey hasPrefix:@"app_launch_"];
+                          [_triggerKey hasPrefix:@"app_launch_"] ||
+                          [_triggerKey hasPrefix:@"app_exit_"];
     
     if (isConfigurable) {
         UIBarButtonItem *settingsButton = [[UIBarButtonItem alloc] 
@@ -429,11 +430,12 @@ static id g_actionClipboard = nil;
         vc = [[RCWiFiTriggerViewController alloc] initWithTriggerKey:_triggerKey];
     } else if ([_triggerKey hasPrefix:@"bt_"]) {
         vc = [[RCBluetoothTriggerViewController alloc] initWithTriggerKey:_triggerKey];
-    } else if ([_triggerKey hasPrefix:@"app_launch_"]) {
+    } else if ([_triggerKey hasPrefix:@"app_launch_"] || [_triggerKey hasPrefix:@"app_exit_"]) {
+        BOOL isExit = [_triggerKey hasPrefix:@"app_exit_"];
         RCAppPickerViewController *appVC = [[RCAppPickerViewController alloc] init];
         appVC.onAppSelected = ^(NSString *appName, NSString *bundleId) {
-            NSString *newKey = [NSString stringWithFormat:@"app_launch_%@", bundleId];
-            NSString *friendlyName = [NSString stringWithFormat:@"Launch %@", appName];
+            NSString *newKey = [NSString stringWithFormat:@"%@%@", isExit ? @"app_exit_" : @"app_launch_", bundleId];
+            NSString *friendlyName = [NSString stringWithFormat:@"%@ %@", isExit ? @"Exit" : @"Launch", appName];
             
             RCConfigManager *config = [RCConfigManager sharedManager];
             if (![self.triggerKey isEqualToString:newKey]) {

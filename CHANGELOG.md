@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [4.0.0] - Unreleased
 
 ### Added
+- App Exit trigger: fires when a chosen app is switched away from (the inverse of App Launch).
 - Auto-Lock action and condition support.
 - Configurable banners for action triggers.
 - Smaller relative volume steps with `volume up N` and `volume down N`.
