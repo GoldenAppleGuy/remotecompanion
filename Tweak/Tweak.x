@@ -553,6 +553,8 @@ extern void BKSTerminateApplicationForReasonAndReportWithDescription(NSString *b
 - (BOOL)setActiveCategoryVolumeTo:(float)volume;
 - (BOOL)getActiveCategoryMuted:(BOOL *)muted;
 - (BOOL)setVolumeTo:(float)volume forCategory:(NSString *)category;
+- (id)attributeForKey:(NSString *)key;
+- (BOOL)setAttribute:(id)value forKey:(NSString *)key error:(NSError **)error;
 @end
 
 static float sr_previous_volume = -1.0f;
@@ -1962,6 +1964,8 @@ static NSString *get_human_name_for_trigger(NSString *key, NSDictionary *trigger
     if ([key hasPrefix:@"bt_disconnect_"]) return [NSString stringWithFormat:@"Bluetooth Disconnected: %@", [key substringFromIndex:14]];
     if ([key hasPrefix:@"app_launch_"]) return [NSString stringWithFormat:@"App Launched: %@", [key substringFromIndex:11]];
     if ([key hasPrefix:@"app_exit_"]) return [NSString stringWithFormat:@"App Exited: %@", [key substringFromIndex:9]];
+    if ([key hasPrefix:@"output_set_"]) return [NSString stringWithFormat:@"Audio Output Set: %@", [key substringFromIndex:11]];
+    if ([key hasPrefix:@"output_unset_"]) return [NSString stringWithFormat:@"Audio Output Unset: %@", [key substringFromIndex:13]];
     if ([key hasPrefix:@"notif_"] || [key hasPrefix:@"notify_"]) return @"Notification Trigger";
     if ([key hasPrefix:@"sched_"]) return @"Scheduled Automation";
     
@@ -3515,6 +3519,42 @@ static void handle_bluetooth_transition(NSNotification *notification, BOOL conne
     RCExecuteTrigger(triggerKey);
 }
 
+// Audio output: the route (AirPlay, Bluetooth or the device itself) picked as the output
+static NSString *g_lastAudioOutput = nil;
+static MPAVRoutingController *g_outputRoutingController = nil;
+
+static void rc_check_audio_output(BOOL silent) {
+    if (!g_outputRoutingController) {
+        g_outputRoutingController = [[objc_getClass("MPAVRoutingController") alloc] init];
+    }
+    [g_outputRoutingController fetchAvailableRoutesWithCompletionHandler:^(NSArray<MPAVRoute *> *routes) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // An AirPlay or Bluetooth route if one is picked, else the device itself
+            MPAVRoute *picked = nil;
+            for (MPAVRoute *route in routes) {
+                if (!route.picked) continue;
+                if (!picked || (picked.isDeviceRoute && !route.isDeviceRoute)) picked = route;
+            }
+            NSString *current = picked.routeName.length ? picked.routeName : nil;
+            NSString *previous = g_lastAudioOutput;
+            if ((current == previous) || [current isEqualToString:previous]) return;
+            g_lastAudioOutput = [current copy];
+            SRLog(@"[AudioOutput] Output changed: %@ -> %@ (picked route %@ [%@], device route %d)", previous, current, picked.routeName, picked.routeUID, picked.isDeviceRoute);
+            if (silent) return;
+            if (previous.length) RCExecuteTrigger([@"output_unset_" stringByAppendingString:previous]);
+            if (current.length) RCExecuteTrigger([@"output_set_" stringByAppendingString:current]);
+        });
+    }];
+}
+
+static void rc_schedule_audio_output_check(void) {
+    static NSInteger generation = 0;
+    NSInteger mine = ++generation;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (mine == generation) rc_check_audio_output(NO);
+    });
+}
+
 static void handle_wifi_notification(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     dispatch_async(dispatch_get_main_queue(), ^{
         handle_wifi_transition();
@@ -4026,6 +4066,7 @@ static void register_system_event_observers() {
                      queue:[NSOperationQueue mainQueue] 
                 usingBlock:^(NSNotification *note) {
         handle_bluetooth_transition(note, YES);
+        rc_schedule_audio_output_check();
     }];
     
     [nc addObserverForName:@"BluetoothDeviceDisconnectSuccessNotification" 
@@ -4033,9 +4074,35 @@ static void register_system_event_observers() {
                      queue:[NSOperationQueue mainQueue] 
                 usingBlock:^(NSNotification *note) {
         handle_bluetooth_transition(note, NO);
+        rc_schedule_audio_output_check();
     }];
 
-    SRLog(@"[RCTweak] WiFi, Bluetooth and Media observers registered.");
+    // Audio output: the audio route changing
+    {
+        Class controllerClass = objc_getClass("AVSystemController");
+        id controller = controllerClass ? [controllerClass sharedAVSystemController] : nil;
+        NSArray *routeNotifications = @[ @"AVSystemController_ActiveAudioRouteDidChangeNotification",
+                                         @"AVSystemController_PickableRoutesDidChangeNotification" ];
+        if ([controller respondsToSelector:@selector(setAttribute:forKey:error:)]) {
+            [controller setAttribute:routeNotifications forKey:@"AVSystemController_SubscribeToNotificationsAttribute" error:nil];
+        }
+        for (NSString *name in routeNotifications) {
+            [nc addObserverForName:name object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
+                rc_schedule_audio_output_check();
+            }];
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            rc_check_audio_output(YES);
+        });
+
+        // The route notifications don't reach SpringBoard (and the route attributes read nil
+        // there), so the picked route is also read every 3 s; it only fires on a change
+        [NSTimer scheduledTimerWithTimeInterval:3.0 repeats:YES block:^(NSTimer *timer) {
+            rc_check_audio_output(NO);
+        }];
+    }
+
+    SRLog(@"[RCTweak] WiFi, Bluetooth, Media and Audio output observers registered.");
 }
 
 // ============ LUA INTERPRETER ============

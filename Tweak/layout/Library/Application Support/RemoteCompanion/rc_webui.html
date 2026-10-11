@@ -2485,6 +2485,7 @@ const TRIGGER_SECTIONS = [
   { title: 'NFC Tags',               id: 'nfc',       keys: [], dynamic: true, prefix: 'nfc_',        deletable: true },
   { title: 'WiFi Network Triggers',  id: 'wifi',      keys: [], dynamic: true, prefix: 'wifi_',       deletable: true },
   { title: 'Bluetooth Device Triggers', id: 'bt',     keys: [], dynamic: true, prefix: 'bt_',         deletable: true },
+  { title: 'Audio Output Triggers',   id: 'output',  keys: [], dynamic: true, prefix: 'output_',     deletable: true },
   { title: 'Notification Triggers',  id: 'notif',     keys: [], dynamic: true, prefix: 'notif_',      deletable: true },
   { title: 'App Launch Triggers',    id: 'app',       keys: [], dynamic: true, prefix: 'app_launch_', deletable: true },
   { title: 'App Exit Triggers',      id: 'appexit',   keys: [], dynamic: true, prefix: 'app_exit_',   deletable: true },
@@ -2566,6 +2567,8 @@ function iconForKey(key) {
   if (key.startsWith('wifi_connect_')) return { icon:'wifi', cls:'icon-green' };
   if (key.startsWith('wifi_disconnect_')) return { icon:'wifi_slash', cls:'icon-orange' };
   if (key.startsWith('wifi_'))       return { icon:'wifi',                          cls:'icon-blue' };
+  if (key.startsWith('output_set_')) return { icon:'airplayaudio', cls:'icon-green' };
+  if (key.startsWith('output_')) return { icon:'airplayaudio', cls:'icon-indigo' };
   if (key.startsWith('bt_connect_')) return { icon:'bolt_horizontal_fill', cls:'icon-green' };
   if (key.startsWith('bt_disconnect_')) return { icon:'bolt_horizontal', cls:'icon-orange' };
   if (key.startsWith('bt_'))         return { icon:'bolt_horizontal_fill',          cls:'icon-indigo' };
@@ -2585,6 +2588,8 @@ function nameForKey(key) {
   if (key.startsWith('wifi_connect_')) return `WiFi Connect: ${key.slice(13)}`;
   if (key.startsWith('wifi_disconnect_')) return `WiFi Disconnect: ${key.slice(16)}`;
   if (key.startsWith('wifi_'))       return `WiFi: ${key.slice(5)}`;
+  if (key.startsWith('output_set_')) return `Output Set: ${key.slice(11)}`;
+  if (key.startsWith('output_unset_')) return `Output Unset: ${key.slice(13)}`;
   if (key.startsWith('bt_connect_')) return `BT Connect: ${key.slice(11)}`;
   if (key.startsWith('bt_disconnect_')) return `BT Disconnect: ${key.slice(14)}`;
   if (key.startsWith('bt_'))         return `BT: ${key.slice(3)}`;
@@ -6138,11 +6143,33 @@ function createAppLaunchTrigger(name, bundleId, kind) {
   openActionsPanel(key);
 }
 
+// ── Audio Output Trigger Setup ──────────────────────────────────────────────
+function promptAudioOutputTrigger() {
+  showSheet('Audio Output', [
+    { label: 'Set as Output', action: () => promptAudioOutputName('set') },
+    { label: 'Unset as Output', action: () => promptAudioOutputName('unset') },
+  ]);
+}
+function promptAudioOutputName(mode) {
+  showDialog('Audio Output', 'Device name:', '', 'Add', val => {
+    val = (val || '').trim();
+    if (!val) return;
+    const key = `output_${mode}_${val}`;
+    if (!config.triggers[key]) {
+      config.triggers[key] = { enabled: true, actions: [], name: `Output ${mode === 'set' ? 'Set' : 'Unset'}: ${val}` };
+      saveConfig();
+    }
+    renderAll();
+    openActionsPanel(key);
+  });
+}
+
 // ── Add Trigger Sheet System ──────────────────────────────────────────────────
 function showAddTriggerSheet() {
   showSheet('Add New Trigger', [
     { label: 'WiFi Network Trigger', action: () => promptComplexTrigger('wifi') },
     { label: 'Bluetooth Device Trigger', action: () => promptComplexTrigger('bt') },
+    { label: 'Audio Output Trigger', action: () => promptAudioOutputTrigger() },
     { label: 'Notification Trigger', action: () => promptNotifTrigger() },
     { label: 'App Launch Trigger', action: () => promptAppLaunchPicker() },
     { label: 'App Exit Trigger', action: () => promptAppLaunchPicker(null, 'exit') },
