@@ -7,6 +7,7 @@
 #import <notify.h>
 #import "RCWiFiTriggerViewController.h"
 #import "RCBluetoothTriggerViewController.h"
+#import "RCAudioOutputTriggerViewController.h"
 #import "RCAppPickerViewController.h"
 #import "RCNotificationTriggerViewController.h"
 #import "RCScheduledTriggerViewController.h"
@@ -48,6 +49,7 @@
     if ([triggerKey hasPrefix:@"nfc_"]) return @"wave.3.right.circle.fill";
     if ([triggerKey hasPrefix:@"wifi_"]) return @"wifi";
     if ([triggerKey hasPrefix:@"bt_"]) return @"bolt.horizontal.fill";
+    if ([triggerKey hasPrefix:@"output_"]) return @"airplayaudio";
     if ([triggerKey hasPrefix:@"app_launch_"]) return @"app.badge";
     if ([triggerKey hasPrefix:@"notif_"] || [triggerKey hasPrefix:@"notify_"]) return @"bell.badge.fill";
     if ([triggerKey hasPrefix:@"sched_"]) return @"clock.fill";
@@ -314,6 +316,13 @@
     }
     addSection(btKeys, @"Bluetooth Device Triggers", YES);
 
+    // Audio Output Section
+    NSMutableArray *outputKeys = [NSMutableArray array];
+    for (NSString *key in [[RCConfigManager sharedManager] allConfiguredTriggerKeys]) {
+        if ([key hasPrefix:@"output_"]) [outputKeys addObject:key];
+    }
+    addSection(outputKeys, @"Audio Output Triggers", YES);
+
     // Notification Triggers Section
     NSMutableArray *notifKeys = [NSMutableArray array];
     for (NSString *key in [[RCConfigManager sharedManager] allConfiguredTriggerKeys]) {
@@ -404,6 +413,7 @@
         @{ @"title": @"NFC Tag", @"icon": @"wave.3.right", @"section": @"Nearby", @"handler": ^{ push([[RCNFCTriggerViewController alloc] init]); } },
         @{ @"title": @"Wi-Fi Network", @"icon": @"wifi", @"section": @"Nearby", @"handler": ^{ push([[RCWiFiTriggerViewController alloc] init]); } },
         @{ @"title": @"Bluetooth Device", @"icon": @"dot.radiowaves.left.and.right", @"section": @"Nearby", @"handler": ^{ push([[RCBluetoothTriggerViewController alloc] init]); } },
+        @{ @"title": @"Audio Output", @"icon": @"airplayaudio", @"section": @"Nearby", @"handler": ^{ push([[RCAudioOutputTriggerViewController alloc] init]); } },
         @{ @"title": @"App Launch", @"icon": @"square.grid.2x2", @"section": @"Apps", @"handler": ^{
             RCAppPickerViewController *vc = [[RCAppPickerViewController alloc] init];
             vc.suppressAutoPop = YES; // We handle navigation ourselves
@@ -773,7 +783,7 @@
     NSString *triggerKey = [self triggerKeyAtIndexPath:indexPath];
 
     // Only allow delete for NFC, WiFi, BT, App, Notif, Sched, MQTT, Device State triggers
-    if (![triggerKey hasPrefix:@"nfc_"] && ![triggerKey hasPrefix:@"wifi_"] && ![triggerKey hasPrefix:@"bt_"] && ![triggerKey hasPrefix:@"app_launch_"] && ![triggerKey hasPrefix:@"notif_"] && ![triggerKey hasPrefix:@"notify_"] && ![triggerKey hasPrefix:@"sched_"] && ![triggerKey hasPrefix:@"mqtt_"] && ![triggerKey hasPrefix:@"mqtt_sub_"] && ![triggerKey hasPrefix:@"trigger_device_"] && ![triggerKey hasPrefix:@"trigger_media_"]) {
+    if (![triggerKey hasPrefix:@"nfc_"] && ![triggerKey hasPrefix:@"wifi_"] && ![triggerKey hasPrefix:@"bt_"] && ![triggerKey hasPrefix:@"app_launch_"] && ![triggerKey hasPrefix:@"output_"] && ![triggerKey hasPrefix:@"notif_"] && ![triggerKey hasPrefix:@"notify_"] && ![triggerKey hasPrefix:@"sched_"] && ![triggerKey hasPrefix:@"mqtt_"] && ![triggerKey hasPrefix:@"mqtt_sub_"] && ![triggerKey hasPrefix:@"trigger_device_"] && ![triggerKey hasPrefix:@"trigger_media_"] && ![triggerKey hasPrefix:@"trigger_power_"] && ![triggerKey hasPrefix:@"trigger_carplay_"]) {
         return [UISwipeActionsConfiguration configurationWithActions:@[]];
     }
 

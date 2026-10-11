@@ -166,6 +166,7 @@ Configure these in the `RemoteCompanion` app for custom action sequences. Tip: *
   - **Scheduled**: Run actions at specific times (e.g., Daily at 4 PM).
   - **WiFi/Bluetooth**: Trigger actions on network or device connectivity.
   - **App Launch**: Fire actions when a specific app is opened.
+  - **Audio Output**: Fire actions when an AirPlay, Bluetooth or device output is set or unset as the audio output.
 
 </details>
 

@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [4.0.0] - Unreleased
 
 ### Added
+- Audio Output triggers: fire when a device (AirPlay, Bluetooth such as AirPods, or the phone itself) is set or unset as the audio output.
 - Auto-Lock action and condition support.
 - Configurable banners for action triggers.
 - Smaller relative volume steps with `volume up N` and `volume down N`.

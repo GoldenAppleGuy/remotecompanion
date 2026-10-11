@@ -10,6 +10,7 @@
 #import "RCNotificationTriggerViewController.h"
 #import "RCWiFiTriggerViewController.h"
 #import "RCBluetoothTriggerViewController.h"
+#import "RCAudioOutputTriggerViewController.h"
 #import "RCNFCTriggerViewController.h"
 #import "RCDevicePickerViewController.h"
 #import "RCKMMacroPickerViewController.h"
@@ -299,6 +300,7 @@ static id g_actionClipboard = nil;
                           [_triggerKey hasPrefix:@"notify_"] ||
                           [_triggerKey hasPrefix:@"wifi_"] ||
                           [_triggerKey hasPrefix:@"bt_"] ||
+                          [_triggerKey hasPrefix:@"output_"] ||
                           [_triggerKey hasPrefix:@"app_launch_"];
     
     if (isConfigurable) {
@@ -422,6 +424,8 @@ static id g_actionClipboard = nil;
         vc = [[RCWiFiTriggerViewController alloc] initWithTriggerKey:_triggerKey];
     } else if ([_triggerKey hasPrefix:@"bt_"]) {
         vc = [[RCBluetoothTriggerViewController alloc] initWithTriggerKey:_triggerKey];
+    } else if ([_triggerKey hasPrefix:@"output_"]) {
+        vc = [[RCAudioOutputTriggerViewController alloc] initWithTriggerKey:_triggerKey];
     } else if ([_triggerKey hasPrefix:@"app_launch_"]) {
         RCAppPickerViewController *appVC = [[RCAppPickerViewController alloc] init];
         appVC.onAppSelected = ^(NSString *appName, NSString *bundleId) {
