@@ -589,7 +589,8 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
 }
 
 - (BOOL)isTriggerEnabled:(NSString *)triggerKey {
-    return [[self triggerDict:triggerKey][@"enabled"] boolValue];
+    id trigger = _config[@"triggers"][triggerKey];
+    return [trigger isKindOfClass:[NSDictionary class]] && [trigger[@"enabled"] boolValue];
 }
 
 - (void)setTriggerEnabled:(BOOL)enabled forTrigger:(NSString *)triggerKey {
@@ -627,7 +628,10 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
 }
 
 - (NSArray *)actionsForTrigger:(NSString *)triggerKey {
-    return [self triggerDict:triggerKey][@"actions"] ?: @[];
+    // Reading must not create the trigger: a screen still holding the key of a trigger that was
+    // renamed or removed brought it back as an empty, disabled one just by looking
+    id trigger = _config[@"triggers"][triggerKey];
+    return [trigger isKindOfClass:[NSDictionary class]] ? (trigger[@"actions"] ?: @[]) : @[];
 }
 
 - (void)setActions:(NSArray *)actions forTrigger:(NSString *)triggerKey {
@@ -1861,6 +1865,28 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
 - (NSString *)nameForKMMacroUid:(NSString *)uid {
     if (!uid.length) return nil;
     return _config[@"kmNamesByUuid"][uid];
+}
+
+
+- (NSString *)saveAppTriggerWithPrefix:(NSString *)prefix names:(NSArray<NSString *> *)names bundleIds:(NSArray<NSString *> *)bundleIds replacing:(NSString *)oldKey {
+    if (bundleIds.count == 0) return oldKey;
+    NSString *verb = [prefix isEqualToString:@"app_exit_"] ? @"Exit" : @"Launch";
+    NSString *newKey = [prefix stringByAppendingString:bundleIds.firstObject];
+    // The name says which apps: "Launch Safari, Notes" (a long one wraps in the lists)
+    NSMutableArray<NSString *> *shown = [NSMutableArray array];
+    for (NSUInteger i = 0; i < bundleIds.count; i++) [shown addObject:(i < names.count && names[i].length) ? names[i] : bundleIds[i]];
+    NSString *name = [NSString stringWithFormat:@"%@ %@", verb, [shown componentsJoinedByString:@", "]];
+
+    NSDictionary *previous = [self triggerDataForKey:(oldKey ?: newKey)];
+    NSMutableDictionary *data = [NSMutableDictionary dictionary];
+    data[@"name"] = name;
+    data[@"enabled"] = previous[@"enabled"] ?: @YES;
+    data[@"actions"] = previous[@"actions"] ?: @[];
+    if (bundleIds.count > 1) data[@"apps"] = bundleIds;
+
+    [self updateTrigger:newKey withData:data];
+    if (oldKey && ![oldKey isEqualToString:newKey]) [self removeTrigger:oldKey];
+    return newKey;
 }
 
 @end

@@ -1905,6 +1905,7 @@
     </div>
     <div class="dialog-btns">
       <button onclick="closeAppLaunchDialog()">Cancel</button>
+      <button id="app-picker-done" class="primary" style="display:none" onclick="finishAppPicker()">Done</button>
     </div>
   </div>
 </div>
@@ -3531,12 +3532,18 @@ function promptAppEdit(key) {
   const data = config.triggers[key];
   if (!data) return;
   const bid = key.replace(/^app_(launch|exit)_/, '');
-  showDialog('Edit App Trigger', `Bundle ID: ${bid}\n\nDisplay Name:`, data.name, 'Save', val => {
-    if (!val) return;
-    data.name = val;
-    saveConfig(); renderAll();
-    openActionsPanel(key);
-  });
+  const kind = key.startsWith('app_exit_') ? 'exit' : 'launch';
+  showSheet('Edit App Trigger', [
+    { label: 'Apps', action: () => promptAppLaunchPicker(null, kind, (data.apps && data.apps.length) ? data.apps : [bid], key) },
+    { label: 'Name', action: () => {
+      showDialog('Edit App Trigger', 'Display Name:', data.name, 'Save', val => {
+        if (!val) return;
+        data.name = val;
+        saveConfig(); renderAll();
+        openActionsPanel(key);
+      });
+    } },
+  ]);
 }
 
 function closeActionsPanel() {
@@ -6071,10 +6078,22 @@ function handleImportFile(input) {
 
 // ── App Launch Trigger Setup ──────────────────────────────────────────────────
 let appPickerKind = 'launch';
-async function promptAppLaunchPicker(callback, kind) {
+// Creating or editing a trigger ticks one or more apps; an action that needs a single app
+// (a callback) still picks one
+let appPickerMulti = false;
+let appPickerChosen = [];        // bundle ids, in the order ticked
+let appPickerReplacingKey = null;
+async function promptAppLaunchPicker(callback, kind, preselected, replacingKey) {
   appPickerKind = kind === 'exit' ? 'exit' : 'launch';
-  document.getElementById('app-launch-dialog-title').textContent = appPickerKind === 'exit' ? 'New App Exit Trigger' : 'New App Launch Trigger';
-  document.getElementById('app-launch-dialog-msg').textContent = appPickerKind === 'exit' ? 'Fires when an app is switched away from.' : 'Fires when an app is opened on the device.';
+  appPickerMulti = !callback;
+  appPickerChosen = (preselected || []).slice();
+  appPickerReplacingKey = replacingKey || null;
+  document.getElementById('app-launch-dialog-title').textContent = appPickerKind === 'exit' ? 'App Exit Trigger' : 'App Launch Trigger';
+  document.getElementById('app-launch-dialog-msg').textContent = appPickerMulti
+    ? (appPickerKind === 'exit' ? 'Fires when any selected app is switched away from.' : 'Fires when any selected app is opened.')
+    : (appPickerKind === 'exit' ? 'Fires when an app is switched away from.' : 'Fires when an app is opened on the device.');
+  document.getElementById('app-picker-done').style.display = appPickerMulti ? '' : 'none';
+  document.getElementById('app-picker-done').disabled = appPickerChosen.length === 0;
   const listEl = document.getElementById('app-picker-list');
   const loadingEl = document.getElementById('app-picker-loading');
   document.getElementById('app-picker-search').value = '';
@@ -6123,11 +6142,30 @@ function renderAppPickerItems(apps) {
         <div class="app-picker-name">${escHtml(app.name)}</div>
         <div class="app-picker-bid">${escHtml(app.bundleId)}</div>
       </div>
-      <i class="f7-icons" style="font-size:16px;color:#3a3a3c">chevron_right</i>
+      <i class="f7-icons app-picker-mark" style="font-size:16px;color:#3a3a3c">chevron_right</i>
     `;
+    row.dataset.bundle = app.bundleId;
     row.onclick = () => selectAppFromPicker(app);
     listEl.appendChild(row);
   });
+  markChosenApps();
+}
+
+// Ticked apps show a check mark instead of the arrow
+function markChosenApps() {
+  document.querySelectorAll('#app-picker-list .app-picker-row[data-bundle]').forEach(r => {
+    const mark = r.querySelector('.app-picker-mark');
+    if (!mark) return;
+    if (appPickerMulti) {
+      const on = appPickerChosen.includes(r.dataset.bundle);
+      mark.textContent = on ? 'checkmark_alt' : '';
+      mark.style.color = on ? '#0a84ff' : '#3a3a3c';
+    } else {
+      mark.textContent = 'chevron_right';
+      mark.style.color = '#3a3a3c';
+    }
+  });
+  document.getElementById('app-picker-done').disabled = appPickerMulti && appPickerChosen.length === 0;
 }
 
 function filterAppPickerList() {
@@ -6140,13 +6178,28 @@ function filterAppPickerList() {
 }
 
 function selectAppFromPicker(app) {
+  if (appPickerMulti) {
+    const i = appPickerChosen.indexOf(app.bundleId);
+    if (i >= 0) appPickerChosen.splice(i, 1); else appPickerChosen.push(app.bundleId);
+    markChosenApps();
+    return;
+  }
   closeAppLaunchDialog();
   if (dialogCallback) {
     dialogCallback(app.bundleId);
     dialogCallback = null;
     return;
   }
-  createAppLaunchTrigger(app.name, app.bundleId, appPickerKind);
+}
+
+// Done, with one or more apps ticked
+function finishAppPicker() {
+  if (!appPickerMulti || appPickerChosen.length === 0) return;
+  const ids = appPickerChosen.slice();
+  const names = ids.map(id => { const a = cachedApps.find(x => x.bundleId === id); return a ? a.name : id; });
+  const replacing = appPickerReplacingKey;
+  closeAppLaunchDialog();
+  saveAppTrigger(appPickerKind, names, ids, replacing);
 }
 
 function closeAppLaunchDialog() {
@@ -6154,13 +6207,24 @@ function closeAppLaunchDialog() {
   dialogCallback = null;
 }
 
-function createAppLaunchTrigger(name, bundleId, kind) {
+// Saves an App Launch / App Exit trigger for these apps. Its key is the first app's; two or
+// more apps are kept in an "apps" list. The actions of the trigger it replaces, or of one that
+// already exists for the first app, are kept.
+function saveAppTrigger(kind, names, ids, replacingKey) {
   const exit = kind === 'exit';
-  const key = `${exit ? 'app_exit_' : 'app_launch_'}${bundleId}`;
-  if (!config.triggers[key]) {
-    config.triggers[key] = { enabled: true, actions: [], name: `${exit ? 'Exit' : 'Launch'}: ${name}` };
-    saveConfig();
-  }
+  const prefix = exit ? 'app_exit_' : 'app_launch_';
+  const key = prefix + ids[0];
+  const previous = config.triggers[replacingKey || key] || {};
+  const data = {
+    enabled: previous.enabled !== undefined ? previous.enabled : true,
+    actions: previous.actions || [],
+    // The name says which apps: "Launch: Safari, Notes"
+    name: `${exit ? 'Exit' : 'Launch'}: ${names.join(', ')}`
+  };
+  if (ids.length > 1) data.apps = ids;
+  config.triggers[key] = data;
+  if (replacingKey && replacingKey !== key) delete config.triggers[replacingKey];
+  saveConfig();
   renderAll();
   openActionsPanel(key);
 }
