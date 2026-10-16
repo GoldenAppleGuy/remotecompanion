@@ -1541,6 +1541,18 @@ static void send_notification(NSString *title, NSString *message, BOOL urgent) {
 static NSDictionary *g_triggerConfig = nil;
 static NSString *g_resolvedConfigPath = nil;
 
+// Button timings, from the config (Settings > Button Timing), in seconds. Read each time, so a
+// change applies at once.
+static NSTimeInterval RC_ConfigTiming(NSString *key, double fallback, double min, double max) {
+    id value = g_triggerConfig[key];
+    double seconds = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : fallback;
+    return MIN(MAX(seconds, min), max);
+}
+static NSTimeInterval RC_PowerClickWindow(void) { return RC_ConfigTiming(@"powerClickWindow", 0.4, 0.25, 0.8); }
+static NSTimeInterval RC_HomeClickWindow(void)  { return RC_ConfigTiming(@"homeClickWindow", 0.35, 0.25, 0.8); }
+static NSTimeInterval RC_VolumeHoldTime(void)   { return RC_ConfigTiming(@"volumeHoldTime", 0.35, 0.2, 0.8); }
+static NSTimeInterval RC_PowerHoldTime(void)    { return RC_ConfigTiming(@"powerHoldTime", 0.5, 0.3, 0.75); }
+
 // Find config file - check shared path first, then search app containers
 static NSString *find_config_path() {
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -10583,8 +10595,9 @@ static volatile BOOL g_volPressedDuringPower = NO;
 static NSTimeInterval RC_VolHoldDelay(BOOL up) {
     BOOL held = up ? g_volUpHeldOnHIDBus : g_volDownHeldOnHIDBus;
     NSTimeInterval downAt = up ? g_volUpDownOnHIDTime : g_volDownDownOnHIDTime;
-    if (!held || downAt <= 0) return 0.35;
-    return MAX(0.0, 0.35 - ([[NSDate date] timeIntervalSince1970] - downAt));
+    NSTimeInterval hold = RC_VolumeHoldTime();
+    if (!held || downAt <= 0) return hold;
+    return MAX(0.0, hold - ([[NSDate date] timeIntervalSince1970] - downAt));
 }
 
 // The buttons overlapped just now - a Both Press, not an Up-then-Down / Down-then-Up sequence.
@@ -10602,7 +10615,25 @@ static NSTimer *g_pendingVolUpSeqTimer = nil;
 static NSTimer *g_pendingVolDownSeqTimer = nil;
 static BOOL g_volSeqJustFired = NO;
 
+// Volume Up then Down (and Down then Up) without holding the first press back. A tap that no hold
+// trigger needs goes to native at once; for the sequence window after its release, the other
+// button completes the sequence. That press then goes to native too, so the two cancel and the
+// volume ends where it began. (At the top or bottom of the volume, where the first press changed
+// nothing, the second still steps it once.)
+static NSTimeInterval g_volUpSeqArmedUntil = 0, g_volDownSeqArmedUntil = 0;
+static BOOL g_volUpSkipArm = NO, g_volDownSkipArm = NO;   // the press completed a sequence: it doesn't start another
+
+// How long after a tap the other button still completes a sequence: the "volumeSequenceWindow"
+// setting, in seconds (default 0.38)
+static NSTimeInterval RC_VolSequenceWindow(void) {
+    id value = g_triggerConfig[@"volumeSequenceWindow"];
+    double window = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : 0.38;
+    return MIN(MAX(window, 0.15), 0.8);
+}
+
 static void cancel_pending_volume_sequences() {
+    g_volUpSeqArmedUntil = 0;
+    g_volDownSeqArmedUntil = 0;
     if (g_pendingVolUpSeqTimer) {
         [g_pendingVolUpSeqTimer invalidate];
         g_pendingVolUpSeqTimer = nil;
@@ -11259,6 +11290,22 @@ static BOOL g_isSwappingVolume = NO;
         }
     }
 
+    // Down then Up, the Down tap having gone to native already (see g_volDownSeqArmedUntil)
+    if (g_volDownSeqArmedUntil > now) {
+        g_volDownSeqArmedUntil = 0;
+        if (RC_TriggerIsActionable(@"volume_down_then_up") && !g_volDownIsDown && !RC_VolPressesOverlapped()) {
+            SRLog(@"Volume Down then Up sequence triggered! (Down had gone to native; this Up cancels it)");
+            g_volUpSeqArmedUntil = 0;
+            g_volUpSkipArm = YES;
+            trigger_haptic();
+            RCExecuteTrigger(@"volume_down_then_up");
+            g_volUpLastPassedThrough = YES;
+            g_volUpNativeSessionActive = YES;
+            %orig;
+            return;
+        }
+    }
+
     // 3. If user is rapidly tapping Vol Up again, cancel pending Vol Up replay timer and replay immediately
     if (g_pendingVolUpSeqTimer) {
         [g_pendingVolUpSeqTimer invalidate];
@@ -11269,11 +11316,11 @@ static BOOL g_isSwappingVolume = NO;
         g_volIsReplaying = NO;
     }
 
-    // Only a hold or sequence trigger needs this press held back (to tell a tap
-    // from a hold). Otherwise hand it to native straight away, so taps and holds
-    // behave exactly like stock - replaying it after a 0.35s wait delayed the ramp
+    // Only a hold trigger needs this press held back (to tell a tap from a hold); a sequence
+    // is watched for after the tap instead (see g_volUpSeqArmedUntil). Otherwise hand it to
+    // native straight away, so taps and holds behave exactly like stock - replaying it after a 0.35s wait delayed the ramp
     // and made the volume jerk. Volume Both Press is still detected below.
-    BOOL passthrough = !RC_TriggerIsActionable(@"volume_up_hold") && !RC_TriggerIsActionable(@"volume_up_then_down");
+    BOOL passthrough = !RC_TriggerIsActionable(@"volume_up_hold");
 
     // 4. Check for simultaneous Volume Up + Volume Down dual press
     BOOL isDualPress = g_volDownIsDown || (g_lastVolDownPressTime > 0 && (now - g_lastVolDownPressTime) < 0.20);
@@ -11389,6 +11436,12 @@ static BOOL g_isSwappingVolume = NO;
         g_volUpNativeSessionActive = NO;
         SRLog(@"[Vol] Up release of a native press - forwarding to native");
         g_volUpIsDown = NO;
+        // A tap that went to native: Down within the window completes Up then Down
+        NSTimeInterval releasedAt = [[NSDate date] timeIntervalSince1970];
+        if (!g_volUpSkipArm && !g_volComboTriggered && !g_volDownIsDown && releasedAt - g_lastVolUpPressTime < RC_VolumeHoldTime() && RC_TriggerIsActionable(@"volume_up_then_down")) {
+            g_volUpSeqArmedUntil = releasedAt + RC_VolSequenceWindow();
+        }
+        g_volUpSkipArm = NO;
         if (g_volComboTriggered && !g_volDownIsDown) g_volComboTriggered = NO;
         g_volIsReplaying = YES;
         %orig;
@@ -11435,7 +11488,7 @@ static BOOL g_isSwappingVolume = NO;
 
             if (seqUpDownEnabled) {
                 if (g_pendingVolUpSeqTimer) [g_pendingVolUpSeqTimer invalidate];
-                g_pendingVolUpSeqTimer = [NSTimer scheduledTimerWithTimeInterval:0.38 repeats:NO block:^(NSTimer *timer) {
+                g_pendingVolUpSeqTimer = [NSTimer scheduledTimerWithTimeInterval:RC_VolSequenceWindow() repeats:NO block:^(NSTimer *timer) {
                     g_pendingVolUpSeqTimer = nil;
                     g_volIsReplaying = YES;
                     [self volumeIncreasePressDownWithModifiers:0];
@@ -11528,6 +11581,22 @@ static BOOL g_isSwappingVolume = NO;
         }
     }
 
+    // Up then Down, the Up tap having gone to native already (see g_volUpSeqArmedUntil)
+    if (g_volUpSeqArmedUntil > now) {
+        g_volUpSeqArmedUntil = 0;
+        if (RC_TriggerIsActionable(@"volume_up_then_down") && !g_volUpIsDown && !RC_VolPressesOverlapped()) {
+            SRLog(@"Volume Up then Down sequence triggered! (Up had gone to native; this Down cancels it)");
+            g_volDownSeqArmedUntil = 0;
+            g_volDownSkipArm = YES;
+            trigger_haptic();
+            RCExecuteTrigger(@"volume_up_then_down");
+            g_volDownLastPassedThrough = YES;
+            g_volDownNativeSessionActive = YES;
+            %orig;
+            return;
+        }
+    }
+
     // 3. If user is rapidly tapping Vol Down again, cancel pending Vol Down replay timer and replay immediately
     if (g_pendingVolDownSeqTimer) {
         [g_pendingVolDownSeqTimer invalidate];
@@ -11539,7 +11608,7 @@ static BOOL g_isSwappingVolume = NO;
     }
 
     // See the symmetric comment in volumeIncreasePressDownWithModifiers:.
-    BOOL passthrough = !RC_TriggerIsActionable(@"volume_down_hold") && !RC_TriggerIsActionable(@"volume_down_then_up");
+    BOOL passthrough = !RC_TriggerIsActionable(@"volume_down_hold");
 
     // 4. Check for simultaneous Volume Up + Volume Down dual press
     BOOL isDualPress = g_volUpIsDown || (g_lastVolUpPressTime > 0 && (now - g_lastVolUpPressTime) < 0.20);
@@ -11640,6 +11709,12 @@ static BOOL g_isSwappingVolume = NO;
         g_volDownNativeSessionActive = NO;
         SRLog(@"[Vol] Down release of a native press - forwarding to native");
         g_volDownIsDown = NO;
+        // A tap that went to native: Up within the window completes Down then Up
+        NSTimeInterval releasedAt = [[NSDate date] timeIntervalSince1970];
+        if (!g_volDownSkipArm && !g_volComboTriggered && !g_volUpIsDown && releasedAt - g_lastVolDownPressTime < RC_VolumeHoldTime() && RC_TriggerIsActionable(@"volume_down_then_up")) {
+            g_volDownSeqArmedUntil = releasedAt + RC_VolSequenceWindow();
+        }
+        g_volDownSkipArm = NO;
         if (g_volComboTriggered && !g_volUpIsDown) g_volComboTriggered = NO;
         g_volIsReplaying = YES;
         %orig;
@@ -11686,7 +11761,7 @@ static BOOL g_isSwappingVolume = NO;
 
             if (seqDownUpEnabled) {
                 if (g_pendingVolDownSeqTimer) [g_pendingVolDownSeqTimer invalidate];
-                g_pendingVolDownSeqTimer = [NSTimer scheduledTimerWithTimeInterval:0.38 repeats:NO block:^(NSTimer *timer) {
+                g_pendingVolDownSeqTimer = [NSTimer scheduledTimerWithTimeInterval:RC_VolSequenceWindow() repeats:NO block:^(NSTimer *timer) {
                     g_pendingVolDownSeqTimer = nil;
                     g_volIsReplaying = YES;
                     [self volumeDecreasePressDownWithModifiers:0];
@@ -11787,8 +11862,9 @@ static void RC_CheckAndFire() {
     }
     
     // 4. Determines Timeout
-    NSTimeInterval timeout = 0.35; 
-    if (quadEnabled) timeout = 0.55; 
+    // The window is Settings > Home Clicks (0.35 s by default); a bound Quadruple Click adds 0.2 s
+    NSTimeInterval timeout = RC_HomeClickWindow();
+    if (quadEnabled) timeout += 0.2;
     
     // 5. Schedule Timer
     g_homeClickTimer = [NSTimer scheduledTimerWithTimeInterval:timeout repeats:NO block:^(NSTimer *timer) {
@@ -11831,6 +11907,7 @@ static void RC_ProcessPowerClick() {
     });
 }
 
+
 // Power Button Multi-Click Logic
 static void RC_CheckAndFirePower() {
     // 1. Reset timer
@@ -11859,9 +11936,11 @@ static void RC_CheckAndFirePower() {
     // 4. Timeout. The window only has to outlast the gap to the next click, and nothing
     // waits on a third click unless a Triple or Quad is bound: with just Double-Tap bound the
     // first press waits 0.3 s, and the second one ends the sequence at once.
-    NSTimeInterval timeout = 0.4; 
+    // The window is Settings > Power Clicks (0.4 s by default); with only Double-Tap bound the
+    // first press waits three quarters of it (0.3 s by default)
+    NSTimeInterval timeout = RC_PowerClickWindow();
     if (!RC_HigherPowerMultiClickArmed()) {
-        timeout = (g_powerClickCount >= 2) ? 0.02 : 0.3;
+        timeout = (g_powerClickCount >= 2) ? 0.02 : timeout * 0.75;
     }
     
     // 5. Schedule Timer
@@ -12515,7 +12594,7 @@ static void setup_background_hid_listener() {
 
     if (longPressEnabled) {
         if (g_lockButtonTimer == nil && !g_lockButtonTriggered) {
-            g_lockButtonTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:NO block:^(NSTimer *timer) {
+            g_lockButtonTimer = [NSTimer scheduledTimerWithTimeInterval:RC_PowerHoldTime() repeats:NO block:^(NSTimer *timer) {
                 g_lockButtonTimer = nil;
                 if (!g_powerIsDown) {
                     SRLog(@"Power Long Press ignored because button is not down");
