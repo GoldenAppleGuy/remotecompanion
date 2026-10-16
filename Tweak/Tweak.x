@@ -10771,6 +10771,9 @@ static BOOL g_powerDownAwaitingUp = NO;       // armed by a real power press-dow
 static BOOL g_powerDeferActive = NO;          // latched at DOWN, honoured at UP
 static __weak id g_powerActionsInstance = nil; // cached SBLockHardwareButtonActions
 static BOOL g_walletDoublePressDeferred = NO; // latched when native Wallet double-press is held back
+static BOOL g_powerWakePass = NO;             // press 1 made on a sleeping screen with a multi-click trigger bound: it wakes
+                                               // the phone as usual and counts as the first click, so a double press from sleep works
+static BOOL g_powerSequenceWoke = NO;         // the running click sequence began with such a wake: its first press is not replayed
 
 // Mirrors RCExecuteTrigger's own "will this actually do anything" check -
 // a trigger toggled on with zero actions assigned fires as a silent no-op
@@ -11818,6 +11821,8 @@ static void RC_CheckAndFirePower() {
         // below starts a clean sequence.
         int count = g_powerClickCount;
         g_powerClickCount = 0;
+        BOOL sequenceWoke = g_powerSequenceWoke;
+        g_powerSequenceWoke = NO;
         SRLog(@"POWER SEQUENCE ENDED. Final count: %d", count);
 
         NSString *triggerKey = nil;
@@ -11859,7 +11864,11 @@ static void RC_CheckAndFirePower() {
         // was just replayed instead - that already gave the system a native
         // outcome for these clicks, and replaying a click on top would spuriously
         // lock/wake the screen right after Wallet opens.
-        if (!claimed && !walletReplayed && count >= 1 && g_powerHookAlive) {
+        // The press that woke a sleeping phone (see g_powerWakePass) has done its work; only the
+        // presses after it were held back
+        int replayCount = count - (sequenceWoke ? 1 : 0);
+        if (!claimed && !walletReplayed && replayCount >= 1 && g_powerHookAlive) {
+            int count = replayCount;
             // Replay only as many presses as iOS treated as presses of their own
             // (see g_nativeSinglePressCount). Its gestures normally fire before this
             // timer; if some haven't yet, wait a moment for them - the singlePress:
@@ -12481,6 +12490,17 @@ static void setup_background_hid_listener() {
     // replays it, so a plain single press still locks/wakes as normal.
     // Latch the decision at DOWN so a config reload mid-press can't leave the
     // UP half disagreeing with the DOWN half.
+    g_powerWakePass = NO;
+    if (!(g_powerClickTimer != nil && g_powerClickCount > 0) && !RC_ScreenIsOn() && RC_PowerMultiClickEnabled()) {
+        // Wakes the phone as usual, and counts as the first click
+        g_powerWakePass = YES;
+        g_powerSequenceWoke = YES;
+        g_powerDeferActive = NO;
+        SRLog(@"Power DOWN on a sleeping screen - it wakes the phone and counts as click 1");
+        %orig;
+        return;
+    }
+
     g_powerDeferActive = RC_ShouldDeferPowerPress();
     if (g_powerDeferActive) {
         SRLog(@"Deferring system power DOWN (multi-click armed)");
@@ -12574,6 +12594,16 @@ static void setup_background_hid_listener() {
         // lock/sleep on top of the combo action that had already fired.
         g_powerVolComboTriggered = NO;
         g_powerSuppressPostUp = YES;
+        return;
+    }
+
+    // The press that woke the phone (see g_powerWakePass): counted, and let through
+    if (g_powerWakePass) {
+        g_powerWakePass = NO;
+        g_powerClickCount++;
+        SRLog(@"⚡️ POWER CLICK (hook). Count: %d - it woke the phone", g_powerClickCount);
+        RC_CheckAndFirePower();
+        %orig;
         return;
     }
 
