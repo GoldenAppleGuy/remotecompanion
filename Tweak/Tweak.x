@@ -461,7 +461,13 @@ extern void BKSTerminateApplicationForReasonAndReportWithDescription(NSString *b
 - (void)volumeDecreasePressUp;
 @end
 
+// SpringBoard's own routine for putting the phone to sleep (iOS 14 and later)
+@interface SBSleepWakeHardwareButtonInteraction : NSObject
+- (void)_performSleep;
+@end
+
 @interface SBLockHardwareButtonActions : NSObject
+- (id)sleepWakeButtonInteraction;
 - (void)performInitialButtonDownActions;
 - (void)performButtonUpPreActions;
 - (void)performButtonUpPostActions;
@@ -1874,8 +1880,23 @@ static BOOL RC_IsForegroundAppExcluded() {
             }
         };
 
-        if ([NSThread isMainThread]) getBlock();
-        else dispatch_sync(dispatch_get_main_queue(), getBlock);
+        if ([NSThread isMainThread]) {
+            getBlock();
+        } else {
+            // Callers off the main thread include the HID listener, which must not stall
+            // behind a busy SpringBoard (right after a wake or a lock it can be 500 ms): its
+            // button events would arrive late and run together. Ask, wait briefly, and
+            // otherwise go with the last answer.
+            dispatch_semaphore_t answered = dispatch_semaphore_create(0);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                getBlock();
+                dispatch_semaphore_signal(answered);
+            });
+            if (dispatch_semaphore_wait(answered, dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_MSEC)) != 0) {
+                lastCheck = now - 0.4; // ask again soon
+                return cachedResult;
+            }
+        }
 
         BOOL result = NO;
         if (frontBundleID) {
@@ -11459,7 +11480,8 @@ static BOOL g_volHookAlive = NO;              // set once the Volume Down-With-M
                                                // thread hook and the background HID thread can't both
                                                // fire the same combo trigger for one physical press
 static BOOL g_powerSuppressPostUp = NO;       // carry suppression from Pre into Post
-static BOOL g_powerDownAwaitingUp = NO;       // armed by a real power press-down, consumed by the
+static int g_powerDownsAwaitingUp = 0;        // press-downs armed by a real power press-down (a count: SpringBoard can
+                                               // run its button hooks for several quick presses at once), each consumed by the
                                                // first performButtonUpPreActions after it. The system
                                                // also re-invokes that UP method on its own with no
                                                // matching press; with no press left to pair with, that
@@ -11631,6 +11653,32 @@ static void RC_ReplayPowerTimeline(NSArray<NSNumber *> *downs, NSArray<NSNumber 
 // One press, for an action (Lock Device, "button power") or a deferred single press
 static void RC_ReplayPowerPress(void) {
     RC_ReplayPowerTimeline(@[@0], @[@0.05]);
+}
+
+static void RC_ReplayPowerPresses(NSUInteger count);
+
+// Gives back the presses of a click sequence that no trigger claimed. One press puts the phone
+// to sleep through SpringBoard's own sleep routine: replaying it as a press sent it through
+// iOS's double-press wait a second time (over a second in all on an iPhone 15). If the screen
+// is still on shortly after, or the routine isn't there, the press is replayed instead - the
+// phone must not be left lit.
+static void RC_GivePressesBack(NSUInteger presses) {
+    id actions = g_powerActionsInstance;
+    id interaction = [actions respondsToSelector:@selector(sleepWakeButtonInteraction)] ? [actions sleepWakeButtonInteraction] : nil;
+    if (presses == 1 && [interaction respondsToSelector:@selector(_performSleep)] && RC_ScreenIsOn()) {
+        g_replayChainGeneration++;
+        NSUInteger generation = g_replayChainGeneration;
+        SRLog(@"[Power] Putting the phone to sleep directly");
+        [(SBSleepWakeHardwareButtonInteraction *)interaction _performSleep];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            // A newer press, or a sleep that did happen, needs nothing
+            if (generation != g_replayChainGeneration || g_powerIsDown || !RC_ScreenIsOn()) return;
+            SRLog(@"[Power] The direct sleep did not turn the screen off - replaying the press");
+            RC_ReplayPowerPresses(1);
+        });
+        return;
+    }
+    RC_ReplayPowerPresses(presses);
 }
 
 // Hands `count` deferred presses back to the system with the timing the hardware gave them -
@@ -12568,8 +12616,13 @@ static void RC_CheckAndFirePower() {
         return;
     }
     
-    // 4. Timeout
+    // 4. Timeout. The window only has to outlast the gap to the next click, and nothing
+    // waits on a third click unless a Triple or Quad is bound: with just Double-Tap bound the
+    // first press waits 0.3 s, and the second one ends the sequence at once.
     NSTimeInterval timeout = 0.4; 
+    if (!RC_HigherPowerMultiClickArmed()) {
+        timeout = (g_powerClickCount >= 2) ? 0.02 : 0.3;
+    }
     
     // 5. Schedule Timer
     g_powerClickTimer = [NSTimer scheduledTimerWithTimeInterval:timeout repeats:NO block:^(NSTimer *timer) {
@@ -12657,12 +12710,12 @@ static void RC_CheckAndFirePower() {
                     }
                     SRLog(@"[Power] iOS treated %lu of %d presses as presses of their own - replaying those", (unsigned long)presses, count);
                     RCTKEvent(@"power.replaying", @{ @"presses": @(presses), @"count": @(count) });
-                    RC_ReplayPowerPresses(presses);
+                    RC_GivePressesBack(presses);
                 });
                 return;
             }
             RCTKEvent(@"power.replaying", @{ @"presses": @(count), @"count": @(count) });
-            RC_ReplayPowerPresses(count);
+            RC_GivePressesBack(count);
         }
     }];
 }
@@ -12905,7 +12958,8 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
             if (down) {
                 // Outside the !g_powerIsDown guard: the main thread can set
                 // g_powerIsDown first, which would skip this whole block.
-                g_powerDownAwaitingUp = YES;
+                if (g_hidPowerPresses <= 1) g_powerDownsAwaitingUp = 0; // first press of a sequence
+                if (g_powerDownsAwaitingUp < 4) g_powerDownsAwaitingUp++;
                 // Backup for presses where iOS skips performInitialButtonDownActions
                 // (e.g. the 2nd of two quick presses) - see g_screenshotGestureRecognizer.
                 dispatch_async(dispatch_get_main_queue(), ^{
@@ -13187,7 +13241,7 @@ static void setup_background_hid_listener() {
 
     g_powerSuppressPostUp = NO; // fresh press
     g_powerIsDown = YES;
-    g_powerDownAwaitingUp = YES;
+    if (g_powerDownsAwaitingUp < 1) g_powerDownsAwaitingUp = 1; // the HID listener normally armed it already
     g_replaySinglePressesAllowed = 0; // a new real press; any unclaimed replay slot is stale
     g_powerPressIsCombo = NO;
     g_powerReleasedWithVolumeHeld = NO;
@@ -13357,7 +13411,7 @@ static void setup_background_hid_listener() {
     // The system re-invokes this method a second time on its own, with no
     // matching press - confirmed in the field: a real triple-click produced a
     // 4th, phantom call here. Only the first UP after a real DOWN is real (see
-    // g_powerDownAwaitingUp). This must run before ANY suppression-reason
+    // g_powerDownsAwaitingUp). This must run before ANY suppression-reason
     // branch below, not just the deferred-click one: each of those returns
     // early once it decides why to suppress the REAL call, and if any of them
     // left this flag unconsumed, the phantom call - which hits none of those
@@ -13366,8 +13420,8 @@ static void setup_background_hid_listener() {
     // (confirmed in the field via the combo branch). Suppress the paired
     // postActions call too via the same one-shot flag it already checks, so
     // neither half of the phantom event reaches the system.
-    BOOL isRealPress = g_powerDownAwaitingUp;
-    g_powerDownAwaitingUp = NO;
+    BOOL isRealPress = g_powerDownsAwaitingUp > 0;
+    if (g_powerDownsAwaitingUp > 0) g_powerDownsAwaitingUp--;
     if (!isRealPress) {
         SRLog(@"Ignoring synthetic performButtonUpPreActions call (no matching press)");
         g_powerSuppressPostUp = YES;
@@ -13670,7 +13724,7 @@ static BOOL RC_HomeSinglePressIsPartOfHeldClicks(void) {
             NSUInteger presses = g_replayAwaitingSequenceCount;
             g_replayAwaitingSequenceCount = 0;
             SRLog(@"Suppressing native singlePress: for a deferred press - replaying the sequence's %lu press(es) now", (unsigned long)presses);
-            RC_ReplayPowerPresses(presses);
+            RC_GivePressesBack(presses);
             return;
         }
         SRLog(@"Suppressing native singlePress: for a deferred press - its replay supplies its own");
