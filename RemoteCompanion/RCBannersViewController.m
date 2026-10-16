@@ -18,8 +18,8 @@
 @interface RCBannersViewController ()
 @property (nonatomic, strong) NSArray<NSString *> *sectionTitles;
 @property (nonatomic, strong) NSArray<NSArray<NSDictionary *> *> *sections;      // the catalog, by category
-// What the table shows: the checked actions first ("Enabled"), then the rest by category. Built
-// when the screen opens; ticking an action here leaves it where it is until the screen opens again.
+// What the table shows: the checked actions first ("Enabled"), then the rest by category. Ticking
+// or unticking an action moves it between "Enabled" and its category.
 @property (nonatomic, strong) NSArray<NSString *> *displayTitles;
 @property (nonatomic, strong) NSArray<NSArray<NSDictionary *> *> *displaySections;
 @property (nonatomic, strong) NSMutableSet<NSString *> *selectedIds;
@@ -262,10 +262,49 @@ static BOOL RCBannerIsPrefixPattern(NSString *p) {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     NSString *command = self.displaySections[indexPath.section][indexPath.row][@"command"];
     NSMutableSet *set = [RCOwnBannerIds() containsObject:command] ? self.optedOutIds : self.selectedIds;
+    NSArray *oldTitles = self.displayTitles;
+    NSArray *oldSections = self.displaySections;
     if ([set containsObject:command]) [set removeObject:command];
     else [set addObject:command];
     [self saveSelection];
-    [tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
+    [self buildDisplaySections];
+    [self animateFromTitles:oldTitles sections:oldSections];
+}
+
+// Moves the table from the sections it shows to the current ones: the action that was ticked or
+// unticked leaves one section and arrives in the other, and a section that has become empty (or
+// has just got its first action, like "Enabled") goes or comes with it
+- (void)animateFromTitles:(NSArray<NSString *> *)oldTitles sections:(NSArray<NSArray<NSDictionary *> *> *)oldSections {
+    NSArray<NSString *> *newTitles = self.displayTitles;
+    NSArray<NSArray<NSDictionary *> *> *newSections = self.displaySections;
+    NSMutableIndexSet *deleteSections = [NSMutableIndexSet indexSet], *insertSections = [NSMutableIndexSet indexSet];
+    NSMutableArray<NSIndexPath *> *deleteRows = [NSMutableArray array], *insertRows = [NSMutableArray array];
+
+    for (NSUInteger i = 0; i < oldTitles.count; i++) {
+        NSUInteger inNew = [newTitles indexOfObject:oldTitles[i]];
+        if (inNew == NSNotFound) { [deleteSections addIndex:i]; continue; }
+        NSSet *kept = [NSSet setWithArray:[newSections[inNew] valueForKey:@"command"]];
+        for (NSUInteger row = 0; row < oldSections[i].count; row++) {
+            if (![kept containsObject:oldSections[i][row][@"command"]]) [deleteRows addObject:[NSIndexPath indexPathForRow:(NSInteger)row inSection:(NSInteger)i]];
+        }
+    }
+    for (NSUInteger i = 0; i < newTitles.count; i++) {
+        NSUInteger inOld = [oldTitles indexOfObject:newTitles[i]];
+        if (inOld == NSNotFound) { [insertSections addIndex:i]; continue; }
+        NSSet *had = [NSSet setWithArray:[oldSections[inOld] valueForKey:@"command"]];
+        for (NSUInteger row = 0; row < newSections[i].count; row++) {
+            if (![had containsObject:newSections[i][row][@"command"]]) [insertRows addObject:[NSIndexPath indexPathForRow:(NSInteger)row inSection:(NSInteger)i]];
+        }
+    }
+    [self.tableView performBatchUpdates:^{
+        [self.tableView deleteSections:deleteSections withRowAnimation:UITableViewRowAnimationFade];
+        [self.tableView insertSections:insertSections withRowAnimation:UITableViewRowAnimationFade];
+        [self.tableView deleteRowsAtIndexPaths:deleteRows withRowAnimation:UITableViewRowAnimationFade];
+        [self.tableView insertRowsAtIndexPaths:insertRows withRowAnimation:UITableViewRowAnimationFade];
+    } completion:^(BOOL finished) {
+        // The first section carries the explanation, so its footer changes when the sections do
+        [self.tableView reloadData];
+    }];
 }
 
 @end
