@@ -11814,8 +11814,13 @@ static void RC_CheckAndFirePower() {
         return;
     }
     
-    // 4. Timeout
+    // 4. Timeout. The window only has to outlast the gap to the next click, and nothing
+    // waits on a third click unless a Triple or Quad is bound: with just Double-Tap bound the
+    // first press waits 0.3 s, and the second one ends the sequence at once.
     NSTimeInterval timeout = 0.4; 
+    if (!RC_HigherPowerMultiClickArmed()) {
+        timeout = (g_powerClickCount >= 2) ? 0.02 : 0.3;
+    }
     
     // 5. Schedule Timer
     g_powerClickTimer = [NSTimer scheduledTimerWithTimeInterval:timeout repeats:NO block:^(NSTimer *timer) {
