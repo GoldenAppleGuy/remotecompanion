@@ -10618,6 +10618,10 @@ static BOOL g_lockButtonTriggered = NO;
 static NSTimer *g_systemPowerOffTimer = nil; // New for dual-stage
 static BOOL g_forceSystemLongPress = NO;     // New for dual-stage
 static BOOL g_powerIsDown = NO;
+// When the user last pressed Power or touched the screen: after a direct sleep, either one means
+// the phone was woken on purpose, so the "screen is still on" check must not put it back to sleep
+static CFAbsoluteTime g_lastPowerDownAt = 0;
+static CFAbsoluteTime g_lastTouchAt = 0;
 static BOOL g_powerVolComboTriggered = NO;
 // Set alongside g_powerVolComboTriggered at every site that fires a power+
 // volume combo. SBLockHardwareButton's own singlePress: gesture recognizer
@@ -10957,10 +10961,16 @@ static void RC_GivePressesBack(NSUInteger presses) {
         g_replayChainGeneration++;
         NSUInteger generation = g_replayChainGeneration;
         SRLog(@"[Power] Putting the phone to sleep directly");
+        CFAbsoluteTime sleptAt = CFAbsoluteTimeGetCurrent();
         [(SBSleepWakeHardwareButtonInteraction *)interaction _performSleep];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             // A newer press, or a sleep that did happen, needs nothing
             if (generation != g_replayChainGeneration || g_powerIsDown || !RC_ScreenIsOn()) return;
+            // Woken again since (a tap, or Power): the screen is on because the user turned it on
+            if (g_lastTouchAt > sleptAt || g_lastPowerDownAt > sleptAt) {
+                SRLog(@"[Power] The phone was woken again right after the sleep - leaving it on");
+                return;
+            }
             SRLog(@"[Power] The direct sleep did not turn the screen off - replaying the press");
             RC_ReplayPowerPresses(1);
         });
@@ -11941,6 +11951,8 @@ static void RC_CheckAndFirePower() {
 }
 
 static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientRef service, IOHIDEventRef event) {
+    // Before the exclusion check: a touch is a touch whatever app is in front
+    if (IOHIDEventGetType(event) == 11) g_lastTouchAt = CFAbsoluteTimeGetCurrent(); // kIOHIDEventTypeDigitizer
     if (RC_IsForegroundAppExcluded()) return;
     int type = IOHIDEventGetType(event);
     
@@ -12180,6 +12192,7 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
                 });
                 if (!g_powerIsDown) {
                     g_powerIsDown = YES;
+                    g_lastPowerDownAt = CFAbsoluteTimeGetCurrent();
                     lastPowerDownTime = now;
                     SRLog(@"[HID] ⚡️ Power DOWN");
                     
