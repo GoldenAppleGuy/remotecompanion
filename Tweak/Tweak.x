@@ -457,7 +457,13 @@ extern void BKSTerminateApplicationForReasonAndReportWithDescription(NSString *b
 - (void)volumeDecreasePressUp;
 @end
 
+// SpringBoard's own routine for putting the phone to sleep (iOS 14 and later)
+@interface SBSleepWakeHardwareButtonInteraction : NSObject
+- (void)_performSleep;
+@end
+
 @interface SBLockHardwareButtonActions : NSObject
+- (id)sleepWakeButtonInteraction;
 - (void)performInitialButtonDownActions;
 - (void)performButtonUpPreActions;
 - (void)performButtonUpPostActions;
@@ -10937,6 +10943,32 @@ static void RC_ReplayPowerPress(void) {
     RC_ReplayPowerTimeline(@[@0], @[@0.05]);
 }
 
+static void RC_ReplayPowerPresses(NSUInteger count);
+
+// Gives back the presses of a click sequence that no trigger claimed. One press puts the phone
+// to sleep through SpringBoard's own sleep routine: replaying it as a press sent it through
+// iOS's double-press wait a second time (over a second in all on an iPhone 15). If the screen
+// is still on shortly after, or the routine isn't there, the press is replayed instead - the
+// phone must not be left lit.
+static void RC_GivePressesBack(NSUInteger presses) {
+    id actions = g_powerActionsInstance;
+    id interaction = [actions respondsToSelector:@selector(sleepWakeButtonInteraction)] ? [actions sleepWakeButtonInteraction] : nil;
+    if (presses == 1 && [interaction respondsToSelector:@selector(_performSleep)] && RC_ScreenIsOn()) {
+        g_replayChainGeneration++;
+        NSUInteger generation = g_replayChainGeneration;
+        SRLog(@"[Power] Putting the phone to sleep directly");
+        [(SBSleepWakeHardwareButtonInteraction *)interaction _performSleep];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            // A newer press, or a sleep that did happen, needs nothing
+            if (generation != g_replayChainGeneration || g_powerIsDown || !RC_ScreenIsOn()) return;
+            SRLog(@"[Power] The direct sleep did not turn the screen off - replaying the press");
+            RC_ReplayPowerPresses(1);
+        });
+        return;
+    }
+    RC_ReplayPowerPresses(presses);
+}
+
 // Hands `count` deferred presses back to the system with the timing the hardware gave them -
 // how long each was held (up to 0.12 s), and the gaps between them - so iOS sees what it would have seen
 // and applies its own rules. They depend on that timing: a press that lands while the screen
@@ -11899,11 +11931,11 @@ static void RC_CheckAndFirePower() {
                         return;
                     }
                     SRLog(@"[Power] iOS treated %lu of %d presses as presses of their own - replaying those", (unsigned long)presses, count);
-                    RC_ReplayPowerPresses(presses);
+                    RC_GivePressesBack(presses);
                 });
                 return;
             }
-            RC_ReplayPowerPresses(count);
+            RC_GivePressesBack(count);
         }
     }];
 }
@@ -12815,7 +12847,7 @@ static void setup_background_hid_listener() {
             NSUInteger presses = g_replayAwaitingSequenceCount;
             g_replayAwaitingSequenceCount = 0;
             SRLog(@"Suppressing native singlePress: for a deferred press - replaying the sequence's %lu press(es) now", (unsigned long)presses);
-            RC_ReplayPowerPresses(presses);
+            RC_GivePressesBack(presses);
             return;
         }
         SRLog(@"Suppressing native singlePress: for a deferred press - its replay supplies its own");
