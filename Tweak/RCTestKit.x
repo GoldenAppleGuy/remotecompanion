@@ -1851,9 +1851,12 @@ static NSDictionary *RCTKRunSuite(NSString *name, NSDictionary *params) {
         return @{ @"error": [NSString stringWithFormat:@"unknown suite '%@'", name ?: @""], @"suites": RCTKSuites()[@"suites"] };
     }
     NSMutableDictionary *run;
+    // The probe reads UI state on the main thread, and the main thread records journal events
+    // under this lock, so the lock can't be held across it (a lock-state notification on the
+    // main thread against the probe deadlocked SpringBoard until the watchdog killed it)
+    NSDictionary *probe = RCTKProbe();
     @synchronized (RCTKLock()) {
         if ([g_tkRun[@"status"] isEqualToString:@"running"]) return @{ @"error": @"a run is in progress", @"id": g_tkRun[@"id"] };
-        NSDictionary *probe = RCTKProbe();
         NSDateFormatter *formatter = [NSDateFormatter new];
         formatter.dateFormat = @"yyyyMMdd-HHmmss";
         run = [@{
