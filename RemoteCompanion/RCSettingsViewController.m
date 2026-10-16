@@ -15,6 +15,15 @@
 @property (nonatomic, strong) UISwitch *webUISwitch;
 @end
 
+// Sections of the Settings table, in order
+typedef NS_ENUM(NSInteger, RCSettingsSection) {
+    RCSettingsSectionGeneral,
+    RCSettingsSectionTiming,
+    RCSettingsSectionIntegrations,
+    RCSettingsSectionBackup,
+    RCSettingsSectionDiagnostics,
+};
+
 @implementation RCSettingsViewController
 
 - (void)viewDidLoad {
@@ -142,15 +151,48 @@
 
 #pragma mark - Table View Data Source
 
+// The Button Timing rows, in order: the click and sequence windows, then the hold times. Home
+// Clicks only on a phone with a Home button.
+- (NSArray<NSDictionary *> *)timingRows {
+    RCConfigManager *cm = [RCConfigManager sharedManager];
+    NSMutableArray *rows = [NSMutableArray array];
+    [rows addObject:@{ @"title": @"Volume Sequence",
+        @"message": @"How soon after a volume press the other volume button completes an Up then Down or Down then Up sequence.",
+        @"values": @[@0.20, @0.25, @0.30, @0.38, @0.45, @0.55, @0.65], @"default": @0.38,
+        @"get": ^double{ return cm.volumeSequenceWindow; }, @"set": ^(double v) { cm.volumeSequenceWindow = v; } }];
+    [rows addObject:@{ @"title": @"Power Clicks",
+        @"message": @"How long a Power press waits for the next click before the clicks count as a double, triple or quadruple click.",
+        @"values": @[@0.25, @0.30, @0.35, @0.40, @0.50, @0.60, @0.70], @"default": @0.40,
+        @"get": ^double{ return cm.powerClickWindow; }, @"set": ^(double v) { cm.powerClickWindow = v; } }];
+    // A phone with a Home button has no safe area at the bottom of the screen
+    UIWindow *window = self.view.window ?: [UIApplication sharedApplication].windows.firstObject;
+    if (window && window.safeAreaInsets.bottom <= 0) {
+        [rows addObject:@{ @"title": @"Home Clicks",
+            @"message": @"How long a Home press waits for the next click before the clicks count as a double, triple or quadruple click.",
+            @"values": @[@0.25, @0.30, @0.35, @0.45, @0.55, @0.65], @"default": @0.35,
+            @"get": ^double{ return cm.homeClickWindow; }, @"set": ^(double v) { cm.homeClickWindow = v; } }];
+    }
+    [rows addObject:@{ @"title": @"Volume Hold",
+        @"message": @"How long a Volume Up or Down press is held before it counts as a hold rather than a tap. Taps wait this long when a hold trigger is set.",
+        @"values": @[@0.20, @0.25, @0.30, @0.35, @0.45, @0.55, @0.70], @"default": @0.35,
+        @"get": ^double{ return cm.volumeHoldTime; }, @"set": ^(double v) { cm.volumeHoldTime = v; } }];
+    [rows addObject:@{ @"title": @"Power Hold",
+        @"message": @"How long a Power press is held before it counts as a long press.",
+        @"values": @[@0.30, @0.40, @0.50, @0.60, @0.75], @"default": @0.50,
+        @"get": ^double{ return cm.powerHoldTime; }, @"set": ^(double v) { cm.powerHoldTime = v; } }];
+    return rows;
+}
+
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 4;
+    return 5;
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
     NSString *title;
-    if (section == 0) title = @"General";
-    else if (section == 1) title = @"Integrations";
-    else if (section == 3) title = @"Diagnostics";
+    if (section == RCSettingsSectionGeneral) title = @"General";
+    else if (section == RCSettingsSectionTiming) title = @"Button Timing";
+    else if (section == RCSettingsSectionIntegrations) title = @"Integrations";
+    else if (section == RCSettingsSectionDiagnostics) title = @"Diagnostics";
     else title = @"Backup";
     
     UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 40)];
@@ -167,29 +209,32 @@
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0) {
+    if (section == RCSettingsSectionGeneral) {
         return nil;
-    } else if (section == 1) {
+    } else if (section == RCSettingsSectionTiming) {
+        return @"How long a press waits for the next one before it counts. A shorter time responds sooner and needs quicker presses.";
+    } else if (section == RCSettingsSectionIntegrations) {
         return @"Configure connections to external services and automations.";
-    } else if (section == 2) {
+    } else if (section == RCSettingsSectionBackup) {
         return @"Export your configuration to share or backup. Import to restore.";
-    } else if (section == 3) {
+    } else if (section == RCSettingsSectionDiagnostics) {
         return @"Tests RemoteCompanion on this device and shares the results.";
     }
     return nil;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 5; // Master + NFC + WebUI + Banners + Logging
-    if (section == 1) return 1; // Integrations Submenu Row
-    if (section == 3) return 1; // Test Kit
+    if (section == RCSettingsSectionGeneral) return 5; // Master + NFC + WebUI + Banners + Logging
+    if (section == RCSettingsSectionTiming) return (NSInteger)[self timingRows].count;
+    if (section == RCSettingsSectionIntegrations) return 1; // Integrations Submenu Row
+    if (section == RCSettingsSectionDiagnostics) return 1;  // Test Kit
     return 2; // Export, Import
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     RCConfigManager *cm = [RCConfigManager sharedManager];
     
-    BOOL isValueRow = (indexPath.section == 0 && indexPath.row >= 3); // Banners, Logging
+    BOOL isValueRow = (indexPath.section == RCSettingsSectionGeneral && indexPath.row >= 3) || indexPath.section == RCSettingsSectionTiming; // Banners, Logging, the timings
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:isValueRow ? UITableViewCellStyleValue1 : UITableViewCellStyleDefault reuseIdentifier:nil];
     cell.backgroundColor = [cm tweakColorForKey:@"blockBackground" defaultVal:0.12];
     
@@ -206,7 +251,7 @@
         cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
     }
     
-    if (indexPath.section == 0) {
+    if (indexPath.section == RCSettingsSectionGeneral) {
         if (indexPath.row == 0) {
             cell.textLabel.text = @"Enable All Triggers";
             _masterSwitch = [[UISwitch alloc] init];
@@ -238,7 +283,13 @@
             cell.detailTextLabel.text = [cm.logLevel capitalizedString];
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         }
-    } else if (indexPath.section == 1) {
+    } else if (indexPath.section == RCSettingsSectionTiming) {
+        NSDictionary *row = [self timingRows][indexPath.row];
+        double (^get)(void) = row[@"get"];
+        cell.textLabel.text = row[@"title"];
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%.2f s", get()];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    } else if (indexPath.section == RCSettingsSectionIntegrations) {
         cell.textLabel.text = @"Integrations";
         UIImage *puzzleImg = [UIImage systemImageNamed:@"puzzlepiece.extension.fill"];
         if (!puzzleImg) {
@@ -247,7 +298,7 @@
         cell.imageView.image = puzzleImg;
         cell.imageView.tintColor = [UIColor systemIndigoColor];
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    } else if (indexPath.section == 3) {
+    } else if (indexPath.section == RCSettingsSectionDiagnostics) {
         cell.textLabel.text = @"Test Kit";
         cell.imageView.image = [UIImage systemImageNamed:@"checklist"] ?: [UIImage systemImageNamed:@"list.bullet.rectangle"]; // checklist: iOS 15+
         cell.imageView.tintColor = [UIColor systemTealColor];
@@ -272,16 +323,22 @@
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
 
-    if (indexPath.section == 0 && indexPath.row == 3) {
+    if (indexPath.section == RCSettingsSectionGeneral && indexPath.row == 3) {
         [self.navigationController pushViewController:[[RCBannersViewController alloc] init] animated:YES];
-    } else if (indexPath.section == 0 && indexPath.row == 4) {
+    } else if (indexPath.section == RCSettingsSectionGeneral && indexPath.row == 4) {
         [self chooseLogLevelFromView:[tableView cellForRowAtIndexPath:indexPath]];
-    } else if (indexPath.section == 1) {
+    } else if (indexPath.section == RCSettingsSectionTiming) {
+        NSDictionary *row = [self timingRows][indexPath.row];
+        double (^get)(void) = row[@"get"];
+        void (^set)(double) = row[@"set"];
+        [self chooseTimingNamed:row[@"title"] message:row[@"message"] values:row[@"values"] defaultValue:[row[@"default"] doubleValue]
+                        current:get() from:[tableView cellForRowAtIndexPath:indexPath] apply:set];
+    } else if (indexPath.section == RCSettingsSectionIntegrations) {
         RCIntegrationsViewController *integrationsVC = [[RCIntegrationsViewController alloc] init];
         [self.navigationController pushViewController:integrationsVC animated:YES];
-    } else if (indexPath.section == 3) {
+    } else if (indexPath.section == RCSettingsSectionDiagnostics) {
         [self.navigationController pushViewController:[[RCTestKitViewController alloc] init] animated:YES];
-    } else if (indexPath.section == 2) {
+    } else if (indexPath.section == RCSettingsSectionBackup) {
         if (indexPath.row == 0) {
             [self exportConfig];
         } else {
@@ -302,6 +359,25 @@
 
 - (void)webUIToggleChanged:(UISwitch *)sender {
     [RCConfigManager sharedManager].webUIEnabled = sender.on;
+}
+
+// A list of times in seconds, the current one ticked, for one of the Button Timing rows
+- (void)chooseTimingNamed:(NSString *)name message:(NSString *)message values:(NSArray<NSNumber *> *)values defaultValue:(double)defaultValue
+                  current:(double)current from:(UIView *)sourceView apply:(void (^)(double value))apply {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:name message:message preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSNumber *value in values) {
+        BOOL isCurrent = fabs(value.doubleValue - current) < 0.005;
+        BOOL isDefault = fabs(value.doubleValue - defaultValue) < 0.005;
+        NSString *title = [NSString stringWithFormat:@"%.2f s%@%@", value.doubleValue, isDefault ? @" (Default)" : @"", isCurrent ? @" \u2713" : @""];
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            apply(value.doubleValue);
+            [self.tableView reloadData];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = sourceView;
+    sheet.popoverPresentationController.sourceRect = sourceView.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 - (void)chooseLogLevelFromView:(UIView *)sourceView {
