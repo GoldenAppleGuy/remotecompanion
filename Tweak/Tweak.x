@@ -3556,7 +3556,10 @@ static void rc_check_audio_output(BOOL silent) {
                 if (!route.picked) continue;
                 if (!picked || (picked.isDeviceRoute && !route.isDeviceRoute)) picked = route;
             }
+            // The phone's own speaker is called "iPhone" or "Speaker" depending on the device and
+            // the moment; one name keeps a trigger matching
             NSString *current = picked.routeName.length ? picked.routeName : nil;
+            if (picked && [picked.routeUID isEqualToString:@"Speaker"]) current = @"iPhone";
             NSString *previous = g_lastAudioOutput;
             if ((current == previous) || [current isEqualToString:previous]) return;
             g_lastAudioOutput = [current copy];
@@ -4100,27 +4103,44 @@ static void register_system_event_observers() {
 
     // Audio output: the audio route changing
     {
-        Class controllerClass = objc_getClass("AVSystemController");
-        id controller = controllerClass ? [controllerClass sharedAVSystemController] : nil;
-        NSArray *routeNotifications = @[ @"AVSystemController_ActiveAudioRouteDidChangeNotification",
-                                         @"AVSystemController_PickableRoutesDidChangeNotification" ];
-        if ([controller respondsToSelector:@selector(setAttribute:forKey:error:)]) {
-            [controller setAttribute:routeNotifications forKey:@"AVSystemController_SubscribeToNotificationsAttribute" error:nil];
-        }
-        for (NSString *name in routeNotifications) {
-            [nc addObserverForName:name object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
-                rc_schedule_audio_output_check();
-            }];
-        }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             rc_check_audio_output(YES);
         });
 
-        // The route notifications don't reach SpringBoard (and the route attributes read nil
-        // there), so the picked route is also read every 3 s; it only fires on a change
-        [NSTimer scheduledTimerWithTimeInterval:3.0 repeats:YES block:^(NSTimer *timer) {
-            rc_check_audio_output(NO);
-        }];
+        // The output devices changing: MediaRemote and AVFoundation post these in-process, but
+        // only while an output context exists, so the shared ones are created and kept
+        id systemContext = [objc_getClass("AVOutputContext") respondsToSelector:@selector(sharedSystemAudioContext)] ? [objc_getClass("AVOutputContext") sharedSystemAudioContext] : nil;
+        Class mrContextClass = objc_getClass("MRAVOutputContext");
+        id mrContext = [mrContextClass respondsToSelector:NSSelectorFromString(@"sharedAudioPresentationContext")] ? ((id (*)(id, SEL))objc_msgSend)(mrContextClass, NSSelectorFromString(@"sharedAudioPresentationContext")) : nil;
+        static NSArray *retainedContexts = nil;
+        retainedContexts = [NSArray arrayWithObjects:systemContext ?: [NSNull null], mrContext ?: [NSNull null], nil];
+
+        NSMutableSet *contextNotifications = [NSMutableSet setWithArray:@[
+            @"AVOutputContextOutputDevicesDidChangeNotification",
+            @"AVOutputContextOutputDeviceDidChangeNotification",
+            @"kMRAVOutputContextOutputDevicesDidChangeNotification",
+            @"kMRAVOutputContextOutputDeviceDidChangeNotification",
+            @"kMRAVOutputContextDidChangeNotification",
+            @"kMRAVEndpointDidChangeOutputDeviceNotification",
+            @"kMRMediaRemoteRouteStatusDidChangeNotification",
+            @"kMRMediaRemotePickableRoutesDidChangeNotification" ]];
+        for (NSString *symbol in @[ @"MRAVOutputContextOutputDevicesDidChangeNotification",
+                                    @"MRAVOutputContextOutputDeviceDidChangeNotification",
+                                    @"MRAVOutputContextDidChangeNotification",
+                                    @"MRAVEndpointDidChangeOutputDeviceNotification",
+                                    @"MRAVOutputContextDidAddOutputDeviceNotification",
+                                    @"MRAVOutputContextDidRemoveOutputDeviceNotification" ]) {
+            CFStringRef *value = (CFStringRef *)dlsym(RTLD_DEFAULT, symbol.UTF8String);
+            if (value && *value) [contextNotifications addObject:(__bridge NSString *)*value];
+        }
+        SRLog(@"[AudioOutput] Observing %lu output context notifications (contexts: %@)", (unsigned long)contextNotifications.count, retainedContexts);
+        for (NSString *name in contextNotifications) {
+            [nc addObserverForName:name object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
+                SRLog(@"[AudioOutput] Event: %@", note.name);
+                rc_schedule_audio_output_check();
+            }];
+        }
+
     }
 
     SRLog(@"[RCTweak] WiFi, Bluetooth, Media and Audio output observers registered.");

@@ -73,6 +73,7 @@ static NSArray *RCOutputNamesFromListOutput(NSString *output) {
     for (NSString *line in [output componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
         NSString *clean = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         if ([clean containsString:@" # "]) clean = [clean componentsSeparatedByString:@" # "].lastObject;
+        if ([clean isEqualToString:@"Speaker"]) clean = @"iPhone"; // how the phone's own output is named in a trigger
         if (clean.length > 0 && ![clean hasPrefix:@"*"]) [names addObject:clean];
     }
     return names;
