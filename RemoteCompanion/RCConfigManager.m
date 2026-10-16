@@ -586,7 +586,8 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
 }
 
 - (BOOL)isTriggerEnabled:(NSString *)triggerKey {
-    return [[self triggerDict:triggerKey][@"enabled"] boolValue];
+    id trigger = _config[@"triggers"][triggerKey];
+    return [trigger isKindOfClass:[NSDictionary class]] && [trigger[@"enabled"] boolValue];
 }
 
 - (void)setTriggerEnabled:(BOOL)enabled forTrigger:(NSString *)triggerKey {
@@ -624,7 +625,10 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
 }
 
 - (NSArray *)actionsForTrigger:(NSString *)triggerKey {
-    return [self triggerDict:triggerKey][@"actions"] ?: @[];
+    // Reading must not create the trigger: a screen still holding the key of a trigger that was
+    // renamed or removed brought it back as an empty, disabled one just by looking
+    id trigger = _config[@"triggers"][triggerKey];
+    return [trigger isKindOfClass:[NSDictionary class]] ? (trigger[@"actions"] ?: @[]) : @[];
 }
 
 - (void)setActions:(NSArray *)actions forTrigger:(NSString *)triggerKey {

@@ -432,7 +432,14 @@ static id g_actionClipboard = nil;
         appVC.selectedBundleIds = ([apps isKindOfClass:[NSArray class]] && apps.count) ? apps : @[ [_triggerKey substringFromIndex:prefix.length] ];
         appVC.onAppsSelected = ^(NSArray<NSString *> *names, NSArray<NSString *> *bundleIds) {
             // The key follows the first app; the actions go with the trigger
-            [[RCConfigManager sharedManager] saveAppTriggerWithPrefix:prefix names:names bundleIds:bundleIds replacing:self.triggerKey];
+            RCConfigManager *config = [RCConfigManager sharedManager];
+            NSString *newKey = [config saveAppTriggerWithPrefix:prefix names:names bundleIds:bundleIds replacing:self.triggerKey];
+            // This screen moves to the new key with the trigger. Left on the old one, its next
+            // reload of the actions would read it and bring it back as an empty, disabled trigger.
+            self.triggerKey = newKey;
+            self.title = [config displayNameForTrigger:newKey];
+            self.actions = [[config actionsForTrigger:newKey] mutableCopy];
+            [self.tableView reloadData];
             [self.navigationController popViewControllerAnimated:YES];
         };
         vc = appVC;
