@@ -425,32 +425,14 @@ static id g_actionClipboard = nil;
         vc = [[RCBluetoothTriggerViewController alloc] initWithTriggerKey:_triggerKey];
     } else if ([_triggerKey hasPrefix:@"app_launch_"] || [_triggerKey hasPrefix:@"app_exit_"]) {
         BOOL isExit = [_triggerKey hasPrefix:@"app_exit_"];
+        NSString *prefix = isExit ? @"app_exit_" : @"app_launch_";
         RCAppPickerViewController *appVC = [[RCAppPickerViewController alloc] init];
-        appVC.onAppSelected = ^(NSString *appName, NSString *bundleId) {
-            NSString *newKey = [NSString stringWithFormat:@"%@%@", isExit ? @"app_exit_" : @"app_launch_", bundleId];
-            NSString *friendlyName = [NSString stringWithFormat:@"%@ %@", isExit ? @"Exit" : @"Launch", appName];
-            
-            RCConfigManager *config = [RCConfigManager sharedManager];
-            if (![self.triggerKey isEqualToString:newKey]) {
-                // Migrate
-                NSDictionary *oldData = [config triggerDataForKey:self.triggerKey];
-                NSArray *actions = oldData[@"actions"] ?: @[];
-                
-                NSDictionary *newData = @{
-                    @"name": friendlyName,
-                    @"enabled": @YES,
-                    @"actions": actions
-                };
-                [config updateTrigger:newKey withData:newData];
-                [config removeTrigger:self.triggerKey];
-                
-                // Update our own key for the current view if needed, 
-                // but we are popping/reloading so it's better to just go back.
-            } else {
-                NSMutableDictionary *mutableData = [[config triggerDataForKey:newKey] mutableCopy];
-                mutableData[@"name"] = friendlyName;
-                [config updateTrigger:newKey withData:mutableData];
-            }
+        appVC.allowsMultipleApps = YES;
+        NSArray *apps = [[RCConfigManager sharedManager] triggerDataForKey:_triggerKey][@"apps"];
+        appVC.selectedBundleIds = ([apps isKindOfClass:[NSArray class]] && apps.count) ? apps : @[ [_triggerKey substringFromIndex:prefix.length] ];
+        appVC.onAppsSelected = ^(NSArray<NSString *> *names, NSArray<NSString *> *bundleIds) {
+            // The key follows the first app; the actions go with the trigger
+            [[RCConfigManager sharedManager] saveAppTriggerWithPrefix:prefix names:names bundleIds:bundleIds replacing:self.triggerKey];
             [self.navigationController popViewControllerAnimated:YES];
         };
         vc = appVC;

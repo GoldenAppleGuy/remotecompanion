@@ -413,21 +413,13 @@
         @{ @"title": @"Bluetooth Device", @"icon": @"dot.radiowaves.left.and.right", @"section": @"Nearby", @"handler": ^{ push([[RCBluetoothTriggerViewController alloc] init]); } },
         @{ @"title": @"App Launch", @"icon": @"square.grid.2x2", @"section": @"Apps", @"handler": ^{
             RCAppPickerViewController *vc = [[RCAppPickerViewController alloc] init];
+            vc.allowsMultipleApps = YES;
             vc.suppressAutoPop = YES; // We handle navigation ourselves
-            vc.onAppSelected = ^(NSString *appName, NSString *bundleId) {
+            vc.onAppsSelected = ^(NSArray<NSString *> *names, NSArray<NSString *> *bundleIds) {
                 __strong typeof(weakSelf) self = weakSelf;
                 if (!self) return;
-                NSString *triggerKey = [NSString stringWithFormat:@"app_launch_%@", bundleId];
-                NSString *friendlyName = [NSString stringWithFormat:@"Launch %@", appName];
-                
-                NSDictionary *triggerData = @{
-                    @"name": friendlyName,
-                    @"enabled": @YES,
-                    @"actions": @[]
-                };
-                
-                [[RCConfigManager sharedManager] updateTrigger:triggerKey withData:triggerData];
-                
+                NSString *triggerKey = [[RCConfigManager sharedManager] saveAppTriggerWithPrefix:@"app_launch_" names:names bundleIds:bundleIds replacing:nil];
+
                 // Push actionsVC, then let the app picker pop (leaving [TriggersVC, ActionsVC])
                 RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:triggerKey];
                 NSMutableArray *vcs = [self.navigationController.viewControllers mutableCopy];
@@ -439,21 +431,13 @@
         } },
         @{ @"title": @"App Exit", @"icon": @"square.grid.2x2", @"section": @"Apps", @"handler": ^{
             RCAppPickerViewController *vc = [[RCAppPickerViewController alloc] init];
+            vc.allowsMultipleApps = YES;
             vc.suppressAutoPop = YES; // We handle navigation ourselves
-            vc.onAppSelected = ^(NSString *appName, NSString *bundleId) {
+            vc.onAppsSelected = ^(NSArray<NSString *> *names, NSArray<NSString *> *bundleIds) {
                 __strong typeof(weakSelf) self = weakSelf;
                 if (!self) return;
-                NSString *triggerKey = [NSString stringWithFormat:@"app_exit_%@", bundleId];
-                NSString *friendlyName = [NSString stringWithFormat:@"Exit %@", appName];
-                
-                NSDictionary *triggerData = @{
-                    @"name": friendlyName,
-                    @"enabled": @YES,
-                    @"actions": @[]
-                };
-                
-                [[RCConfigManager sharedManager] updateTrigger:triggerKey withData:triggerData];
-                
+                NSString *triggerKey = [[RCConfigManager sharedManager] saveAppTriggerWithPrefix:@"app_exit_" names:names bundleIds:bundleIds replacing:nil];
+
                 // Push actionsVC, then let the app picker pop (leaving [TriggersVC, ActionsVC])
                 RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:triggerKey];
                 NSMutableArray *vcs = [self.navigationController.viewControllers mutableCopy];

@@ -13566,6 +13566,23 @@ static void update_edge_gestures() {
 %end
 
 
+// Fires the App Launch / App Exit triggers for an app: the one keyed on it, and any other whose
+// "apps" list holds it (a trigger can cover several apps; its key is the first one's).
+static void RC_FireAppTriggers(NSString *prefix, NSString *bundleId) {
+    load_trigger_config();
+    NSString *exactKey = [prefix stringByAppendingString:bundleId];
+    NSMutableArray<NSString *> *keys = [NSMutableArray arrayWithObject:exactKey];
+    NSDictionary *triggers = g_triggerConfig[@"triggers"];
+    if ([triggers isKindOfClass:[NSDictionary class]]) {
+        for (NSString *key in triggers) {
+            if (![key hasPrefix:prefix] || [key isEqualToString:exactKey]) continue;
+            NSArray *apps = [triggers[key] isKindOfClass:[NSDictionary class]] ? triggers[key][@"apps"] : nil;
+            if ([apps isKindOfClass:[NSArray class]] && [apps containsObject:bundleId]) [keys addObject:key];
+        }
+    }
+    for (NSString *key in keys) RCExecuteTrigger(key);
+}
+
 static NSTimeInterval s_last_camera_app_trigger = 0;
 
 static void rc_camera_launched_notification_callback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
@@ -13575,7 +13592,7 @@ static void rc_camera_launched_notification_callback(CFNotificationCenterRef cen
             s_last_camera_app_trigger = now;
             g_currentAppBundleId = @"com.apple.camera";
             SRLog(@"[AppLaunch] Camera App Launched event received (lockscreen or unlocked), triggering app_launch_com.apple.camera");
-            RCExecuteTrigger(@"app_launch_com.apple.camera");
+            RC_FireAppTriggers(@"app_launch_", @"com.apple.camera");
         }
     });
 }
@@ -13612,14 +13629,13 @@ static void rc_camera_launched_notification_callback(CFNotificationCenterRef cen
                 lastApp = effectiveBundleId;
                 if (exitedApp) {
                     SRLog(@"[AppExit] App left the foreground: %@", exitedApp);
-                    RCExecuteTrigger([NSString stringWithFormat:@"app_exit_%@", exitedApp]);
+                    RC_FireAppTriggers(@"app_exit_", exitedApp);
                 }
                 if ([effectiveBundleId isEqualToString:@"com.apple.camera"]) {
                     s_last_camera_app_trigger = [[NSDate date] timeIntervalSince1970];
                 }
                 SRLog(@"[AppLaunch] App became Active: %@", effectiveBundleId);
-                NSString *triggerKey = [NSString stringWithFormat:@"app_launch_%@", effectiveBundleId];
-                RCExecuteTrigger(triggerKey);
+                RC_FireAppTriggers(@"app_launch_", effectiveBundleId);
             }
         }
     });
