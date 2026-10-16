@@ -17,7 +17,11 @@
 // it to the config's "bannerOptOut", which the tweak checks before showing it.
 @interface RCBannersViewController ()
 @property (nonatomic, strong) NSArray<NSString *> *sectionTitles;
-@property (nonatomic, strong) NSArray<NSArray<NSDictionary *> *> *sections;
+@property (nonatomic, strong) NSArray<NSArray<NSDictionary *> *> *sections;      // the catalog, by category
+// What the table shows: the checked actions first ("Enabled"), then the rest by category. Built
+// when the screen opens; ticking an action here leaves it where it is until the screen opens again.
+@property (nonatomic, strong) NSArray<NSString *> *displayTitles;
+@property (nonatomic, strong) NSArray<NSArray<NSDictionary *> *> *displaySections;
 @property (nonatomic, strong) NSMutableSet<NSString *> *selectedIds;
 @property (nonatomic, strong) NSMutableSet<NSString *> *optedOutIds;
 @end
@@ -85,6 +89,29 @@ static NSArray<NSArray<NSDictionary *> *> *RCBannerCatalog(NSArray<NSString *> *
     // ANC Off and Transparency Mode were their own entries before Noise Control took all three modes
     if ([self.selectedIds containsObject:@"anc off"] || [self.selectedIds containsObject:@"anc transparency"]) [self.selectedIds addObject:@"anc on"];
     self.optedOutIds = [NSMutableSet setWithArray:cm.bannerOptOut];
+    [self buildDisplaySections];
+}
+
+// The checked actions in one section at the top, and each category without them (empty ones left out)
+- (void)buildDisplaySections {
+    NSMutableArray *enabled = [NSMutableArray array], *titles = [NSMutableArray array], *sections = [NSMutableArray array];
+    for (NSUInteger i = 0; i < self.sections.count; i++) {
+        NSMutableArray *rest = [NSMutableArray array];
+        for (NSDictionary *item in self.sections[i]) {
+            if ([self isChecked:item[@"command"]]) [enabled addObject:item];
+            else [rest addObject:item];
+        }
+        if (rest.count) {
+            [titles addObject:i < self.sectionTitles.count ? self.sectionTitles[i] : @""];
+            [sections addObject:rest];
+        }
+    }
+    if (enabled.count) {
+        [titles insertObject:@"Enabled" atIndex:0];
+        [sections insertObject:enabled atIndex:0];
+    }
+    self.displayTitles = titles;
+    self.displaySections = sections;
 }
 
 + (NSUInteger)checkedCount {
@@ -202,15 +229,15 @@ static BOOL RCBannerIsPrefixPattern(NSString *p) {
 #pragma mark - Table view
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return self.sections.count;
+    return self.displaySections.count;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return self.sections[section].count;
+    return self.displaySections[section].count;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return self.sectionTitles[section];
+    return self.displayTitles[section];
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
@@ -220,7 +247,7 @@ static BOOL RCBannerIsPrefixPattern(NSString *p) {
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     RCConfigManager *cm = [RCConfigManager sharedManager];
-    NSDictionary *item = self.sections[indexPath.section][indexPath.row];
+    NSDictionary *item = self.displaySections[indexPath.section][indexPath.row];
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
     cell.backgroundColor = [cm tweakColorForKey:@"blockBackground" defaultVal:0.12];
     cell.textLabel.text = item[@"name"];
@@ -233,7 +260,7 @@ static BOOL RCBannerIsPrefixPattern(NSString *p) {
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    NSString *command = self.sections[indexPath.section][indexPath.row][@"command"];
+    NSString *command = self.displaySections[indexPath.section][indexPath.row][@"command"];
     NSMutableSet *set = [RCOwnBannerIds() containsObject:command] ? self.optedOutIds : self.selectedIds;
     if ([set containsObject:command]) [set removeObject:command];
     else [set addObject:command];
