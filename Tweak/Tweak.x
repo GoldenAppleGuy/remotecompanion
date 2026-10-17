@@ -11394,6 +11394,7 @@ static BOOL g_powerIsDown = NO;
 // the phone was woken on purpose, so the "screen is still on" check must not put it back to sleep
 static CFAbsoluteTime g_lastPowerDownAt = 0;
 static CFAbsoluteTime g_lastTouchAt = 0;
+static CFAbsoluteTime g_lastHomeDownAt = 0;
 static BOOL g_powerVolComboTriggered = NO;
 // Set alongside g_powerVolComboTriggered at every site that fires a power+
 // volume combo. SBLockHardwareButton's own singlePress: gesture recognizer
@@ -11744,8 +11745,8 @@ static void RC_GivePressesBack(NSUInteger presses) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             // A newer press, or a sleep that did happen, needs nothing
             if (generation != g_replayChainGeneration || g_powerIsDown || !RC_ScreenIsOn()) return;
-            // Woken again since (a tap, or Power): the screen is on because the user turned it on
-            if (g_lastTouchAt > sleptAt || g_lastPowerDownAt > sleptAt) {
+            // Woken again since (a tap, Power or Home): the screen is on because the user turned it on
+            if (g_lastTouchAt > sleptAt || g_lastPowerDownAt > sleptAt || g_lastHomeDownAt > sleptAt) {
                 SRLog(@"[Power] The phone was woken again right after the sleep - leaving it on");
                 return;
             }
@@ -13010,6 +13011,7 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
             RCTKEvent(@"hid.home", @{ @"down": @((BOOL)(down != 0)) });
             NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
             g_homeHeldOnHID = !!down;
+            if (down) g_lastHomeDownAt = CFAbsoluteTimeGetCurrent();
             if (down && g_powerHeldOnHID) RC_NoteHomePowerChord();
             if (!down) RC_FinishHomePowerChord();
             
