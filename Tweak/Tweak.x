@@ -10776,6 +10776,7 @@ static BOOL g_powerWakeHeld = NO;             // a press made on a sleeping scre
 static BOOL g_powerWakePass = NO;             // press 1 made on a sleeping screen with a multi-click trigger bound: it wakes
                                                // the phone as usual and counts as the first click, so a double press from sleep works
 static BOOL g_powerSequenceWoke = NO;         // the running click sequence began with such a wake: its first press is not replayed
+static CFAbsoluteTime g_powerSequenceWokeAt = 0; // when that wake happened: an old one is stale
 
 // Mirrors RCExecuteTrigger's own "will this actually do anything" check -
 // a trigger toggled on with zero actions assigned fires as a silent no-op
@@ -12505,11 +12506,19 @@ static void setup_background_hid_listener() {
         return;
     }
 
+    // A wake with no press right after it leaves the flag set; a press made later (to put the phone
+    // to sleep) would be taken for the waking one and never replayed
+    if (g_powerSequenceWoke && !(g_powerClickTimer != nil && g_powerClickCount > 0) &&
+        CFAbsoluteTimeGetCurrent() - g_powerSequenceWokeAt > 0.5) {
+        g_powerSequenceWoke = NO;
+    }
+
     g_powerWakePass = NO;
     if (!(g_powerClickTimer != nil && g_powerClickCount > 0) && !RC_ScreenIsOn() && RC_PowerMultiClickEnabled()) {
         // Wakes the phone as usual, and counts as the first click
         g_powerWakePass = YES;
         g_powerSequenceWoke = YES;
+        g_powerSequenceWokeAt = CFAbsoluteTimeGetCurrent();
         g_powerDeferActive = NO;
         SRLog(@"Power DOWN on a sleeping screen - it wakes the phone and counts as click 1");
         %orig;
@@ -12626,6 +12635,7 @@ static void setup_background_hid_listener() {
         g_powerIsReplaying = NO;
         if (RC_PowerMultiClickEnabled()) {
             g_powerSequenceWoke = YES;
+            g_powerSequenceWokeAt = CFAbsoluteTimeGetCurrent();
             g_powerClickCount++;
             RC_CheckAndFirePower();
         }
