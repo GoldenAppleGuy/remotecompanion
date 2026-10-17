@@ -1,4 +1,5 @@
 #import "RCActionsViewController.h"
+#import "RCAddOnCatalog.h"
 #import "RCConfigManager.h"
 #import "RCActionPickerViewController.h"
 #import "RCShortcutPickerViewController.h"
@@ -17,7 +18,6 @@
 #import "RCFocusPickerViewController.h"
 #import "RCKMMacroPickerViewController.h"
 #import <notify.h>
-#import <objc/runtime.h>
 
 #define kSimulateNotificationPrefix "com.pizzaman.rc.simulate."
 
@@ -141,7 +141,11 @@ static id g_actionClipboard = nil;
     
     UIColor *accentColor = [UIColor systemBlueColor];
     
-    if ([lower hasPrefix:@"set-vol "]) {
+    NSString *addOnSummary = [RCAddOnCatalog summaryForCommand:cmd];
+    if (addOnSummary) {
+        baseText = [NSString stringWithFormat:@"%@ ", [RCAddOnCatalog nameForCommand:cmd]];
+        paramText = addOnSummary;
+    } else if ([lower hasPrefix:@"set-vol "]) {
         baseText = @"Set Volume ";
         paramText = [NSString stringWithFormat:@"%@%%", [cmd substringFromIndex:8]];
     } else if ([lower hasPrefix:@"ringer volume "]) {
@@ -372,7 +376,6 @@ static id g_actionClipboard = nil;
     
     // Load actions
     _actions = [[[RCConfigManager sharedManager] actionsForTrigger:_triggerKey] mutableCopy];
-    [self updateWrappedTitle];
     
     // Non-editing mode to allow swipe actions
     self.tableView.editing = NO;
@@ -389,52 +392,6 @@ static id g_actionClipboard = nil;
     // Long names wrap and the row grows with them, never below the usual 70
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 70;
-}
-
-// A long trigger name ("Launch Alaska, Amazon, Notes") is cut off in a large title, which can't wrap:
-// when it doesn't fit, the name is shown wrapped above the list instead, and the bar title is left empty.
-// Once the screen shows the name that way it keeps doing so until it is closed: the navigation bar
-// can't be switched back to a large title in place (it stayed at its small size), so a name that
-// becomes short just shows in the same header at the large-title size.
-- (void)updateWrappedTitle {
-    if ([_triggerKey hasPrefix:@"nfc_"]) return; // has its own tappable title
-    NSString *name = self.title ?: @"";
-    // Known before the screen is laid out for the first time, so the right title is there from the start
-    CGFloat width = self.tableView.bounds.size.width;
-    if (width <= 0) width = self.navigationController.view.bounds.size.width;
-    if (width <= 0) width = [UIScreen mainScreen].bounds.size.width;
-    CGFloat available = width - 40.0;
-    UIFont *largeFont = [UIFont systemFontOfSize:34 weight:UIFontWeightBold];
-    BOOL fits = ceil([name sizeWithAttributes:@{ NSFontAttributeName: largeFont }].width) <= available;
-    BOOL showingHeader = (self.tableView.tableHeaderView != nil);
-    if (fits && !showingHeader) return; // an ordinary large title
-
-    if (!showingHeader) {
-        self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
-        self.navigationItem.titleView = [[UIView alloc] init];
-    }
-    UILabel *label = [[UILabel alloc] init];
-    label.numberOfLines = 0;
-    label.lineBreakMode = NSLineBreakByWordWrapping;
-    label.font = fits ? largeFont : [UIFont systemFontOfSize:28 weight:UIFontWeightBold];
-    label.textColor = [UIColor labelColor];
-    label.text = name;
-    CGSize size = [label sizeThatFits:CGSizeMake(available, CGFLOAT_MAX)];
-    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, available + 40.0, ceil(size.height) + 24.0)];
-    label.frame = CGRectMake(20.0, 4.0, available, ceil(size.height));
-    label.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    [header addSubview:label];
-    self.tableView.tableHeaderView = header;
-}
-
-- (void)viewDidLayoutSubviews {
-    [super viewDidLayoutSubviews];
-    static const void *kWidthKey = &kWidthKey;
-    NSNumber *last = objc_getAssociatedObject(self, kWidthKey);
-    if (!last || fabs(last.doubleValue - self.tableView.bounds.size.width) > 0.5) {
-        objc_setAssociatedObject(self, kWidthKey, @(self.tableView.bounds.size.width), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [self updateWrappedTitle];
-    }
 }
 
 - (void)handleTweaksChanged:(NSNotification *)note {
@@ -492,23 +449,33 @@ static id g_actionClipboard = nil;
         vc = [[RCAudioOutputTriggerViewController alloc] initWithTriggerKey:_triggerKey];
     } else if ([_triggerKey hasPrefix:@"app_launch_"] || [_triggerKey hasPrefix:@"app_exit_"]) {
         BOOL isExit = [_triggerKey hasPrefix:@"app_exit_"];
-        NSString *prefix = isExit ? @"app_exit_" : @"app_launch_";
         RCAppPickerViewController *appVC = [[RCAppPickerViewController alloc] init];
-        appVC.allowsMultipleApps = YES;
-        NSArray *apps = [[RCConfigManager sharedManager] triggerDataForKey:_triggerKey][@"apps"];
-        appVC.selectedBundleIds = ([apps isKindOfClass:[NSArray class]] && apps.count) ? apps : @[ [_triggerKey substringFromIndex:prefix.length] ];
-        appVC.onAppsSelected = ^(NSArray<NSString *> *names, NSArray<NSString *> *bundleIds) {
-            // The key follows the first app; the actions go with the trigger
+        appVC.onAppSelected = ^(NSString *appName, NSString *bundleId) {
+            NSString *newKey = [NSString stringWithFormat:@"%@%@", isExit ? @"app_exit_" : @"app_launch_", bundleId];
+            NSString *friendlyName = [NSString stringWithFormat:@"%@ %@", isExit ? @"Exit" : @"Launch", appName];
+            
             RCConfigManager *config = [RCConfigManager sharedManager];
-            NSString *newKey = [config saveAppTriggerWithPrefix:prefix names:names bundleIds:bundleIds replacing:self.triggerKey];
-            // This screen moves to the new key with the trigger. Left on the old one, its next
-            // reload of the actions would read it and bring it back as an empty, disabled trigger.
-            self.triggerKey = newKey;
-            self.title = [config displayNameForTrigger:newKey];
-            self.actions = [[config actionsForTrigger:newKey] mutableCopy];
-            [self.tableView reloadData];
-            [self updateWrappedTitle];
-            // The picker closes itself once this returns (popping here too went back a screen too far)
+            if (![self.triggerKey isEqualToString:newKey]) {
+                // Migrate
+                NSDictionary *oldData = [config triggerDataForKey:self.triggerKey];
+                NSArray *actions = oldData[@"actions"] ?: @[];
+                
+                NSDictionary *newData = @{
+                    @"name": friendlyName,
+                    @"enabled": @YES,
+                    @"actions": actions
+                };
+                [config updateTrigger:newKey withData:newData];
+                [config removeTrigger:self.triggerKey];
+                
+                // Update our own key for the current view if needed, 
+                // but we are popping/reloading so it's better to just go back.
+            } else {
+                NSMutableDictionary *mutableData = [[config triggerDataForKey:newKey] mutableCopy];
+                mutableData[@"name"] = friendlyName;
+                [config updateTrigger:newKey withData:mutableData];
+            }
+            [self.navigationController popViewControllerAnimated:YES];
         };
         vc = appVC;
     } else if ([_triggerKey hasPrefix:@"nfc_"]) {
@@ -1085,7 +1052,7 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
 }
 
 - (NSArray<NSDictionary *> *)ifConditionDefinitions {
-    return RCAdaptVibrationConditions(@[
+    return RCAdaptVibrationConditions([@[
         @{
             @"key": @"time_between",
             @"title": @"Time of Day (Between)",
@@ -1376,7 +1343,31 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
                 @{ @"value": @"OFF", @"title": @"Off" }
             ]
         }
-    ]);
+    ] arrayByAddingObjectsFromArray:[self addOnConditionDefinitions]]);
+}
+
+// Add-on conditions (ADDONS.md), one section per add-on
+- (NSArray<NSDictionary *> *)addOnConditionDefinitions {
+    NSMutableArray *definitions = [NSMutableArray array];
+    for (NSDictionary *condition in [RCAddOnCatalog conditions]) {
+        NSArray *parts = [condition[@"name"] componentsSeparatedByString:@": "];
+        NSMutableDictionary *definition = [@{
+            @"key": condition[@"key"],
+            @"title": parts.count > 1 ? parts[1] : condition[@"name"],
+            @"icon": condition[@"icon"] ?: @"puzzlepiece.extension",
+            @"image": condition[@"image"] ?: [NSNull null],
+            @"section": parts.count > 1 ? parts[0] : @"Add-ons",
+        } mutableCopy];
+        if ([condition[@"type"] isEqualToString:@"number"]) {
+            definition[@"input"] = @"threshold";
+        } else {
+            NSMutableArray *values = [NSMutableArray array];
+            for (NSString *label in condition[@"choices"]) [values addObject:@{ @"value": label.uppercaseString, @"title": label }];
+            definition[@"values"] = values;
+        }
+        [definitions addObject:definition];
+    }
+    return definitions;
 }
 
 - (void)configurePopoverSourceForAlert:(UIAlertController *)alert {
@@ -1992,7 +1983,14 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     NSString *currentAction = (NSString *)actionData;
     NSDictionary *toggleInfo = [[RCConfigManager sharedManager] toggleInfoForCommand:currentAction];
     
-    if (toggleInfo) {
+    if ([RCAddOnCatalog commandAsksForDetails:currentAction]) {
+        // An add-on action: its options and input again, the current ones ticked
+        [RCAddOnCatalog presentDetailsFrom:self command:currentAction current:currentAction completion:^(NSString *chosen) {
+            self.actions[indexPath.row] = chosen;
+            [self saveActions];
+            [self.tableView reloadData];
+        }];
+    } else if (toggleInfo) {
         UIAlertController *picker = [UIAlertController alertControllerWithTitle:toggleInfo[@"name"]
                                                                          message:@"Select desired state"
                                                                   preferredStyle:UIAlertControllerStyleActionSheet];
@@ -2693,8 +2691,9 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         cell.imageView.image = [UIImage _applicationIconImageForBundleIdentifier:bundleId format:0 scale:[UIScreen mainScreen].scale];
         cell.imageView.tintColor = nil;
     } else {
-        cell.imageView.image = [UIImage systemImageNamed:iconName];
-        cell.imageView.tintColor = [UIColor systemGrayColor];
+        UIImage *custom = [action isKindOfClass:[NSString class]] ? [RCAddOnCatalog imageForCommand:action] : nil;   // an add-on's image icon
+        cell.imageView.image = custom ?: [UIImage systemImageNamed:iconName];
+        cell.imageView.tintColor = custom ? nil : [UIColor systemGrayColor];
     }
 
     // Custom reorder handle (since editing = NO)

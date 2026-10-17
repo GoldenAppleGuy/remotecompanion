@@ -256,6 +256,18 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    if (strcmp(argv[1], "exec") == 0) {
+        // Runs a program as root directly, without a shell: rc-root exec /path/tool [args...]
+        if (argc < 3 || argv[2][0] != '/') {
+            fprintf(stderr, "Usage: rc-root exec /full/path [args...]\n");
+            return 1;
+        }
+        setenv("HOME", "/var/root", 1);
+        execv(argv[2], &argv[2]);
+        perror("rc-root exec");
+        return 127;
+    }
+
     // Build command string from all arguments for shell execution
     size_t total_len = 0;
     for (int i = 1; i < argc; i++) {

@@ -3,6 +3,8 @@
 #import "RCActionsViewController.h"
 #import "RCNewTriggerViewController.h"
 #import "RCSettingsViewController.h"
+#import "RCAddOnCatalog.h"
+#import "RCAddOnTriggersViewController.h"
 #import "RCNFCTriggerViewController.h"
 #import <notify.h>
 #import "RCWiFiTriggerViewController.h"
@@ -63,6 +65,7 @@
     if ([triggerKey hasPrefix:@"wifi_"]) return @"wifi";
     if ([triggerKey hasPrefix:@"bt_"]) return @"bolt.horizontal.fill";
     if ([triggerKey hasPrefix:@"output_"]) return @"airplayaudio";
+    if ([RCAddOnCatalog isAddOnTriggerKey:triggerKey]) return [RCAddOnCatalog iconForTriggerKey:triggerKey] ?: @"puzzlepiece.extension";
     if ([triggerKey hasPrefix:@"app_launch_"]) return @"app.badge";
     if ([triggerKey hasPrefix:@"app_exit_"]) return @"rectangle.portrait.and.arrow.right";
     if ([triggerKey hasPrefix:@"notif_"] || [triggerKey hasPrefix:@"notify_"]) return @"bell.badge.fill";
@@ -342,6 +345,13 @@
     }
     addSection(btKeys, @"Bluetooth Device Triggers", YES);
 
+    // Add-on triggers (ADDONS.md)
+    NSMutableArray *addOnKeys = [NSMutableArray array];
+    for (NSString *key in [[RCConfigManager sharedManager] allConfiguredTriggerKeys]) {
+        if ([RCAddOnCatalog isAddOnTriggerKey:key]) [addOnKeys addObject:key];
+    }
+    addSection(addOnKeys, @"Add-on Triggers", YES);
+
     // Audio Output Section
     NSMutableArray *outputKeys = [NSMutableArray array];
     for (NSString *key in [[RCConfigManager sharedManager] allConfiguredTriggerKeys]) {
@@ -420,6 +430,16 @@
         [weakSelf.navigationController pushViewController:vc animated:YES];
     };
 
+    // Opens a trigger's action list in place of the New Trigger menu, in a single transition (letting
+    // the menu be removed after the push left the bar buttons half-faded)
+    void (^replaceMenuWith)(UIViewController *) = ^(UIViewController *vc) {
+        UINavigationController *nav = weakSelf.navigationController;
+        NSMutableArray *vcs = [nav.viewControllers mutableCopy];
+        if ([vcs.lastObject isKindOfClass:[RCNewTriggerViewController class]]) [vcs removeLastObject];
+        [vcs addObject:vc];
+        [nav setViewControllers:vcs animated:YES];
+    };
+
     // System events can only be added once; one that exists just opens
     NSArray *configured = [[RCConfigManager sharedManager] allConfiguredTriggerKeys];
     NSMutableArray *systemEvents = [NSMutableArray array];
@@ -437,7 +457,7 @@
             if (![[[RCConfigManager sharedManager] allConfiguredTriggerKeys] containsObject:key]) {
                 [[RCConfigManager sharedManager] updateTrigger:key withData:@{@"name": title, @"enabled": @YES, @"actions": @[]}];
             }
-            push([[RCActionsViewController alloc] initWithTriggerKey:key]);
+            replaceMenuWith([[RCActionsViewController alloc] initWithTriggerKey:key]);
         } } mutableCopy];
         if ([configured containsObject:key]) item[@"detail"] = @"Added";
         [systemEvents addObject:item];
@@ -450,13 +470,21 @@
         @{ @"title": @"Audio Output", @"icon": @"airplayaudio", @"section": @"Nearby", @"handler": ^{ push([[RCAudioOutputTriggerViewController alloc] init]); } },
         @{ @"title": @"App Launch", @"icon": @"square.grid.2x2", @"section": @"Apps", @"handler": ^{
             RCAppPickerViewController *vc = [[RCAppPickerViewController alloc] init];
-            vc.allowsMultipleApps = YES;
             vc.suppressAutoPop = YES; // We handle navigation ourselves
-            vc.onAppsSelected = ^(NSArray<NSString *> *names, NSArray<NSString *> *bundleIds) {
+            vc.onAppSelected = ^(NSString *appName, NSString *bundleId) {
                 __strong typeof(weakSelf) self = weakSelf;
                 if (!self) return;
-                NSString *triggerKey = [[RCConfigManager sharedManager] saveAppTriggerWithPrefix:@"app_launch_" names:names bundleIds:bundleIds replacing:nil];
-
+                NSString *triggerKey = [NSString stringWithFormat:@"app_launch_%@", bundleId];
+                NSString *friendlyName = [NSString stringWithFormat:@"Launch %@", appName];
+                
+                NSDictionary *triggerData = @{
+                    @"name": friendlyName,
+                    @"enabled": @YES,
+                    @"actions": @[]
+                };
+                
+                [[RCConfigManager sharedManager] updateTrigger:triggerKey withData:triggerData];
+                
                 // Push actionsVC, then let the app picker pop (leaving [TriggersVC, ActionsVC])
                 RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:triggerKey];
                 NSMutableArray *vcs = [self.navigationController.viewControllers mutableCopy];
@@ -468,13 +496,21 @@
         } },
         @{ @"title": @"App Exit", @"icon": @"square.grid.2x2", @"section": @"Apps", @"handler": ^{
             RCAppPickerViewController *vc = [[RCAppPickerViewController alloc] init];
-            vc.allowsMultipleApps = YES;
             vc.suppressAutoPop = YES; // We handle navigation ourselves
-            vc.onAppsSelected = ^(NSArray<NSString *> *names, NSArray<NSString *> *bundleIds) {
+            vc.onAppSelected = ^(NSString *appName, NSString *bundleId) {
                 __strong typeof(weakSelf) self = weakSelf;
                 if (!self) return;
-                NSString *triggerKey = [[RCConfigManager sharedManager] saveAppTriggerWithPrefix:@"app_exit_" names:names bundleIds:bundleIds replacing:nil];
-
+                NSString *triggerKey = [NSString stringWithFormat:@"app_exit_%@", bundleId];
+                NSString *friendlyName = [NSString stringWithFormat:@"Exit %@", appName];
+                
+                NSDictionary *triggerData = @{
+                    @"name": friendlyName,
+                    @"enabled": @YES,
+                    @"actions": @[]
+                };
+                
+                [[RCConfigManager sharedManager] updateTrigger:triggerKey withData:triggerData];
+                
                 // Push actionsVC, then let the app picker pop (leaving [TriggersVC, ActionsVC])
                 RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:triggerKey];
                 NSMutableArray *vcs = [self.navigationController.viewControllers mutableCopy];
@@ -488,6 +524,17 @@
         @{ @"title": @"Scheduled Trigger", @"icon": @"calendar.badge.clock", @"section": @"Time", @"handler": ^{ push([[RCScheduledTriggerViewController alloc] init]); } },
     ] mutableCopy];
     [items addObjectsFromArray:systemEvents];
+    // Add-ons: a row for each one that has triggers, opening its list
+    for (NSDictionary *group in [RCAddOnCatalog addOnTriggerGroups]) {
+        NSString *prefix = [NSString stringWithFormat:@"addon_%@_", group[@"id"]];
+        NSUInteger added = 0;
+        for (NSString *key in configured) if ([key hasPrefix:prefix]) added++;
+        NSMutableDictionary *item = [@{ @"title": group[@"title"], @"icon": group[@"icon"], @"image": group[@"image"], @"section": @"Add-ons", @"handler": ^{
+            push([[RCAddOnTriggersViewController alloc] initWithAddOn:group[@"id"] title:group[@"title"]]);
+        } } mutableCopy];
+        if (added) item[@"detail"] = [NSString stringWithFormat:@"%lu added", (unsigned long)added];
+        [items addObject:item];
+    }
     [items addObject:@{ @"title": @"MQTT Topic", @"icon": @"antenna.radiowaves.left.and.right", @"section": @"Integrations", @"handler": ^{ push([[RCMQTTTriggerViewController alloc] init]); } }];
     [self.navigationController pushViewController:[[RCNewTriggerViewController alloc] initWithItems:items] animated:YES];
 }
@@ -764,8 +811,9 @@
     // Add Icon with tint based on section or type?
     // Using dark gray tint for a "premium" but subtle look
     UIImage *icon = [UIImage systemImageNamed:[self iconNameForTrigger:triggerKey]];
-    cell.imageView.image = icon;
-    cell.imageView.tintColor = [UIColor systemGrayColor];
+    UIImage *custom = [RCAddOnCatalog isAddOnTriggerKey:triggerKey] ? [RCAddOnCatalog imageForTriggerKey:triggerKey] : nil;   // an add-on's image icon
+    cell.imageView.image = custom ?: icon;
+    cell.imageView.tintColor = custom ? nil : [UIColor systemGrayColor];
 
     cell.accessoryView = nil;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
@@ -839,8 +887,8 @@
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
     NSString *triggerKey = [self triggerKeyAtIndexPath:indexPath];
 
-    // Only allow delete for NFC, WiFi, BT, App, Notif, Sched, MQTT, Device State triggers
-    if (![triggerKey hasPrefix:@"nfc_"] && ![triggerKey hasPrefix:@"wifi_"] && ![triggerKey hasPrefix:@"bt_"] && ![triggerKey hasPrefix:@"app_launch_"] && ![triggerKey hasPrefix:@"app_exit_"] && ![triggerKey hasPrefix:@"output_"] && ![triggerKey hasPrefix:@"notif_"] && ![triggerKey hasPrefix:@"notify_"] && ![triggerKey hasPrefix:@"sched_"] && ![triggerKey hasPrefix:@"mqtt_"] && ![triggerKey hasPrefix:@"mqtt_sub_"] && ![triggerKey hasPrefix:@"trigger_device_"] && ![triggerKey hasPrefix:@"trigger_media_"] && ![triggerKey hasPrefix:@"trigger_power_"] && ![triggerKey hasPrefix:@"trigger_carplay_"]) {
+    // Only allow delete for NFC, WiFi, BT, App, Notif, Sched, MQTT, Device State and add-on triggers
+    if (![triggerKey hasPrefix:@"nfc_"] && ![triggerKey hasPrefix:@"wifi_"] && ![triggerKey hasPrefix:@"bt_"] && ![triggerKey hasPrefix:@"app_launch_"] && ![triggerKey hasPrefix:@"app_exit_"] && ![triggerKey hasPrefix:@"output_"] && ![triggerKey hasPrefix:@"notif_"] && ![triggerKey hasPrefix:@"notify_"] && ![triggerKey hasPrefix:@"sched_"] && ![triggerKey hasPrefix:@"mqtt_"] && ![triggerKey hasPrefix:@"mqtt_sub_"] && ![triggerKey hasPrefix:@"trigger_device_"] && ![triggerKey hasPrefix:@"trigger_media_"] && ![triggerKey hasPrefix:@"trigger_power_"] && ![triggerKey hasPrefix:@"trigger_carplay_"] && ![RCAddOnCatalog isAddOnTriggerKey:triggerKey]) {
         return [UISwipeActionsConfiguration configurationWithActions:@[]];
     }
 

@@ -61,6 +61,7 @@ static const NSInteger kRCClearAllTag = 9001;
         @"guided": @"Gestures & Sensors",
         @"differential": @"Stock vs Tweak",
         @"replay": @"Button Triggers",
+        @"addons": @"Add-ons",
     };
     return names[suite ?: @""] ?: suite ?: @"Test";
 }
@@ -87,6 +88,7 @@ static NSString *RCSuiteBlurb(NSString *suite) {
         @"guided": @"Checks that each gesture and sensor trigger fires once.",
         @"differential": @"Compares each button press with the tweak off and on.",
         @"replay": @"Checks that each button trigger fires once, with the presses done by the tweak.",
+        @"addons": @"Checks that add-on files are accepted or refused as they should be, and that the installed ones load.",
     };
     return blurbs[suite] ?: @"";
 }
@@ -94,7 +96,7 @@ static NSString *RCSuiteBlurb(NSString *suite) {
 static NSString *RCSuiteIcon(NSString *suite) {
     NSDictionary *icons = @{ @"conditions": @"questionmark.diamond", @"toggles": @"switch.2", @"all": @"checklist",
                              @"guided": @"hand.point.up.left", @"differential": @"square.split.2x1",
-                             @"replay": @"play.circle" };
+                             @"replay": @"play.circle", @"addons": @"puzzlepiece.extension" };
     return icons[suite] ?: @"checklist";
 }
 

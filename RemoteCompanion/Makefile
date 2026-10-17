@@ -23,5 +23,6 @@ RemoteCompanion_FILES += RCTestKitViewController.m RCTestReportViewController.m 
 # Shared UI components
 RemoteCompanion_FILES += RCCategoryBar.m
 RemoteCompanion_FILES += RCFocusPickerViewController.m
+RemoteCompanion_FILES += RCAddOnCatalog.m RCAddOnsViewController.m RCAddOnActionsViewController.m RCAddOnOptionsViewController.m RCAddOnExpandCell.m RCAddOnTriggersViewController.m
 
 include $(THEOS_MAKE_PATH)/application.mk

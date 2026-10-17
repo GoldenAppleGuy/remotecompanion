@@ -1,4 +1,5 @@
 #import "RCConfigManager.h"
+#import "RCAddOnCatalog.h"
 #import <LocalAuthentication/LocalAuthentication.h>
 #import <notify.h>
 #include <fcntl.h>
@@ -252,42 +253,6 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     _config[@"logLevel"] = logLevel;
     [self saveConfig];
 }
-
-- (double)volumeSequenceWindow {
-    id value = _config[@"volumeSequenceWindow"];
-    double window = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : 0.38;
-    return MIN(MAX(window, 0.15), 0.8);
-}
-
-- (void)setVolumeSequenceWindow:(double)volumeSequenceWindow {
-    _config[@"volumeSequenceWindow"] = @(volumeSequenceWindow);
-    [self saveConfig];
-}
-
-- (double)powerClickWindow {
-    id value = _config[@"powerClickWindow"];
-    double window = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : 0.4;
-    return MIN(MAX(window, 0.25), 0.8);
-}
-
-- (void)setPowerClickWindow:(double)powerClickWindow {
-    _config[@"powerClickWindow"] = @(powerClickWindow);
-    [self saveConfig];
-}
-
-// A saved number, kept inside its range
-- (double)timingForKey:(NSString *)key fallback:(double)fallback min:(double)min max:(double)max {
-    id value = _config[key];
-    double seconds = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : fallback;
-    return MIN(MAX(seconds, min), max);
-}
-
-- (double)homeClickWindow { return [self timingForKey:@"homeClickWindow" fallback:0.35 min:0.25 max:0.8]; }
-- (void)setHomeClickWindow:(double)seconds { _config[@"homeClickWindow"] = @(seconds); [self saveConfig]; }
-- (double)volumeHoldTime { return [self timingForKey:@"volumeHoldTime" fallback:0.35 min:0.2 max:0.8]; }
-- (void)setVolumeHoldTime:(double)seconds { _config[@"volumeHoldTime"] = @(seconds); [self saveConfig]; }
-- (double)powerHoldTime { return [self timingForKey:@"powerHoldTime" fallback:0.5 min:0.3 max:0.75]; }
-- (void)setPowerHoldTime:(double)seconds { _config[@"powerHoldTime"] = @(seconds); [self saveConfig]; }
 
 - (NSArray<NSDictionary *> *)bannerActions {
     id list = _config[@"bannerActions"];
@@ -604,6 +569,10 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         return _config[@"triggers"][triggerKey][@"name"] ?: triggerKey;
     }
     
+    // An add-on's trigger: the add-on's wording for it, else the name saved with it
+    if ([RCAddOnCatalog isAddOnTriggerKey:triggerKey]) {
+        return [RCAddOnCatalog nameForTriggerKey:triggerKey] ?: _config[@"triggers"][triggerKey][@"name"] ?: triggerKey;
+    }
     return names[triggerKey] ?: triggerKey;
 }
 
@@ -625,8 +594,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
 }
 
 - (BOOL)isTriggerEnabled:(NSString *)triggerKey {
-    id trigger = _config[@"triggers"][triggerKey];
-    return [trigger isKindOfClass:[NSDictionary class]] && [trigger[@"enabled"] boolValue];
+    return [[self triggerDict:triggerKey][@"enabled"] boolValue];
 }
 
 - (void)setTriggerEnabled:(BOOL)enabled forTrigger:(NSString *)triggerKey {
@@ -664,10 +632,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
 }
 
 - (NSArray *)actionsForTrigger:(NSString *)triggerKey {
-    // Reading must not create the trigger: a screen still holding the key of a trigger that was
-    // renamed or removed brought it back as an empty, disabled one just by looking
-    id trigger = _config[@"triggers"][triggerKey];
-    return [trigger isKindOfClass:[NSDictionary class]] ? (trigger[@"actions"] ?: @[]) : @[];
+    return [self triggerDict:triggerKey][@"actions"] ?: @[];
 }
 
 - (void)setActions:(NSArray *)actions forTrigger:(NSString *)triggerKey {
@@ -932,6 +897,8 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
 
     NSString *originalCmd = [(NSString *)cmdId stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     NSString *cmd = [originalCmd lowercaseString];
+    NSString *addOnName = [RCAddOnCatalog nameForCommand:originalCmd];
+    if (addOnName) return addOnName;
     NSDictionary *names = @{
         @"play": @"Play",
         @"pause": @"Pause",
@@ -1381,6 +1348,8 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         return @"square.grid.2x2";
     }
 
+    NSString *addOnIcon = [RCAddOnCatalog iconForCommand:cmdId];
+    if (addOnIcon) return addOnIcon;
     NSString *cmd = [[(NSString *)cmdId stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
     if ([cmd isEqualToString:@"camera record"]) return @"video.circle.fill";
     if ([cmd isEqualToString:@"camera shutter"]) return @"camera.circle.fill";
@@ -1901,28 +1870,6 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
 - (NSString *)nameForKMMacroUid:(NSString *)uid {
     if (!uid.length) return nil;
     return _config[@"kmNamesByUuid"][uid];
-}
-
-
-- (NSString *)saveAppTriggerWithPrefix:(NSString *)prefix names:(NSArray<NSString *> *)names bundleIds:(NSArray<NSString *> *)bundleIds replacing:(NSString *)oldKey {
-    if (bundleIds.count == 0) return oldKey;
-    NSString *verb = [prefix isEqualToString:@"app_exit_"] ? @"Exit" : @"Launch";
-    NSString *newKey = [prefix stringByAppendingString:bundleIds.firstObject];
-    // The name says which apps: "Launch Safari, Notes" (a long one wraps in the lists)
-    NSMutableArray<NSString *> *shown = [NSMutableArray array];
-    for (NSUInteger i = 0; i < bundleIds.count; i++) [shown addObject:(i < names.count && names[i].length) ? names[i] : bundleIds[i]];
-    NSString *name = [NSString stringWithFormat:@"%@ %@", verb, [shown componentsJoinedByString:@", "]];
-
-    NSDictionary *previous = [self triggerDataForKey:(oldKey ?: newKey)];
-    NSMutableDictionary *data = [NSMutableDictionary dictionary];
-    data[@"name"] = name;
-    data[@"enabled"] = previous[@"enabled"] ?: @YES;
-    data[@"actions"] = previous[@"actions"] ?: @[];
-    if (bundleIds.count > 1) data[@"apps"] = bundleIds;
-
-    [self updateTrigger:newKey withData:data];
-    if (oldKey && ![oldKey isEqualToString:newKey]) [self removeTrigger:oldKey];
-    return newKey;
 }
 
 @end

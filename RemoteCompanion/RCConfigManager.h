@@ -9,18 +9,6 @@
 // The tweak's log: @"off", @"minimal" (the default: triggers, actions, conditions, errors)
 // or @"full" (every step, for chasing a bug)
 @property (nonatomic, copy) NSString *logLevel;
-// Seconds after a volume press within which the other volume button completes an Up then Down
-// (or Down then Up) sequence: 0.15 to 0.8, default 0.38
-@property (nonatomic, assign) double volumeSequenceWindow;
-// Seconds a Power press waits for the next click before the clicks count (a double, triple or
-// quadruple click): 0.25 to 0.8, default 0.4
-@property (nonatomic, assign) double powerClickWindow;
-// Seconds a Home press waits for the next click (double, triple or quadruple): 0.25 to 0.8, default 0.35
-@property (nonatomic, assign) double homeClickWindow;
-// Seconds a Volume Up or Down press is held before it counts as a hold: 0.2 to 0.8, default 0.35
-@property (nonatomic, assign) double volumeHoldTime;
-// Seconds a Power press is held before it counts as a long press: 0.3 to 0.75, default 0.5
-@property (nonatomic, assign) double powerHoldTime;
 // Settings > Banners: actions that show a banner when a trigger runs them (built by RCBannersViewController)
 @property (nonatomic, copy) NSArray<NSDictionary *> *bannerActions;
 // Actions with a banner of their own that have been switched off in Settings > Banners
@@ -59,12 +47,6 @@
 - (NSDictionary *)triggerDataForKey:(NSString *)triggerKey;
 - (void)updateTrigger:(NSString *)triggerKey withData:(NSDictionary *)data;
 - (void)removeTrigger:(NSString *)triggerKey;
-
-// Saves an App Launch ("app_launch_") or App Exit ("app_exit_") trigger for these apps and
-// returns its key, which is the first app's. The actions of the trigger it replaces (oldKey),
-// or of one that already exists for the first app, are kept. Two or more apps are stored
-// in the trigger's "apps" list.
-- (NSString *)saveAppTriggerWithPrefix:(NSString *)prefix names:(NSArray<NSString *> *)names bundleIds:(NSArray<NSString *> *)bundleIds replacing:(NSString *)oldKey;
 - (void)renameTrigger:(NSString *)triggerKey toName:(NSString *)newName;
 - (NSArray<NSString *> *)nfcTriggerKeys;
 - (NSArray<NSDictionary *> *)notificationTriggers;

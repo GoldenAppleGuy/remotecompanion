@@ -2,6 +2,7 @@
 #import "RCHASettingsViewController.h"
 #import "RCKMSettingsViewController.h"
 #import "RCMQTTSettingsViewController.h"
+#import "RCAddOnsViewController.h"
 #import "RCConfigManager.h"
 #import "RCUITweaker.h"
 
@@ -85,7 +86,7 @@
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return 3;
+    return 4;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
@@ -128,6 +129,11 @@
         cell.detailTextLabel.text = cm.mqttEnabled ? hostStr : @"Disabled";
         cell.imageView.image = [UIImage systemImageNamed:@"antenna.radiowaves.left.and.right"];
         cell.imageView.tintColor = cm.mqttEnabled ? [UIColor systemTealColor] : [UIColor secondaryLabelColor];
+    } else if (indexPath.row == 3) {
+        cell.textLabel.text = @"Add-ons";
+        cell.detailTextLabel.text = [RCAddOnsViewController cachedSummary] ?: @"JSON files that add actions";
+        cell.imageView.image = [UIImage systemImageNamed:@"puzzlepiece.extension"];
+        cell.imageView.tintColor = [UIColor systemOrangeColor];
     }
     
     return cell;
@@ -144,6 +150,8 @@
     } else if (indexPath.row == 2) {
         RCMQTTSettingsViewController *mqttVC = [[RCMQTTSettingsViewController alloc] init];
         [self.navigationController pushViewController:mqttVC animated:YES];
+    } else if (indexPath.row == 3) {
+        [self.navigationController pushViewController:[[RCAddOnsViewController alloc] init] animated:YES];
     }
 }
 

@@ -1,4 +1,6 @@
 #import "RCActionPickerViewController.h"
+#import "RCAddOnCatalog.h"
+#import "RCAddOnActionsViewController.h"
 #import "RCServerClient.h"
 #import "RCDevicePickerViewController.h"
 #import "RCFocusPickerViewController.h"
@@ -11,6 +13,7 @@
 @property (nonatomic, strong) NSArray<NSString *> *sectionTitles;
 @property (nonatomic, strong) NSArray<NSArray<NSDictionary *> *> *sections;
 @property (nonatomic, strong) NSArray<NSDictionary *> *filteredActions;
+@property (nonatomic, strong) NSDictionary *selectedActionOverride; // an add-on action picked in its own list
 @property (nonatomic, strong) UISearchController *searchController;
 @property (nonatomic, strong) UIAlertController *activeAlert;
 @property (nonatomic, assign) BOOL isWaitingForTapRecord;
@@ -311,6 +314,16 @@
         }
         [sections addObject:items];
     }
+    // Add-ons (add-ons, ADDONS.md): one category, a row for each add-on that opens its actions
+    NSMutableArray *titles = [_sectionTitles mutableCopy];
+    NSArray *addOns = [RCAddOnCatalog addOnRows];
+    if (addOns.count) {
+        NSUInteger at = [titles indexOfObject:@"Integrations"];
+        at = at == NSNotFound ? titles.count : at + 1;
+        [titles insertObject:@"Add-ons" atIndex:at];
+        [sections insertObject:addOns atIndex:at];
+    }
+    _sectionTitles = titles;
     _sections = sections;
 }
 
@@ -460,7 +473,8 @@
                 iconName = @"ear";
             }
         }
-        cell.imageView.image = [UIImage systemImageNamed:iconName];
+        UIImage *custom = [action[@"image"] isKindOfClass:[UIImage class]] ? action[@"image"] : nil;
+        cell.imageView.image = custom ?: [UIImage systemImageNamed:iconName];
         cell.imageView.tintColor = [UIColor secondaryLabelColor];
     }
     
@@ -468,7 +482,8 @@
     
     // Add disclosure for items requiring input
     NSString *cmd = action[@"command"];
-    if ([cmd isEqualToString:@"__SET_VOLUME__"] || 
+    if ([RCAddOnCatalog commandAsksForDetails:cmd] ||
+        [cmd isEqualToString:@"__SET_VOLUME__"] || 
         [cmd isEqualToString:@"__SET_RINGER_VOLUME__"] || 
         [cmd isEqualToString:@"__SET_BRIGHTNESS__"] || 
         [cmd isEqualToString:@"__BT_CONNECT__"] || 
@@ -498,9 +513,33 @@
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     
-    NSDictionary *action = [self actionAtIndexPath:indexPath];
+    NSDictionary *action = self.selectedActionOverride ?: [self actionAtIndexPath:indexPath];
     NSString *command = action[@"command"];
-    
+
+    // An add-on opens a list of its actions; the one picked comes back through here
+    if ([command hasPrefix:@"__ADDON__"]) {
+        __weak typeof(self) weakSelf = self;
+        RCAddOnActionsViewController *vc = [[RCAddOnActionsViewController alloc] initWithAddOn:[command substringFromIndex:9] title:action[@"name"]];
+        __weak RCAddOnActionsViewController *weakList = vc;
+        vc.onSelect = ^(NSDictionary *chosen) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            NSString *chosenCommand = chosen[@"command"];
+            if ([RCAddOnCatalog commandAsksForDetails:chosenCommand] && weakList) {
+                // The options open on top of this list, so Back returns to it
+                [RCAddOnCatalog presentDetailsFrom:weakList command:chosenCommand current:nil completion:^(NSString *full) {
+                    [strongSelf finishWithFocusCommand:full];
+                }];
+                return;
+            }
+            strongSelf.selectedActionOverride = chosen;
+            [strongSelf tableView:strongSelf.tableView didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+            strongSelf.selectedActionOverride = nil;
+        };
+        [self.navigationController pushViewController:vc animated:YES];
+        return;
+    }
+
 
     if ([command isEqualToString:@"__SET_VOLUME__"] || [command isEqualToString:@"__SET_RINGER_VOLUME__"] || [command isEqualToString:@"__SET_BRIGHTNESS__"] || [command isEqualToString:@"__SET_FLASHLIGHT__"]) {
         [self handleValueInputForCommand:command];
@@ -572,6 +611,15 @@
 
     if ([command isEqualToString:@"__CAMERA_VIDEO_PICKER__"]) {
         [self handleCameraPicker:YES];
+        return;
+    }
+
+    // An add-on action with options or input asks for them first
+    if ([RCAddOnCatalog commandAsksForDetails:command]) {
+        __weak typeof(self) weakSelf = self;
+        [RCAddOnCatalog presentDetailsFrom:self command:command current:nil completion:^(NSString *chosen) {
+            [weakSelf finishWithFocusCommand:chosen];
+        }];
         return;
     }
 
@@ -855,6 +903,10 @@
             }
         }
         
+        // Add-on actions are found directly, in place of their rows
+        if (![self hasCategory] || [_sectionTitles[self.selectedCategory] isEqualToString:@"Add-ons"]) {
+            [allActions addObjectsFromArray:[RCAddOnCatalog pickerActions]];
+        }
         NSPredicate *pred = [NSPredicate predicateWithFormat:@"name CONTAINS[cd] %@ OR command CONTAINS[cd] %@", text, text];
         self.filteredActions = [allActions filteredArrayUsingPredicate:pred];
     }

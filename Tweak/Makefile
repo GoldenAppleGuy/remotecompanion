@@ -26,6 +26,7 @@ LUA_FILES = $(wildcard lua/*.c)
 
 RemoteCommand_FILES = Tweak.x RCNFCManager.x $(LUA_FILES)
 RemoteCommand_FILES += RCTestKit.x
+RemoteCommand_FILES += RCAddOns.m
 RemoteCommand_CFLAGS = -fobjc-arc -Ilua -DLUA_USE_IOS -Wno-unused-function -Wno-unused-variable
 RemoteCommand_FRAMEWORKS = UIKit CoreNFC IOKit QuartzCore CoreLocation
 RemoteCommand_PRIVATE_FRAMEWORKS = AppSupport MediaRemote MobileCoreServices FrontBoardServices BackBoardServices MediaPlayer DoNotDisturb BiometricKit AccessibilityUtilities
