@@ -322,7 +322,7 @@ The background listener daemon runs inside SpringBoard with automatic 60s keep-a
 ### 2. Installation
 
 #### Option 1: Package Manager Repository (Recommended)
-Add `https://saihgupr.github.io/remotecompanion` to your package manager:
+Add `https://saihgupr.github.io/remotecompanion` to your package manager (or visit the [official website](https://saihgupr.github.io/remotecompanion/) for one-tap buttons):
 - [Add to Sileo](sileo://source/https://saihgupr.github.io/remotecompanion)
 - [Add to Zebra](zbra://sources/add/https://saihgupr.github.io/remotecompanion)
 
