@@ -10829,6 +10829,12 @@ static int g_powerDownsAwaitingUp = 0;        // press-downs armed by a real pow
 static BOOL g_powerDeferActive = NO;          // latched at DOWN, honoured at UP
 static __weak id g_powerActionsInstance = nil; // cached SBLockHardwareButtonActions
 static BOOL g_walletDoublePressDeferred = NO; // latched when native Wallet double-press is held back
+static BOOL g_powerWakeHeld = NO;             // a press made on a sleeping screen is held back (Power Long Press is bound),
+                                               // so a hold fires the trigger without waking the phone; a tap wakes it on release
+static BOOL g_powerWakePass = NO;             // press 1 made on a sleeping screen with a multi-click trigger bound: it wakes
+                                               // the phone as usual and counts as the first click, so a double press from sleep works
+static BOOL g_powerSequenceWoke = NO;         // the running click sequence began with such a wake: its first press is not replayed
+static CFAbsoluteTime g_powerSequenceWokeAt = 0; // when that wake happened: an old one is stale
 
 // Mirrors RCExecuteTrigger's own "will this actually do anything" check -
 // a trigger toggled on with zero actions assigned fires as a silent no-op
@@ -11961,6 +11967,8 @@ static void RC_CheckAndFirePower() {
         // below starts a clean sequence.
         int count = g_powerClickCount;
         g_powerClickCount = 0;
+        BOOL sequenceWoke = g_powerSequenceWoke;
+        g_powerSequenceWoke = NO;
         SRLog(@"POWER SEQUENCE ENDED. Final count: %d", count);
 
         NSString *triggerKey = nil;
@@ -12002,7 +12010,11 @@ static void RC_CheckAndFirePower() {
         // was just replayed instead - that already gave the system a native
         // outcome for these clicks, and replaying a click on top would spuriously
         // lock/wake the screen right after Wallet opens.
-        if (!claimed && !walletReplayed && count >= 1 && g_powerHookAlive) {
+        // The press that woke a sleeping phone (see g_powerWakePass) has done its work; only the
+        // presses after it were held back
+        int replayCount = count - (sequenceWoke ? 1 : 0);
+        if (!claimed && !walletReplayed && replayCount >= 1 && g_powerHookAlive) {
+            int count = replayCount;
             // Replay only as many presses as iOS treated as presses of their own
             // (see g_nativeSinglePressCount). Its gestures normally fire before this
             // timer; if some haven't yet, wait a moment for them - the singlePress:
@@ -12607,16 +12619,19 @@ static void setup_background_hid_listener() {
                 RCExecuteTrigger(@"power_long_press");
                 SRLog(@"Power Long Press Fired (Stage 1)!");
                 
-                // Start Stage 2 Timer (System Power Off) - 2.0s later (2.5s total hold)
-                g_systemPowerOffTimer = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:NO block:^(NSTimer *t) {
-                     g_systemPowerOffTimer = nil;
-                     if (!g_powerIsDown) return;
-                     SRLog(@"Power Long Press (Stage 2) - Forcing System Power Off Screen");
-                     g_forceSystemLongPress = YES;
-                     
-                     // Manually invoke the action again, but this time g_forceSystemLongPress is YES
-                     [self performLongPressActions];
-                }];
+                // Start Stage 2 Timer (System Power Off) - 2.0s later (2.5s total hold). Not for a
+                // press made on a sleeping screen: the power-off slider would wake it.
+                if (!g_powerWakeHeld) {
+                    g_systemPowerOffTimer = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:NO block:^(NSTimer *t) {
+                         g_systemPowerOffTimer = nil;
+                         if (!g_powerIsDown) return;
+                         SRLog(@"Power Long Press (Stage 2) - Forcing System Power Off Screen");
+                         g_forceSystemLongPress = YES;
+                         
+                         // Manually invoke the action again, but this time g_forceSystemLongPress is YES
+                         [self performLongPressActions];
+                    }];
+                }
             }];
         }
     }
@@ -12629,6 +12644,35 @@ static void setup_background_hid_listener() {
     // replays it, so a plain single press still locks/wakes as normal.
     // Latch the decision at DOWN so a config reload mid-press can't leave the
     // UP half disagreeing with the DOWN half.
+    // A press on a sleeping screen with Power Long Press bound is held back, so that holding
+    // it fires the trigger without waking the phone. A tap wakes it on release.
+    g_powerWakeHeld = NO;
+    if (!(g_powerClickTimer != nil && g_powerClickCount > 0) && !RC_ScreenIsOn() && RC_TriggerIsActionable(@"power_long_press")) {
+        g_powerWakeHeld = YES;
+        g_powerDeferActive = YES;
+        SRLog(@"Holding system power DOWN on a sleeping screen (Power Long Press bound)");
+        return;
+    }
+
+    // A wake with no press right after it leaves the flag set; a press made later (to put the phone
+    // to sleep) would be taken for the waking one and never replayed
+    if (g_powerSequenceWoke && !(g_powerClickTimer != nil && g_powerClickCount > 0) &&
+        CFAbsoluteTimeGetCurrent() - g_powerSequenceWokeAt > 0.5) {
+        g_powerSequenceWoke = NO;
+    }
+
+    g_powerWakePass = NO;
+    if (!(g_powerClickTimer != nil && g_powerClickCount > 0) && !RC_ScreenIsOn() && RC_PowerMultiClickEnabled()) {
+        // Wakes the phone as usual, and counts as the first click
+        g_powerWakePass = YES;
+        g_powerSequenceWoke = YES;
+        g_powerSequenceWokeAt = CFAbsoluteTimeGetCurrent();
+        g_powerDeferActive = NO;
+        SRLog(@"Power DOWN on a sleeping screen - it wakes the phone and counts as click 1");
+        %orig;
+        return;
+    }
+
     g_powerDeferActive = RC_ShouldDeferPowerPress();
     if (g_powerDeferActive) {
         SRLog(@"Deferring system power DOWN (multi-click armed)");
@@ -12722,6 +12766,28 @@ static void setup_background_hid_listener() {
         // lock/sleep on top of the combo action that had already fired.
         g_powerVolComboTriggered = NO;
         g_powerSuppressPostUp = YES;
+        return;
+    }
+
+    // A press held back on a sleeping screen (see g_powerWakeHeld), released before the long press
+    // fired, was a tap: it wakes the phone now. Replaying it would not - synthetic presses don't
+    // wake - and it has no clicks to wait for: a sleeping screen doesn't count clicks.
+    if (g_powerWakeHeld) {
+        g_powerWakeHeld = NO;
+        // iOS's own wake sequence, run late: the press-down it was denied, then this release.
+        // Waking through the backlight controller alone left the lock screen without its
+        // wallpaper and clock (iPhone 15, iOS 17) - only the notifications and toggles came up.
+        SRLog(@"[Power] Tap on a sleeping screen - running iOS's wake for it now");
+        g_powerIsReplaying = YES;
+        [self performInitialButtonDownActions];
+        g_powerIsReplaying = NO;
+        if (RC_PowerMultiClickEnabled()) {
+            g_powerSequenceWoke = YES;
+            g_powerSequenceWokeAt = CFAbsoluteTimeGetCurrent();
+            g_powerClickCount++;
+            RC_CheckAndFirePower();
+        }
+        %orig;
         return;
     }
 
