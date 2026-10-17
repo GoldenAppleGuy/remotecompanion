@@ -252,6 +252,42 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     [self saveConfig];
 }
 
+- (double)volumeSequenceWindow {
+    id value = _config[@"volumeSequenceWindow"];
+    double window = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : 0.38;
+    return MIN(MAX(window, 0.15), 0.8);
+}
+
+- (void)setVolumeSequenceWindow:(double)volumeSequenceWindow {
+    _config[@"volumeSequenceWindow"] = @(volumeSequenceWindow);
+    [self saveConfig];
+}
+
+- (double)powerClickWindow {
+    id value = _config[@"powerClickWindow"];
+    double window = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : 0.4;
+    return MIN(MAX(window, 0.25), 0.8);
+}
+
+- (void)setPowerClickWindow:(double)powerClickWindow {
+    _config[@"powerClickWindow"] = @(powerClickWindow);
+    [self saveConfig];
+}
+
+// A saved number, kept inside its range
+- (double)timingForKey:(NSString *)key fallback:(double)fallback min:(double)min max:(double)max {
+    id value = _config[key];
+    double seconds = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : fallback;
+    return MIN(MAX(seconds, min), max);
+}
+
+- (double)homeClickWindow { return [self timingForKey:@"homeClickWindow" fallback:0.35 min:0.25 max:0.8]; }
+- (void)setHomeClickWindow:(double)seconds { _config[@"homeClickWindow"] = @(seconds); [self saveConfig]; }
+- (double)volumeHoldTime { return [self timingForKey:@"volumeHoldTime" fallback:0.35 min:0.2 max:0.8]; }
+- (void)setVolumeHoldTime:(double)seconds { _config[@"volumeHoldTime"] = @(seconds); [self saveConfig]; }
+- (double)powerHoldTime { return [self timingForKey:@"powerHoldTime" fallback:0.5 min:0.3 max:0.75]; }
+- (void)setPowerHoldTime:(double)seconds { _config[@"powerHoldTime"] = @(seconds); [self saveConfig]; }
+
 - (NSArray<NSDictionary *> *)bannerActions {
     id list = _config[@"bannerActions"];
     return [list isKindOfClass:[NSArray class]] ? list : @[];

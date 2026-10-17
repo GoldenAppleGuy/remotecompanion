@@ -457,7 +457,13 @@ extern void BKSTerminateApplicationForReasonAndReportWithDescription(NSString *b
 - (void)volumeDecreasePressUp;
 @end
 
+// SpringBoard's own routine for putting the phone to sleep (iOS 14 and later)
+@interface SBSleepWakeHardwareButtonInteraction : NSObject
+- (void)_performSleep;
+@end
+
 @interface SBLockHardwareButtonActions : NSObject
+- (id)sleepWakeButtonInteraction;
 - (void)performInitialButtonDownActions;
 - (void)performButtonUpPreActions;
 - (void)performButtonUpPostActions;
@@ -1535,6 +1541,18 @@ static void send_notification(NSString *title, NSString *message, BOOL urgent) {
 static NSDictionary *g_triggerConfig = nil;
 static NSString *g_resolvedConfigPath = nil;
 
+// Button timings, from the config (Settings > Button Timing), in seconds. Read each time, so a
+// change applies at once.
+static NSTimeInterval RC_ConfigTiming(NSString *key, double fallback, double min, double max) {
+    id value = g_triggerConfig[key];
+    double seconds = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : fallback;
+    return MIN(MAX(seconds, min), max);
+}
+static NSTimeInterval RC_PowerClickWindow(void) { return RC_ConfigTiming(@"powerClickWindow", 0.4, 0.25, 0.8); }
+static NSTimeInterval RC_HomeClickWindow(void)  { return RC_ConfigTiming(@"homeClickWindow", 0.35, 0.25, 0.8); }
+static NSTimeInterval RC_VolumeHoldTime(void)   { return RC_ConfigTiming(@"volumeHoldTime", 0.35, 0.2, 0.8); }
+static NSTimeInterval RC_PowerHoldTime(void)    { return RC_ConfigTiming(@"powerHoldTime", 0.5, 0.3, 0.75); }
+
 // Find config file - check shared path first, then search app containers
 static NSString *find_config_path() {
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -1606,8 +1624,23 @@ static BOOL RC_IsForegroundAppExcluded() {
             }
         };
 
-        if ([NSThread isMainThread]) getBlock();
-        else dispatch_sync(dispatch_get_main_queue(), getBlock);
+        if ([NSThread isMainThread]) {
+            getBlock();
+        } else {
+            // Callers off the main thread include the HID listener, which must not stall
+            // behind a busy SpringBoard (right after a wake or a lock it can be 500 ms): its
+            // button events would arrive late and run together. Ask, wait briefly, and
+            // otherwise go with the last answer.
+            dispatch_semaphore_t answered = dispatch_semaphore_create(0);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                getBlock();
+                dispatch_semaphore_signal(answered);
+            });
+            if (dispatch_semaphore_wait(answered, dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_MSEC)) != 0) {
+                lastCheck = now - 0.4; // ask again soon
+                return cachedResult;
+            }
+        }
 
         BOOL result = NO;
         if (frontBundleID) {
@@ -10562,8 +10595,9 @@ static volatile BOOL g_volPressedDuringPower = NO;
 static NSTimeInterval RC_VolHoldDelay(BOOL up) {
     BOOL held = up ? g_volUpHeldOnHIDBus : g_volDownHeldOnHIDBus;
     NSTimeInterval downAt = up ? g_volUpDownOnHIDTime : g_volDownDownOnHIDTime;
-    if (!held || downAt <= 0) return 0.35;
-    return MAX(0.0, 0.35 - ([[NSDate date] timeIntervalSince1970] - downAt));
+    NSTimeInterval hold = RC_VolumeHoldTime();
+    if (!held || downAt <= 0) return hold;
+    return MAX(0.0, hold - ([[NSDate date] timeIntervalSince1970] - downAt));
 }
 
 // The buttons overlapped just now - a Both Press, not an Up-then-Down / Down-then-Up sequence.
@@ -10581,7 +10615,25 @@ static NSTimer *g_pendingVolUpSeqTimer = nil;
 static NSTimer *g_pendingVolDownSeqTimer = nil;
 static BOOL g_volSeqJustFired = NO;
 
+// Volume Up then Down (and Down then Up) without holding the first press back. A tap that no hold
+// trigger needs goes to native at once; for the sequence window after its release, the other
+// button completes the sequence. That press then goes to native too, so the two cancel and the
+// volume ends where it began. (At the top or bottom of the volume, where the first press changed
+// nothing, the second still steps it once.)
+static NSTimeInterval g_volUpSeqArmedUntil = 0, g_volDownSeqArmedUntil = 0;
+static BOOL g_volUpSkipArm = NO, g_volDownSkipArm = NO;   // the press completed a sequence: it doesn't start another
+
+// How long after a tap the other button still completes a sequence: the "volumeSequenceWindow"
+// setting, in seconds (default 0.38)
+static NSTimeInterval RC_VolSequenceWindow(void) {
+    id value = g_triggerConfig[@"volumeSequenceWindow"];
+    double window = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : 0.38;
+    return MIN(MAX(window, 0.15), 0.8);
+}
+
 static void cancel_pending_volume_sequences() {
+    g_volUpSeqArmedUntil = 0;
+    g_volDownSeqArmedUntil = 0;
     if (g_pendingVolUpSeqTimer) {
         [g_pendingVolUpSeqTimer invalidate];
         g_pendingVolUpSeqTimer = nil;
@@ -10597,6 +10649,11 @@ static BOOL g_lockButtonTriggered = NO;
 static NSTimer *g_systemPowerOffTimer = nil; // New for dual-stage
 static BOOL g_forceSystemLongPress = NO;     // New for dual-stage
 static BOOL g_powerIsDown = NO;
+// When the user last pressed Power or touched the screen: after a direct sleep, either one means
+// the phone was woken on purpose, so the "screen is still on" check must not put it back to sleep
+static CFAbsoluteTime g_lastPowerDownAt = 0;
+static CFAbsoluteTime g_lastTouchAt = 0;
+static CFAbsoluteTime g_lastHomeDownAt = 0;
 static BOOL g_powerVolComboTriggered = NO;
 // Set alongside g_powerVolComboTriggered at every site that fires a power+
 // volume combo. SBLockHardwareButton's own singlePress: gesture recognizer
@@ -10753,7 +10810,8 @@ static BOOL g_volHookAlive = NO;              // set once the Volume Down-With-M
                                                // thread hook and the background HID thread can't both
                                                // fire the same combo trigger for one physical press
 static BOOL g_powerSuppressPostUp = NO;       // carry suppression from Pre into Post
-static BOOL g_powerDownAwaitingUp = NO;       // armed by a real power press-down, consumed by the
+static int g_powerDownsAwaitingUp = 0;        // press-downs armed by a real power press-down (a count: SpringBoard can
+                                               // run its button hooks for several quick presses at once), each consumed by the
                                                // first performButtonUpPreActions after it. The system
                                                // also re-invokes that UP method on its own with no
                                                // matching press; with no press left to pair with, that
@@ -10771,6 +10829,12 @@ static BOOL g_powerDownAwaitingUp = NO;       // armed by a real power press-dow
 static BOOL g_powerDeferActive = NO;          // latched at DOWN, honoured at UP
 static __weak id g_powerActionsInstance = nil; // cached SBLockHardwareButtonActions
 static BOOL g_walletDoublePressDeferred = NO; // latched when native Wallet double-press is held back
+static BOOL g_powerWakeHeld = NO;             // a press made on a sleeping screen is held back (Power Long Press is bound),
+                                               // so a hold fires the trigger without waking the phone; a tap wakes it on release
+static BOOL g_powerWakePass = NO;             // press 1 made on a sleeping screen with a multi-click trigger bound: it wakes
+                                               // the phone as usual and counts as the first click, so a double press from sleep works
+static BOOL g_powerSequenceWoke = NO;         // the running click sequence began with such a wake: its first press is not replayed
+static CFAbsoluteTime g_powerSequenceWokeAt = 0; // when that wake happened: an old one is stale
 
 // Mirrors RCExecuteTrigger's own "will this actually do anything" check -
 // a trigger toggled on with zero actions assigned fires as a silent no-op
@@ -10919,6 +10983,38 @@ static void RC_ReplayPowerTimeline(NSArray<NSNumber *> *downs, NSArray<NSNumber 
 // One press, for an action (Lock Device, "button power") or a deferred single press
 static void RC_ReplayPowerPress(void) {
     RC_ReplayPowerTimeline(@[@0], @[@0.05]);
+}
+
+static void RC_ReplayPowerPresses(NSUInteger count);
+
+// Gives back the presses of a click sequence that no trigger claimed. One press puts the phone
+// to sleep through SpringBoard's own sleep routine: replaying it as a press sent it through
+// iOS's double-press wait a second time (over a second in all on an iPhone 15). If the screen
+// is still on shortly after, or the routine isn't there, the press is replayed instead - the
+// phone must not be left lit.
+static void RC_GivePressesBack(NSUInteger presses) {
+    id actions = g_powerActionsInstance;
+    id interaction = [actions respondsToSelector:@selector(sleepWakeButtonInteraction)] ? [actions sleepWakeButtonInteraction] : nil;
+    if (presses == 1 && [interaction respondsToSelector:@selector(_performSleep)] && RC_ScreenIsOn()) {
+        g_replayChainGeneration++;
+        NSUInteger generation = g_replayChainGeneration;
+        SRLog(@"[Power] Putting the phone to sleep directly");
+        CFAbsoluteTime sleptAt = CFAbsoluteTimeGetCurrent();
+        [(SBSleepWakeHardwareButtonInteraction *)interaction _performSleep];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            // A newer press, or a sleep that did happen, needs nothing
+            if (generation != g_replayChainGeneration || g_powerIsDown || !RC_ScreenIsOn()) return;
+            // Woken again since (a tap, Power or Home): the screen is on because the user turned it on
+            if (g_lastTouchAt > sleptAt || g_lastPowerDownAt > sleptAt || g_lastHomeDownAt > sleptAt) {
+                SRLog(@"[Power] The phone was woken again right after the sleep - leaving it on");
+                return;
+            }
+            SRLog(@"[Power] The direct sleep did not turn the screen off - replaying the press");
+            RC_ReplayPowerPresses(1);
+        });
+        return;
+    }
+    RC_ReplayPowerPresses(presses);
 }
 
 // Hands `count` deferred presses back to the system with the timing the hardware gave them -
@@ -11201,6 +11297,22 @@ static BOOL g_isSwappingVolume = NO;
         }
     }
 
+    // Down then Up, the Down tap having gone to native already (see g_volDownSeqArmedUntil)
+    if (g_volDownSeqArmedUntil > now) {
+        g_volDownSeqArmedUntil = 0;
+        if (RC_TriggerIsActionable(@"volume_down_then_up") && !g_volDownIsDown && !RC_VolPressesOverlapped()) {
+            SRLog(@"Volume Down then Up sequence triggered! (Down had gone to native; this Up cancels it)");
+            g_volUpSeqArmedUntil = 0;
+            g_volUpSkipArm = YES;
+            trigger_haptic();
+            RCExecuteTrigger(@"volume_down_then_up");
+            g_volUpLastPassedThrough = YES;
+            g_volUpNativeSessionActive = YES;
+            %orig;
+            return;
+        }
+    }
+
     // 3. If user is rapidly tapping Vol Up again, cancel pending Vol Up replay timer and replay immediately
     if (g_pendingVolUpSeqTimer) {
         [g_pendingVolUpSeqTimer invalidate];
@@ -11211,11 +11323,11 @@ static BOOL g_isSwappingVolume = NO;
         g_volIsReplaying = NO;
     }
 
-    // Only a hold or sequence trigger needs this press held back (to tell a tap
-    // from a hold). Otherwise hand it to native straight away, so taps and holds
-    // behave exactly like stock - replaying it after a 0.35s wait delayed the ramp
+    // Only a hold trigger needs this press held back (to tell a tap from a hold); a sequence
+    // is watched for after the tap instead (see g_volUpSeqArmedUntil). Otherwise hand it to
+    // native straight away, so taps and holds behave exactly like stock - replaying it after a 0.35s wait delayed the ramp
     // and made the volume jerk. Volume Both Press is still detected below.
-    BOOL passthrough = !RC_TriggerIsActionable(@"volume_up_hold") && !RC_TriggerIsActionable(@"volume_up_then_down");
+    BOOL passthrough = !RC_TriggerIsActionable(@"volume_up_hold");
 
     // 4. Check for simultaneous Volume Up + Volume Down dual press
     BOOL isDualPress = g_volDownIsDown || (g_lastVolDownPressTime > 0 && (now - g_lastVolDownPressTime) < 0.20);
@@ -11331,6 +11443,12 @@ static BOOL g_isSwappingVolume = NO;
         g_volUpNativeSessionActive = NO;
         SRLog(@"[Vol] Up release of a native press - forwarding to native");
         g_volUpIsDown = NO;
+        // A tap that went to native: Down within the window completes Up then Down
+        NSTimeInterval releasedAt = [[NSDate date] timeIntervalSince1970];
+        if (!g_volUpSkipArm && !g_volComboTriggered && !g_volDownIsDown && releasedAt - g_lastVolUpPressTime < RC_VolumeHoldTime() && RC_TriggerIsActionable(@"volume_up_then_down")) {
+            g_volUpSeqArmedUntil = releasedAt + RC_VolSequenceWindow();
+        }
+        g_volUpSkipArm = NO;
         if (g_volComboTriggered && !g_volDownIsDown) g_volComboTriggered = NO;
         g_volIsReplaying = YES;
         %orig;
@@ -11377,7 +11495,7 @@ static BOOL g_isSwappingVolume = NO;
 
             if (seqUpDownEnabled) {
                 if (g_pendingVolUpSeqTimer) [g_pendingVolUpSeqTimer invalidate];
-                g_pendingVolUpSeqTimer = [NSTimer scheduledTimerWithTimeInterval:0.38 repeats:NO block:^(NSTimer *timer) {
+                g_pendingVolUpSeqTimer = [NSTimer scheduledTimerWithTimeInterval:RC_VolSequenceWindow() repeats:NO block:^(NSTimer *timer) {
                     g_pendingVolUpSeqTimer = nil;
                     g_volIsReplaying = YES;
                     [self volumeIncreasePressDownWithModifiers:0];
@@ -11470,6 +11588,22 @@ static BOOL g_isSwappingVolume = NO;
         }
     }
 
+    // Up then Down, the Up tap having gone to native already (see g_volUpSeqArmedUntil)
+    if (g_volUpSeqArmedUntil > now) {
+        g_volUpSeqArmedUntil = 0;
+        if (RC_TriggerIsActionable(@"volume_up_then_down") && !g_volUpIsDown && !RC_VolPressesOverlapped()) {
+            SRLog(@"Volume Up then Down sequence triggered! (Up had gone to native; this Down cancels it)");
+            g_volDownSeqArmedUntil = 0;
+            g_volDownSkipArm = YES;
+            trigger_haptic();
+            RCExecuteTrigger(@"volume_up_then_down");
+            g_volDownLastPassedThrough = YES;
+            g_volDownNativeSessionActive = YES;
+            %orig;
+            return;
+        }
+    }
+
     // 3. If user is rapidly tapping Vol Down again, cancel pending Vol Down replay timer and replay immediately
     if (g_pendingVolDownSeqTimer) {
         [g_pendingVolDownSeqTimer invalidate];
@@ -11481,7 +11615,7 @@ static BOOL g_isSwappingVolume = NO;
     }
 
     // See the symmetric comment in volumeIncreasePressDownWithModifiers:.
-    BOOL passthrough = !RC_TriggerIsActionable(@"volume_down_hold") && !RC_TriggerIsActionable(@"volume_down_then_up");
+    BOOL passthrough = !RC_TriggerIsActionable(@"volume_down_hold");
 
     // 4. Check for simultaneous Volume Up + Volume Down dual press
     BOOL isDualPress = g_volUpIsDown || (g_lastVolUpPressTime > 0 && (now - g_lastVolUpPressTime) < 0.20);
@@ -11582,6 +11716,12 @@ static BOOL g_isSwappingVolume = NO;
         g_volDownNativeSessionActive = NO;
         SRLog(@"[Vol] Down release of a native press - forwarding to native");
         g_volDownIsDown = NO;
+        // A tap that went to native: Up within the window completes Down then Up
+        NSTimeInterval releasedAt = [[NSDate date] timeIntervalSince1970];
+        if (!g_volDownSkipArm && !g_volComboTriggered && !g_volUpIsDown && releasedAt - g_lastVolDownPressTime < RC_VolumeHoldTime() && RC_TriggerIsActionable(@"volume_down_then_up")) {
+            g_volDownSeqArmedUntil = releasedAt + RC_VolSequenceWindow();
+        }
+        g_volDownSkipArm = NO;
         if (g_volComboTriggered && !g_volUpIsDown) g_volComboTriggered = NO;
         g_volIsReplaying = YES;
         %orig;
@@ -11628,7 +11768,7 @@ static BOOL g_isSwappingVolume = NO;
 
             if (seqDownUpEnabled) {
                 if (g_pendingVolDownSeqTimer) [g_pendingVolDownSeqTimer invalidate];
-                g_pendingVolDownSeqTimer = [NSTimer scheduledTimerWithTimeInterval:0.38 repeats:NO block:^(NSTimer *timer) {
+                g_pendingVolDownSeqTimer = [NSTimer scheduledTimerWithTimeInterval:RC_VolSequenceWindow() repeats:NO block:^(NSTimer *timer) {
                     g_pendingVolDownSeqTimer = nil;
                     g_volIsReplaying = YES;
                     [self volumeDecreasePressDownWithModifiers:0];
@@ -11729,8 +11869,9 @@ static void RC_CheckAndFire() {
     }
     
     // 4. Determines Timeout
-    NSTimeInterval timeout = 0.35; 
-    if (quadEnabled) timeout = 0.55; 
+    // The window is Settings > Home Clicks (0.35 s by default); a bound Quadruple Click adds 0.2 s
+    NSTimeInterval timeout = RC_HomeClickWindow();
+    if (quadEnabled) timeout += 0.2;
     
     // 5. Schedule Timer
     g_homeClickTimer = [NSTimer scheduledTimerWithTimeInterval:timeout repeats:NO block:^(NSTimer *timer) {
@@ -11773,6 +11914,7 @@ static void RC_ProcessPowerClick() {
     });
 }
 
+
 // Power Button Multi-Click Logic
 static void RC_CheckAndFirePower() {
     // 1. Reset timer
@@ -11798,8 +11940,15 @@ static void RC_CheckAndFirePower() {
         return;
     }
     
-    // 4. Timeout
-    NSTimeInterval timeout = 0.4; 
+    // 4. Timeout. The window only has to outlast the gap to the next click, and nothing
+    // waits on a third click unless a Triple or Quad is bound: with just Double-Tap bound the
+    // first press waits 0.3 s, and the second one ends the sequence at once.
+    // The window is Settings > Power Clicks (0.4 s by default); with only Double-Tap bound the
+    // first press waits three quarters of it (0.3 s by default)
+    NSTimeInterval timeout = RC_PowerClickWindow();
+    if (!RC_HigherPowerMultiClickArmed()) {
+        timeout = (g_powerClickCount >= 2) ? 0.02 : timeout * 0.75;
+    }
     
     // 5. Schedule Timer
     g_powerClickTimer = [NSTimer scheduledTimerWithTimeInterval:timeout repeats:NO block:^(NSTimer *timer) {
@@ -11818,6 +11967,8 @@ static void RC_CheckAndFirePower() {
         // below starts a clean sequence.
         int count = g_powerClickCount;
         g_powerClickCount = 0;
+        BOOL sequenceWoke = g_powerSequenceWoke;
+        g_powerSequenceWoke = NO;
         SRLog(@"POWER SEQUENCE ENDED. Final count: %d", count);
 
         NSString *triggerKey = nil;
@@ -11859,7 +12010,11 @@ static void RC_CheckAndFirePower() {
         // was just replayed instead - that already gave the system a native
         // outcome for these clicks, and replaying a click on top would spuriously
         // lock/wake the screen right after Wallet opens.
-        if (!claimed && !walletReplayed && count >= 1 && g_powerHookAlive) {
+        // The press that woke a sleeping phone (see g_powerWakePass) has done its work; only the
+        // presses after it were held back
+        int replayCount = count - (sequenceWoke ? 1 : 0);
+        if (!claimed && !walletReplayed && replayCount >= 1 && g_powerHookAlive) {
+            int count = replayCount;
             // Replay only as many presses as iOS treated as presses of their own
             // (see g_nativeSinglePressCount). Its gestures normally fire before this
             // timer; if some haven't yet, wait a moment for them - the singlePress:
@@ -11878,16 +12033,18 @@ static void RC_CheckAndFirePower() {
                         return;
                     }
                     SRLog(@"[Power] iOS treated %lu of %d presses as presses of their own - replaying those", (unsigned long)presses, count);
-                    RC_ReplayPowerPresses(presses);
+                    RC_GivePressesBack(presses);
                 });
                 return;
             }
-            RC_ReplayPowerPresses(count);
+            RC_GivePressesBack(count);
         }
     }];
 }
 
 static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientRef service, IOHIDEventRef event) {
+    // Before the exclusion check: a touch is a touch whatever app is in front
+    if (IOHIDEventGetType(event) == 11) g_lastTouchAt = CFAbsoluteTimeGetCurrent(); // kIOHIDEventTypeDigitizer
     if (RC_IsForegroundAppExcluded()) return;
     int type = IOHIDEventGetType(event);
     
@@ -12042,6 +12199,7 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
         if (usagePage == kHIDPage_Consumer && usage == kHIDUsage_Csmr_Menu) {
             NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
             g_homeHeldOnHID = !!down;
+            if (down) g_lastHomeDownAt = CFAbsoluteTimeGetCurrent();
             if (down && g_powerHeldOnHID) RC_NoteHomePowerChord();
             if (!down) RC_FinishHomePowerChord();
             
@@ -12116,7 +12274,8 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
             if (down) {
                 // Outside the !g_powerIsDown guard: the main thread can set
                 // g_powerIsDown first, which would skip this whole block.
-                g_powerDownAwaitingUp = YES;
+                if (g_hidPowerPresses <= 1) g_powerDownsAwaitingUp = 0; // first press of a sequence
+                if (g_powerDownsAwaitingUp < 4) g_powerDownsAwaitingUp++;
                 // Backup for presses where iOS skips performInitialButtonDownActions
                 // (e.g. the 2nd of two quick presses) - see g_screenshotGestureRecognizer.
                 dispatch_async(dispatch_get_main_queue(), ^{
@@ -12126,6 +12285,7 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
                 });
                 if (!g_powerIsDown) {
                     g_powerIsDown = YES;
+                    g_lastPowerDownAt = CFAbsoluteTimeGetCurrent();
                     lastPowerDownTime = now;
                     SRLog(@"[HID] ⚡️ Power DOWN");
                     
@@ -12394,7 +12554,7 @@ static void setup_background_hid_listener() {
 
     g_powerSuppressPostUp = NO; // fresh press
     g_powerIsDown = YES;
-    g_powerDownAwaitingUp = YES;
+    if (g_powerDownsAwaitingUp < 1) g_powerDownsAwaitingUp = 1; // the HID listener normally armed it already
     g_replaySinglePressesAllowed = 0; // a new real press; any unclaimed replay slot is stale
     g_powerPressIsCombo = NO;
     g_powerReleasedWithVolumeHeld = NO;
@@ -12448,7 +12608,7 @@ static void setup_background_hid_listener() {
 
     if (longPressEnabled) {
         if (g_lockButtonTimer == nil && !g_lockButtonTriggered) {
-            g_lockButtonTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:NO block:^(NSTimer *timer) {
+            g_lockButtonTimer = [NSTimer scheduledTimerWithTimeInterval:RC_PowerHoldTime() repeats:NO block:^(NSTimer *timer) {
                 g_lockButtonTimer = nil;
                 if (!g_powerIsDown) {
                     SRLog(@"Power Long Press ignored because button is not down");
@@ -12459,16 +12619,19 @@ static void setup_background_hid_listener() {
                 RCExecuteTrigger(@"power_long_press");
                 SRLog(@"Power Long Press Fired (Stage 1)!");
                 
-                // Start Stage 2 Timer (System Power Off) - 2.0s later (2.5s total hold)
-                g_systemPowerOffTimer = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:NO block:^(NSTimer *t) {
-                     g_systemPowerOffTimer = nil;
-                     if (!g_powerIsDown) return;
-                     SRLog(@"Power Long Press (Stage 2) - Forcing System Power Off Screen");
-                     g_forceSystemLongPress = YES;
-                     
-                     // Manually invoke the action again, but this time g_forceSystemLongPress is YES
-                     [self performLongPressActions];
-                }];
+                // Start Stage 2 Timer (System Power Off) - 2.0s later (2.5s total hold). Not for a
+                // press made on a sleeping screen: the power-off slider would wake it.
+                if (!g_powerWakeHeld) {
+                    g_systemPowerOffTimer = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:NO block:^(NSTimer *t) {
+                         g_systemPowerOffTimer = nil;
+                         if (!g_powerIsDown) return;
+                         SRLog(@"Power Long Press (Stage 2) - Forcing System Power Off Screen");
+                         g_forceSystemLongPress = YES;
+                         
+                         // Manually invoke the action again, but this time g_forceSystemLongPress is YES
+                         [self performLongPressActions];
+                    }];
+                }
             }];
         }
     }
@@ -12481,6 +12644,35 @@ static void setup_background_hid_listener() {
     // replays it, so a plain single press still locks/wakes as normal.
     // Latch the decision at DOWN so a config reload mid-press can't leave the
     // UP half disagreeing with the DOWN half.
+    // A press on a sleeping screen with Power Long Press bound is held back, so that holding
+    // it fires the trigger without waking the phone. A tap wakes it on release.
+    g_powerWakeHeld = NO;
+    if (!(g_powerClickTimer != nil && g_powerClickCount > 0) && !RC_ScreenIsOn() && RC_TriggerIsActionable(@"power_long_press")) {
+        g_powerWakeHeld = YES;
+        g_powerDeferActive = YES;
+        SRLog(@"Holding system power DOWN on a sleeping screen (Power Long Press bound)");
+        return;
+    }
+
+    // A wake with no press right after it leaves the flag set; a press made later (to put the phone
+    // to sleep) would be taken for the waking one and never replayed
+    if (g_powerSequenceWoke && !(g_powerClickTimer != nil && g_powerClickCount > 0) &&
+        CFAbsoluteTimeGetCurrent() - g_powerSequenceWokeAt > RC_PowerClickWindow() + 0.1) {
+        g_powerSequenceWoke = NO;
+    }
+
+    g_powerWakePass = NO;
+    if (!(g_powerClickTimer != nil && g_powerClickCount > 0) && !RC_ScreenIsOn() && RC_PowerMultiClickEnabled()) {
+        // Wakes the phone as usual, and counts as the first click
+        g_powerWakePass = YES;
+        g_powerSequenceWoke = YES;
+        g_powerSequenceWokeAt = CFAbsoluteTimeGetCurrent();
+        g_powerDeferActive = NO;
+        SRLog(@"Power DOWN on a sleeping screen - it wakes the phone and counts as click 1");
+        %orig;
+        return;
+    }
+
     g_powerDeferActive = RC_ShouldDeferPowerPress();
     if (g_powerDeferActive) {
         SRLog(@"Deferring system power DOWN (multi-click armed)");
@@ -12539,7 +12731,7 @@ static void setup_background_hid_listener() {
     // The system re-invokes this method a second time on its own, with no
     // matching press - confirmed in the field: a real triple-click produced a
     // 4th, phantom call here. Only the first UP after a real DOWN is real (see
-    // g_powerDownAwaitingUp). This must run before ANY suppression-reason
+    // g_powerDownsAwaitingUp). This must run before ANY suppression-reason
     // branch below, not just the deferred-click one: each of those returns
     // early once it decides why to suppress the REAL call, and if any of them
     // left this flag unconsumed, the phantom call - which hits none of those
@@ -12548,8 +12740,8 @@ static void setup_background_hid_listener() {
     // (confirmed in the field via the combo branch). Suppress the paired
     // postActions call too via the same one-shot flag it already checks, so
     // neither half of the phantom event reaches the system.
-    BOOL isRealPress = g_powerDownAwaitingUp;
-    g_powerDownAwaitingUp = NO;
+    BOOL isRealPress = g_powerDownsAwaitingUp > 0;
+    if (g_powerDownsAwaitingUp > 0) g_powerDownsAwaitingUp--;
     if (!isRealPress) {
         SRLog(@"Ignoring synthetic performButtonUpPreActions call (no matching press)");
         g_powerSuppressPostUp = YES;
@@ -12574,6 +12766,28 @@ static void setup_background_hid_listener() {
         // lock/sleep on top of the combo action that had already fired.
         g_powerVolComboTriggered = NO;
         g_powerSuppressPostUp = YES;
+        return;
+    }
+
+    // A press held back on a sleeping screen (see g_powerWakeHeld), released before the long press
+    // fired, was a tap: it wakes the phone now. Replaying it would not - synthetic presses don't
+    // wake - and it has no clicks to wait for: a sleeping screen doesn't count clicks.
+    if (g_powerWakeHeld) {
+        g_powerWakeHeld = NO;
+        // iOS's own wake sequence, run late: the press-down it was denied, then this release.
+        // Waking through the backlight controller alone left the lock screen without its
+        // wallpaper and clock (iPhone 15, iOS 17) - only the notifications and toggles came up.
+        SRLog(@"[Power] Tap on a sleeping screen - running iOS's wake for it now");
+        g_powerIsReplaying = YES;
+        [self performInitialButtonDownActions];
+        g_powerIsReplaying = NO;
+        if (RC_PowerMultiClickEnabled()) {
+            g_powerSequenceWoke = YES;
+            g_powerSequenceWokeAt = CFAbsoluteTimeGetCurrent();
+            g_powerClickCount++;
+            RC_CheckAndFirePower();
+        }
+        %orig;
         return;
     }
 
@@ -12793,7 +13007,7 @@ static void setup_background_hid_listener() {
             NSUInteger presses = g_replayAwaitingSequenceCount;
             g_replayAwaitingSequenceCount = 0;
             SRLog(@"Suppressing native singlePress: for a deferred press - replaying the sequence's %lu press(es) now", (unsigned long)presses);
-            RC_ReplayPowerPresses(presses);
+            RC_GivePressesBack(presses);
             return;
         }
         SRLog(@"Suppressing native singlePress: for a deferred press - its replay supplies its own");
