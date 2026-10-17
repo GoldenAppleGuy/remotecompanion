@@ -5302,6 +5302,44 @@ static NSString *evaluate_lua_code(NSString *code) {
     return output;
 }
 
+// The installed apps as @{name, bundleId}, sorted by name (the web UI's app picker)
+static NSArray<NSDictionary *> *RCInstalledAppList(void) {
+    void *lsHandle = dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices", RTLD_NOW);
+    if (!lsHandle) {
+        lsHandle = dlopen("/System/Library/PrivateFrameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
+    }
+
+    NSMutableArray *appList = [NSMutableArray array];
+    Class LSApplicationWorkspaceClass = objc_getClass("LSApplicationWorkspace");
+    if (LSApplicationWorkspaceClass) {
+        NSArray *apps = [[LSApplicationWorkspaceClass defaultWorkspace] allInstalledApplications];
+        SRLog(@"API: Found %lu installed applications", (unsigned long)apps.count);
+        for (LSApplicationProxy *proxy in apps) {
+            NSString *name = nil;
+            if ([proxy respondsToSelector:@selector(localizedName)]) {
+                name = [proxy localizedName];
+            }
+            NSString *bid = nil;
+            if ([proxy respondsToSelector:@selector(applicationIdentifier)]) {
+                bid = [proxy applicationIdentifier];
+            }
+        
+            if (name && bid) {
+                [appList addObject:@{@"name": name, @"bundleId": bid}];
+            }
+        }
+    } else {
+        SRLog(@"API: LSApplicationWorkspace class NOT FOUND after dlopen");
+    }
+
+    // Sort by name
+    [appList sortUsingComparator:^NSComparisonResult(id obj1, id obj2) {
+        return [obj1[@"name"] localizedCaseInsensitiveCompare:obj2[@"name"]];
+    }];
+    SRLog(@"API: returning %lu apps in device list", (unsigned long)appList.count);
+    return appList;
+}
+
 static NSArray* RCFetchAirPlayDeviceNames() {
     __block NSArray *deviceNames = nil;
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
@@ -10249,39 +10287,7 @@ static void start_web_server() {
                                         }
                                     }
 
-                                    void *lsHandle = dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices", RTLD_NOW);
-                                    if (!lsHandle) {
-                                        lsHandle = dlopen("/System/Library/PrivateFrameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
-                                    }
-
-                                    NSMutableArray *appList = [NSMutableArray array];
-                                    Class LSApplicationWorkspaceClass = objc_getClass("LSApplicationWorkspace");
-                                    if (LSApplicationWorkspaceClass) {
-                                        NSArray *apps = [[LSApplicationWorkspaceClass defaultWorkspace] allInstalledApplications];
-                                        SRLog(@"API: Found %lu installed applications", (unsigned long)apps.count);
-                                        for (LSApplicationProxy *proxy in apps) {
-                                            NSString *name = nil;
-                                            if ([proxy respondsToSelector:@selector(localizedName)]) {
-                                                name = [proxy localizedName];
-                                            }
-                                            NSString *bid = nil;
-                                            if ([proxy respondsToSelector:@selector(applicationIdentifier)]) {
-                                                bid = [proxy applicationIdentifier];
-                                            }
-                                            
-                                            if (name && bid) {
-                                                [appList addObject:@{@"name": name, @"bundleId": bid}];
-                                            }
-                                        }
-                                    } else {
-                                        SRLog(@"API: LSApplicationWorkspace class NOT FOUND after dlopen");
-                                    }
-
-                                    // Sort by name
-                                    [appList sortUsingComparator:^NSComparisonResult(id obj1, id obj2) {
-                                        return [obj1[@"name"] localizedCaseInsensitiveCompare:obj2[@"name"]];
-                                    }];
-                                    SRLog(@"API: returning %lu apps in device list", (unsigned long)appList.count);
+                                    NSArray *appList = RCInstalledAppList();
                                     
                                     NSArray *airplayNames = RCFetchAirPlayDeviceNames();
 
@@ -10295,6 +10301,16 @@ static void start_web_server() {
                                     NSData *respData = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
                                     NSString *jsonStr = [[NSString alloc] initWithData:respData encoding:NSUTF8StringEncoding];
                                     responseString = [NSString stringWithFormat:@"HTTP/1.1 200 OK\r\n%@Content-Type: application/json\r\nContent-Length: %lu\r\n\r\n%@", cors, (unsigned long)[jsonStr lengthOfBytesUsingEncoding:NSUTF8StringEncoding], jsonStr];
+                                }
+                            } else if ([path isEqualToString:@"/api/apps"] && [method isEqualToString:@"GET"]) {
+                                // What the web UI's app pickers fetch (the same list as "apps" in /api/devices)
+                                load_trigger_config();
+                                if (![g_triggerConfig[@"webUIEnabled"] boolValue]) {
+                                    responseString = [NSString stringWithFormat:@"HTTP/1.1 403 Forbidden\r\n%@Content-Length: 17\r\n\r\nWeb UI is disabled", cors];
+                                } else {
+                                    NSData *appsData = [NSJSONSerialization dataWithJSONObject:RCInstalledAppList() options:0 error:nil];
+                                    NSString *appsJson = [[NSString alloc] initWithData:appsData encoding:NSUTF8StringEncoding];
+                                    responseString = [NSString stringWithFormat:@"HTTP/1.1 200 OK\r\n%@Content-Type: application/json\r\nContent-Length: %lu\r\n\r\n%@", cors, (unsigned long)appsData.length, appsJson];
                                 }
                             } else if ([path isEqualToString:@"/api/commands"] && [method isEqualToString:@"GET"]) {
                                 NSArray *commandList = @[
