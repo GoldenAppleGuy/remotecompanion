@@ -146,7 +146,7 @@
 - (void)tagReaderSession:(NFCTagReaderSession *)session didInvalidateWithError:(NSError *)error {
     if (error.code != NFCReaderSessionInvalidationErrorUserCanceled) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.statusLabel.text = [NSString stringWithFormat:@"Error: %@", error.localizedDescription];
+            self.statusLabel.text = [NSString stringWithFormat:@"Error: %@ (%@ %ld)", error.localizedDescription, error.domain, (long)error.code];
         });
     } else {
         dispatch_async(dispatch_get_main_queue(), ^{

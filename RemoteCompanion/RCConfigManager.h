@@ -26,6 +26,8 @@
 // Actions with a banner of their own that have been switched off in Settings > Banners
 @property (nonatomic, copy) NSArray<NSString *> *bannerOptOut;
 @property (nonatomic, assign) BOOL nfcEnabled;
+// Seconds the NFC scan keeps going after the screen turns off (0: only while the screen is on)
+@property (nonatomic, assign) double nfcScreenOffSeconds;
 @property (nonatomic, assign) BOOL rootEnabled;
 @property (nonatomic, assign) BOOL haEnabled;
 @property (nonatomic, copy) NSString *haUrl;
