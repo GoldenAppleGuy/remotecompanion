@@ -12657,7 +12657,7 @@ static void setup_background_hid_listener() {
     // A wake with no press right after it leaves the flag set; a press made later (to put the phone
     // to sleep) would be taken for the waking one and never replayed
     if (g_powerSequenceWoke && !(g_powerClickTimer != nil && g_powerClickCount > 0) &&
-        CFAbsoluteTimeGetCurrent() - g_powerSequenceWokeAt > 0.5) {
+        CFAbsoluteTimeGetCurrent() - g_powerSequenceWokeAt > RC_PowerClickWindow() + 0.1) {
         g_powerSequenceWoke = NO;
     }
 
