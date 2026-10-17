@@ -5,12 +5,48 @@ All notable changes to this project will be documented in this file.
 ## [4.0.0] - Unreleased
 
 ### Added
-- Auto-Lock action and condition support.
-- Configurable banners for action triggers.
-- Smaller relative volume steps with `volume up N` and `volume down N`.
+- **Button Timing Engine & Settings**:
+  - New dedicated **Settings > Button Timing** menu allowing granular control of sequence and click windows.
+  - Configurable timing for **Volume Sequence** (default 0.38s), **Power Clicks** (default 0.4s), **Home Clicks** (default 0.35s on Home-button devices), **Volume Hold** (default 0.35s), and **Power Hold** (default 0.5s).
+  - Fast-path native passthrough: single volume button taps reach iOS immediately with zero sequence delay unless a hold or combo trigger requires suppression.
+  - Multi-click power press detection on dark/sleeping screen: waking press is counted as click 1 without replaying an extra press that turns the screen back off.
+  - Unclaimed Power press handling: re-sleeps the screen via SpringBoard's native sleep routine (`SBSleepWakeHardwareButtonInteraction`) on iOS 14+ rather than delaying 1.3s for synthetic replay.
+  - Power Long Press on sleeping screen: holds device in sleep mode (no wake, no Siri prompt, no power-off slider) while executing the bound trigger.
+- **Sound & Haptics Category**:
+  - New dedicated **Sound** category in the action picker with custom icons for every action.
+  - **Silent Mode**: discrete commands for `ringer silent`, `ringer ring`, and `ringer toggle`.
+  - **Ringer Volume**: configurable percentage level via `ringer volume <0-100>`.
+  - **Haptics Control**: switch haptics behavior between `always`, `silent-only`, `ring-only`, and `never`.
+  - **Unified Noise Control (ANC)**: consolidated active noise cancellation actions (`anc on`, `anc transparency`, `anc off`).
+  - Relative volume steps: fine-tuned volume adjustments using `volume up N` and `volume down N`.
+- **UI & Navigation Overhaul**:
+  - Dedicated **New Trigger** picker screen replacing the legacy action sheet.
+  - Category navigation bar on both Triggers and Action Picker screens with auto-hide on downward scroll and reveal on upward scroll.
+  - Interactive **Device Picker** modal list for quickly selecting discovered AirPlay and Bluetooth audio routes.
+  - Configurable action banners (**Settings > Banners**): customize which actions display banner alerts and optionally mute default notifications.
+  - Performance Logging setting (**Settings > Logging**): choose between `Off`, `Minimal`, and `Full` verbosity for faster event dispatch.
+- **Expanded Automation & Conditions**:
+  - 13 new If Conditions including Auto-Lock timeout state, Haptics mode, Silent/Ring vibration states, and more.
+  - **Auto-Lock** system action and condition support (`autolock toggle`, `never`, `30s`, `1m`, etc.).
+  - Bottom Bar Swipe Left/Right gesture support on bezel-less Face ID devices.
 
 ### Fixed
-- ANC actions now have selectable On, Off, Transparency, and Toggle controls.
+- **iOS 17 Compatibility**:
+  - Fixed Power and Volume hardware button hooks and synthetic HID event dispatch.
+  - Resolved Camera Shutter action crashing the native Camera app on iOS 17.
+  - Fixed Camera zoom levels, Time-Lapse mode selection, and flashlight state for video actions.
+  - Fixed Siri activation, App Switcher toggle, and Ringer Switch triggers on iOS 17.
+  - Fixed Low Power Mode toggle commands on iOS 15+.
+- **Hardware Button Reliability**:
+  - Resolved race condition where two rapid Power presses dropped the second event as a phantom press.
+  - Moved foreground app identification off SpringBoard's main thread with a 25ms timeout to prevent button event lag during device wake.
+  - Fixed Volume Both Press firing twice on overlapping button presses.
+  - Fixed screenshot combo (`Volume Up + Power` and `Home + Power`) sleeping the device after capturing.
+  - Fixed Media Player condition reading `Stopped` properly when no media is playing.
+  - Corrected `End If` conditional block nesting and parsing.
+- **Web UI & Performance**:
+  - Fixed empty Web UI app picker by adding dedicated `/api/apps` endpoint serving installed application names and bundle IDs (#88).
+  - Optimized config lookup on fresh installs by throttling app folder searches and suppressing repetitive "No trigger config found" log spam (#79).
 
 ## [3.7.0] - 2026-10-01
 
