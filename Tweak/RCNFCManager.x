@@ -581,7 +581,9 @@ static void resume_nfc_callback(CFNotificationCenterRef center, void *observer, 
     RCNFCManager *manager = [RCNFCManager sharedInstance];
     manager.suspendedUntil = nil;
     [manager noteActivity];
-    [manager scheduleRescanAfter:0.5];
+    // A page that has just read a tag takes a moment to let go of the reader: on iOS 14 a scan
+    // started sooner reports that it is polling and hears nothing for the rest of the session
+    [manager scheduleRescanAfter:2.5];
 }
 
 %ctor {
