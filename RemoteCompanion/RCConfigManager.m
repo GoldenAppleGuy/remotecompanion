@@ -727,6 +727,11 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     notify_post("com.pizzaman.rc.stop_nfc");
 }
 
+- (void)resumeBackgroundNFC {
+    NSLog(@"[RCConfigManager] Signaling that background NFC scanning can resume");
+    notify_post("com.pizzaman.rc.resume_nfc");
+}
+
 #pragma mark - UI Color Tweaks
 
 - (NSDictionary *)colorTweaks {

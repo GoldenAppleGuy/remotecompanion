@@ -576,6 +576,14 @@ static void stop_nfc_callback(CFNotificationCenterRef center, void *observer, CF
     [[RCNFCManager sharedInstance] stopScanning];
 }
 
+static void resume_nfc_callback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    SRLog(@"[NFC] Received resume_nfc notification - the app is done");
+    RCNFCManager *manager = [RCNFCManager sharedInstance];
+    manager.suspendedUntil = nil;
+    [manager noteActivity];
+    [manager scheduleRescanAfter:0.5];
+}
+
 %ctor {
     %init;
 
@@ -584,6 +592,14 @@ static void stop_nfc_callback(CFNotificationCenterRef center, void *observer, CF
         NULL,
         stop_nfc_callback,
         CFSTR("com.pizzaman.rc.stop_nfc"),
+        NULL,
+        CFNotificationSuspensionBehaviorDeliverImmediately);
+
+    CFNotificationCenterAddObserver(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        NULL,
+        resume_nfc_callback,
+        CFSTR("com.pizzaman.rc.resume_nfc"),
         NULL,
         CFNotificationSuspensionBehaviorDeliverImmediately);
         

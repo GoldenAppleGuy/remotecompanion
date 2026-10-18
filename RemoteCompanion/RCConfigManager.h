@@ -68,6 +68,7 @@
 - (void)saveConfig;
 - (void)loadConfig;
 - (void)stopBackgroundNFC;
+- (void)resumeBackgroundNFC;
 
 // UI Color Tweaks
 - (NSDictionary *)colorTweaks;

@@ -188,6 +188,18 @@
     // Legacy method, not used if didDetectTags is implemented
 }
 
+// The page's own scan ends with the page, and the tweak's scan can start again at once instead of
+// waiting for the next screen wake
+- (void)didMoveToParentViewController:(UIViewController *)parent {
+    [super didMoveToParentViewController:parent];
+    if (parent) return;
+    [self.tagSession invalidateSession];
+    self.tagSession = nil;
+    [self.ndefSession invalidateSession];
+    self.ndefSession = nil;
+    [[RCConfigManager sharedManager] resumeBackgroundNFC];
+}
+
 - (void)handleTagDetected:(NSString *)triggerKey {
     self.statusLabel.text = [NSString stringWithFormat:@"Found: %@", triggerKey];
     
