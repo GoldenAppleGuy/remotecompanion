@@ -50,6 +50,7 @@ extern NSTimeInterval RCNFCScreenOffWindow();
 @property (nonatomic, strong) NSDate *lastTagTime;
 @property (nonatomic, assign) NSUInteger heldReads;            // reads of the same tag in a row: it is staying on the phone
 @property (nonatomic, assign) NSTimeInterval lastRescanDelay;  // how long the scan waited before the read just made
+@property (nonatomic, assign) NSTimeInterval rescanLateness;   // how much later than planned the scan that made the read started
 @property (nonatomic, strong) NSDate *suspendedUntil; // the app is scanning itself: no restart before then
 @property (nonatomic, strong) NSDate *sessionStart;
 @property (nonatomic, strong) NSDate *lastActivity;   // the last wake or tag
@@ -107,6 +108,7 @@ static BOOL rcnfc_screenIsOn(void) {
 // Starts a scan again while the screen stays on: a read, or iOS ending the session, closes the
 // scan, and without this the next tag waits for the next wake
 - (void)scheduleRescanAfter:(NSTimeInterval)delay {
+    NSDate *planned = [NSDate dateWithTimeIntervalSinceNow:delay];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (self.isScanning) return;
         if (self.suspendedUntil && [self.suspendedUntil timeIntervalSinceNow] > 0) {
@@ -117,6 +119,10 @@ static BOOL rcnfc_screenIsOn(void) {
             SRLog(@"[NFC] Not restarting: the screen is off and nothing was read for %.0f s", RCNFCScreenOffWindow());
             return;
         }
+        // Timers stand still while the phone idles with the screen off, so the scan can restart much
+        // later than planned. A tag that stayed on the phone meanwhile is the same tap, not a new one.
+        self.rescanLateness = MAX(0, -[planned timeIntervalSinceNow]);
+        if (self.rescanLateness > 2.0) SRLog(@"[NFC] The restart ran %.0f s late", self.rescanLateness);
         SRLog(@"[NFC] Restarting the scan");
         [self startScanning];
     });
@@ -161,7 +167,7 @@ static BOOL rcnfc_screenIsOn(void) {
 // YES when the tag is the one just read: held against the phone, not a new tap. The longer the
 // scan waits between looks, the longer a tag that is still there can go unseen.
 - (BOOL)isRepeatOfTag:(NSString *)uid {
-    NSTimeInterval window = MAX(kRCNFCRepeatWindow, self.lastRescanDelay + 0.8);
+    NSTimeInterval window = MAX(kRCNFCRepeatWindow, self.lastRescanDelay + 0.8) + self.rescanLateness;
     BOOL repeat = self.lastTagUID && [self.lastTagUID isEqualToString:uid] && self.lastTagTime &&
                   [[NSDate date] timeIntervalSinceDate:self.lastTagTime] < window;
     self.lastTagUID = uid;
@@ -207,7 +213,8 @@ static BOOL rcnfc_screenIsOn(void) {
 
     // Debounce: a start right after another one (several wake hooks fire together)
     if (self.lastScanTime && [[NSDate date] timeIntervalSinceDate:self.lastScanTime] < 0.3) {
-        SRLog(@"[NFC] Skipping scan (debounce)");
+        SRLog(@"[NFC] Skipping scan (debounce) - trying again shortly");
+        [self scheduleRescanAfter:0.4];
         return;
     }
 
@@ -344,6 +351,7 @@ static BOOL rcnfc_screenIsOn(void) {
     });
     
     SRLog(@"[NFC-WAKE] Screen wake detected - waiting 500ms before NFC...");
+    self.rescanLateness = 0;
     
     // Delay before starting NFC to let hardware warm up after sleep
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
