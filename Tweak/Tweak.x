@@ -3202,6 +3202,16 @@ BOOL RCIsNFCEnabled() {
     return [g_triggerConfig[@"nfcEnabled"] boolValue];
 }
 
+// Seconds the NFC scan keeps going after the screen turns off (Settings > NFC With Screen Off)
+NSTimeInterval RCNFCScreenOffWindow() {
+    if (!g_triggerConfig) {
+        load_trigger_config();
+    }
+    id value = g_triggerConfig[@"nfcScreenOffSeconds"];
+    double seconds = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : 120.0;
+    return MIN(MAX(seconds, 0.0), 3600.0);
+}
+
 // ============ SYSTEM EVENT HANDLERS (WiFi/BT Triggers) ============
 #import <notify.h>
 #import <os/lock.h>

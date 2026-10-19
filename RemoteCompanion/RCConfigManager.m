@@ -333,6 +333,17 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     return [_config[@"nfcEnabled"] boolValue];
 }
 
+- (double)nfcScreenOffSeconds {
+    id value = _config[@"nfcScreenOffSeconds"];
+    double seconds = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : 120.0;
+    return MIN(MAX(seconds, 0.0), 3600.0);
+}
+
+- (void)setNfcScreenOffSeconds:(double)seconds {
+    _config[@"nfcScreenOffSeconds"] = @(seconds);
+    [self saveConfig];
+}
+
 - (BOOL)hapticsEnabled {
     // Default to YES if missing
     if (!_config[@"hapticsEnabled"]) {
@@ -714,6 +725,11 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
 - (void)stopBackgroundNFC {
     NSLog(@"[RCConfigManager] Signaling to stop background NFC scanning");
     notify_post("com.pizzaman.rc.stop_nfc");
+}
+
+- (void)resumeBackgroundNFC {
+    NSLog(@"[RCConfigManager] Signaling that background NFC scanning can resume");
+    notify_post("com.pizzaman.rc.resume_nfc");
 }
 
 #pragma mark - UI Color Tweaks
