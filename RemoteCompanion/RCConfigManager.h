@@ -13,7 +13,7 @@
 // (or Down then Up) sequence: 0.15 to 0.8, default 0.38
 @property (nonatomic, assign) double volumeSequenceWindow;
 // Seconds a Power press waits for the next click before the clicks count (a double, triple or
-// quadruple click): 0.25 to 0.8, default 0.4
+// quadruple click): 0.10 to 0.8, default 0.4
 @property (nonatomic, assign) double powerClickWindow;
 // Seconds a Home press waits for the next click (double, triple or quadruple): 0.25 to 0.8, default 0.35
 @property (nonatomic, assign) double homeClickWindow;

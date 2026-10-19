@@ -266,7 +266,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
 - (double)powerClickWindow {
     id value = _config[@"powerClickWindow"];
     double window = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : 0.4;
-    return MIN(MAX(window, 0.25), 0.8);
+    return MIN(MAX(window, 0.10), 0.8);
 }
 
 - (void)setPowerClickWindow:(double)powerClickWindow {

@@ -160,7 +160,7 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
         @"get": ^double{ return cm.volumeSequenceWindow; }, @"set": ^(double v) { cm.volumeSequenceWindow = v; } }];
     [rows addObject:@{ @"title": @"Power Clicks",
         @"message": @"How long a Power press waits for the next click before the clicks count as a double, triple or quadruple click.",
-        @"values": @[@0.25, @0.30, @0.35, @0.40, @0.50, @0.60, @0.70], @"default": @0.40,
+        @"values": @[@0.10, @0.15, @0.20, @0.25, @0.30, @0.35, @0.40, @0.50, @0.60, @0.70], @"default": @0.40,
         @"get": ^double{ return cm.powerClickWindow; }, @"set": ^(double v) { cm.powerClickWindow = v; } }];
     // A phone with a Home button has no safe area at the bottom of the screen
     UIWindow *window = self.view.window ?: [UIApplication sharedApplication].windows.firstObject;

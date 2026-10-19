@@ -1551,7 +1551,7 @@ static NSTimeInterval RC_ConfigTiming(NSString *key, double fallback, double min
     double seconds = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : fallback;
     return MIN(MAX(seconds, min), max);
 }
-static NSTimeInterval RC_PowerClickWindow(void) { return RC_ConfigTiming(@"powerClickWindow", 0.4, 0.25, 0.8); }
+static NSTimeInterval RC_PowerClickWindow(void) { return RC_ConfigTiming(@"powerClickWindow", 0.4, 0.10, 0.8); }
 static NSTimeInterval RC_HomeClickWindow(void)  { return RC_ConfigTiming(@"homeClickWindow", 0.35, 0.25, 0.8); }
 static NSTimeInterval RC_VolumeHoldTime(void)   { return RC_ConfigTiming(@"volumeHoldTime", 0.35, 0.2, 0.8); }
 static NSTimeInterval RC_PowerHoldTime(void)    { return RC_ConfigTiming(@"powerHoldTime", 0.5, 0.3, 0.75); }
