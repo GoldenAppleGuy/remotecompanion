@@ -1017,6 +1017,9 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"audiomix toggle": @"AudioMix Toggle",
         @"audiomix status": @"AudioMix Status",
         @"audiomix": @"AudioMix Toggle",
+        @"audiohandoff enabled on": @"AudioHandoff: Automatic Switching",
+        @"audiohandoff enabled off": @"AudioHandoff: Automatic Switching",
+        @"audiohandoff enabled toggle": @"AudioHandoff: Automatic Switching",
         @"audiohandoff auto on": @"AudioHandoff: Automatic Switching",
         @"audiohandoff auto off": @"AudioHandoff: Automatic Switching",
         @"audiohandoff auto toggle": @"AudioHandoff: Automatic Switching",
@@ -1390,6 +1393,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     }
 
     NSString *cmd = [[(NSString *)cmdId stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+    if ([cmd hasPrefix:@"audiohandoff enabled "] || [cmd hasPrefix:@"audiohandoff auto "] || [cmd isEqualToString:@"audiohandoff connect"]) return @"headphones";
     if ([cmd isEqualToString:@"camera record"]) return @"video.circle.fill";
     if ([cmd isEqualToString:@"camera shutter"]) return @"camera.circle.fill";
     if ([cmd hasPrefix:@"camera"] || [cmd hasPrefix:@"open camera"]) {
@@ -1689,13 +1693,13 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
             @"exactMatches": @{ @"audiomix": @"toggle" }
         },
         @{
-            @"key": @"audiohandoff_auto",
+            @"key": @"audiohandoff_enabled",
             @"name": @"AudioHandoff: Automatic Switching",
             @"icon": @"headphones",
-            @"prefixes": @[@"audiohandoff auto "],
+            @"prefixes": @[@"audiohandoff enabled ", @"audiohandoff auto "],
             @"suffixes": @[@"on", @"off", @"toggle"],
             @"displaySuffixes": @[@"On", @"Off", @"Toggle"],
-            @"exactMatches": @{ @"audiohandoff auto": @"toggle" }
+            @"exactMatches": @{ @"audiohandoff enabled": @"toggle", @"audiohandoff auto": @"toggle" }
         },
         @{
             @"key": @"rotate",

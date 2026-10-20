@@ -2467,6 +2467,20 @@ static void rc_maybe_show_action_banner(NSString *action) {
     NSString *title = [entry[@"title"] isKindOfClass:[NSString class]] ? entry[@"title"] : action;
     NSString *icon = [entry[@"icon"] isKindOfClass:[NSString class]] ? entry[@"icon"] : nil;
 
+    BOOL audioHandoffSwitch = [cmd hasPrefix:@"audiohandoff enabled "] || [cmd hasPrefix:@"audiohandoff auto "];
+    if (audioHandoffSwitch) {
+        icon = @"headphones";
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            NSString *rootfulPath = @"/var/mobile/Library/Preferences/com.saihgupr.audiohandoff.plist";
+            NSString *rootlessPath = @"/var/jb/var/mobile/Library/Preferences/com.saihgupr.audiohandoff.plist";
+            NSString *prefsPath = [[NSFileManager defaultManager] fileExistsAtPath:rootfulPath] ? rootfulPath : rootlessPath;
+            NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:prefsPath];
+            BOOL enabled = prefs[@"enabled"] ? [prefs[@"enabled"] boolValue] : YES;
+            rc_show_hud_toast([NSString stringWithFormat:@"Automatic Switching %@", enabled ? @"On" : @"Off"], nil, @"headphones");
+        });
+        return;
+    }
+
     if ([entry[@"toggle"] boolValue]) {
         rc_banner_show_toggle_state(cmd, title, icon);
         return;
@@ -7987,9 +8001,12 @@ static NSString *handle_command(NSString *cmd) {
         NSString *request = [[cleanCmd substringFromIndex:13] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         if (!is_audiohandoff_installed()) return @"AudioHandoff is not installed\n";
         NSDictionary *notificationNames = @{
-            @"auto on": @"com.saihgupr.audiohandoff.remotecommand.auto-on",
-            @"auto off": @"com.saihgupr.audiohandoff.remotecommand.auto-off",
-            @"auto toggle": @"com.saihgupr.audiohandoff.remotecommand.auto-toggle",
+            @"enabled on": @"com.saihgupr.audiohandoff.remotecommand.switch-on",
+            @"enabled off": @"com.saihgupr.audiohandoff.remotecommand.switch-off",
+            @"enabled toggle": @"com.saihgupr.audiohandoff.remotecommand.switch-toggle",
+            @"auto on": @"com.saihgupr.audiohandoff.remotecommand.switch-on",
+            @"auto off": @"com.saihgupr.audiohandoff.remotecommand.switch-off",
+            @"auto toggle": @"com.saihgupr.audiohandoff.remotecommand.switch-toggle",
             @"connect": @"com.saihgupr.audiohandoff.remotecommand.connect"
         };
         NSString *notificationName = notificationNames[request];

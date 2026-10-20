@@ -287,7 +287,7 @@
                 if ([fm fileExistsAtPath:p]) { audioHandoffInstalled = YES; break; }
             }
             if (audioHandoffInstalled) {
-                [integrations addObject:@{ @"name": @"AudioHandoff: Automatic Switching", @"command": @"audiohandoff auto toggle", @"icon": @"headphones" }];
+                [integrations addObject:@{ @"name": @"AudioHandoff: Automatic Switching", @"command": @"audiohandoff enabled toggle", @"icon": @"headphones" }];
                 [integrations addObject:@{ @"name": @"AudioHandoff: Connect Headphones", @"command": @"audiohandoff connect", @"icon": @"headphones" }];
             }
             [integrations addObject:@{ @"name": @"AudioMix: Toggle", @"command": @"audiomix toggle", @"icon": @"music.note" }];
