@@ -1023,7 +1023,6 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"audiohandoff auto on": @"AudioHandoff: Automatic Switching",
         @"audiohandoff auto off": @"AudioHandoff: Automatic Switching",
         @"audiohandoff auto toggle": @"AudioHandoff: Automatic Switching",
-        @"audiohandoff connect": @"AudioHandoff: Connect Headphones",
         @"low power on": @"Low Power Mode On",
         @"low power off": @"Low Power Mode Off",
         @"low power mode on": @"Low Power Mode On",
@@ -1393,7 +1392,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     }
 
     NSString *cmd = [[(NSString *)cmdId stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-    if ([cmd hasPrefix:@"audiohandoff enabled "] || [cmd hasPrefix:@"audiohandoff auto "] || [cmd isEqualToString:@"audiohandoff connect"]) return @"headphones";
+    if ([cmd hasPrefix:@"audiohandoff enabled "] || [cmd hasPrefix:@"audiohandoff auto "]) return @"headphones";
     if ([cmd isEqualToString:@"camera record"]) return @"video.circle.fill";
     if ([cmd isEqualToString:@"camera shutter"]) return @"camera.circle.fill";
     if ([cmd hasPrefix:@"camera"] || [cmd hasPrefix:@"open camera"]) {

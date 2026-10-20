@@ -8007,7 +8007,6 @@ static NSString *handle_command(NSString *cmd) {
             @"auto on": @"com.saihgupr.audiohandoff.remotecommand.switch-on",
             @"auto off": @"com.saihgupr.audiohandoff.remotecommand.switch-off",
             @"auto toggle": @"com.saihgupr.audiohandoff.remotecommand.switch-toggle",
-            @"connect": @"com.saihgupr.audiohandoff.remotecommand.connect"
         };
         NSString *notificationName = notificationNames[request];
         if (!notificationName) return @"Unknown AudioHandoff command\n";
