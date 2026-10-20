@@ -274,6 +274,22 @@
                 [integrations addObject:@{ @"name": @"Snapper: Instant Snap", @"command": @"snapper instant", @"icon": @"bolt.fill" }];
                 [integrations addObject:@{ @"name": @"Snapper: Close All", @"command": @"snapper close", @"icon": @"xmark.rectangle.fill" }];
             }
+            NSArray *audioHandoffPaths = @[
+                @"/Library/MobileSubstrate/DynamicLibraries/AudioHandoff.dylib",
+                @"/Library/MobileSubstrate/DynamicLibraries/AudioHandoff.plist",
+                @"/usr/lib/TweakInject/AudioHandoff.dylib",
+                @"/var/jb/Library/MobileSubstrate/DynamicLibraries/AudioHandoff.dylib",
+                @"/var/jb/Library/MobileSubstrate/DynamicLibraries/AudioHandoff.plist",
+                @"/var/jb/usr/lib/TweakInject/AudioHandoff.dylib"
+            ];
+            BOOL audioHandoffInstalled = NO;
+            for (NSString *p in audioHandoffPaths) {
+                if ([fm fileExistsAtPath:p]) { audioHandoffInstalled = YES; break; }
+            }
+            if (audioHandoffInstalled) {
+                [integrations addObject:@{ @"name": @"AudioHandoff: Automatic Switching", @"command": @"audiohandoff auto toggle", @"icon": @"headphones" }];
+                [integrations addObject:@{ @"name": @"AudioHandoff: Connect Headphones", @"command": @"audiohandoff connect", @"icon": @"headphones" }];
+            }
             [integrations addObject:@{ @"name": @"AudioMix: Toggle", @"command": @"audiomix toggle", @"icon": @"music.note" }];
             integrations;
         }),

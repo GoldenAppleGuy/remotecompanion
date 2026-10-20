@@ -3321,6 +3321,20 @@ static BOOL is_snapper_installed() {
     return NO;
 }
 
+static BOOL is_audiohandoff_installed() {
+    NSArray *paths = @[
+        @"/Library/MobileSubstrate/DynamicLibraries/AudioHandoff.dylib",
+        @"/Library/MobileSubstrate/DynamicLibraries/AudioHandoff.plist",
+        @"/usr/lib/TweakInject/AudioHandoff.dylib",
+        @"/var/jb/Library/MobileSubstrate/DynamicLibraries/AudioHandoff.dylib",
+        @"/var/jb/Library/MobileSubstrate/DynamicLibraries/AudioHandoff.plist",
+        @"/var/jb/usr/lib/TweakInject/AudioHandoff.dylib"
+    ];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *path in paths) if ([fm fileExistsAtPath:path]) return YES;
+    return NO;
+}
+
 static BOOL is_audiostream_installed() {
     NSArray *paths = @[
         @"/Applications/AudioReceiver.app",
@@ -7969,6 +7983,19 @@ static NSString *handle_command(NSString *cmd) {
             dispatch_async(dispatch_get_main_queue(), launchSpotify);
             return @"playing_spotify\n";
         }
+    } else if ([cleanCmd hasPrefix:@"audiohandoff "]) {
+        NSString *request = [[cleanCmd substringFromIndex:13] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (!is_audiohandoff_installed()) return @"AudioHandoff is not installed\n";
+        NSDictionary *notificationNames = @{
+            @"auto on": @"com.saihgupr.audiohandoff.remotecommand.auto-on",
+            @"auto off": @"com.saihgupr.audiohandoff.remotecommand.auto-off",
+            @"auto toggle": @"com.saihgupr.audiohandoff.remotecommand.auto-toggle",
+            @"connect": @"com.saihgupr.audiohandoff.remotecommand.connect"
+        };
+        NSString *notificationName = notificationNames[request];
+        if (!notificationName) return @"Unknown AudioHandoff command\n";
+        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), (__bridge CFStringRef)notificationName, NULL, NULL, true);
+        return [NSString stringWithFormat:@"AudioHandoff %@ command sent\n", request];
     } else if ([cleanCmd isEqualToString:@"audiomix"]) {
         BOOL current = get_audiomix_state();
         toggle_audiomix(!current);
@@ -9964,6 +9991,7 @@ static void start_web_server() {
                                     NSDictionary *caps = @{
                                         @"sneakycam": @(is_sneakycam_installed()),
                                         @"snapper": @(is_snapper_installed()),
+                                        @"audiohandoff": @(is_audiohandoff_installed()),
                                         @"audiostream": @(is_audiostream_installed()),
                                         @"audiostream_running": @(is_audiostreamerd_running())
                                     };

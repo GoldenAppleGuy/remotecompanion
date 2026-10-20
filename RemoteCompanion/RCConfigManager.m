@@ -1017,6 +1017,10 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"audiomix toggle": @"AudioMix Toggle",
         @"audiomix status": @"AudioMix Status",
         @"audiomix": @"AudioMix Toggle",
+        @"audiohandoff auto on": @"AudioHandoff: Automatic Switching",
+        @"audiohandoff auto off": @"AudioHandoff: Automatic Switching",
+        @"audiohandoff auto toggle": @"AudioHandoff: Automatic Switching",
+        @"audiohandoff connect": @"AudioHandoff: Connect Headphones",
         @"low power on": @"Low Power Mode On",
         @"low power off": @"Low Power Mode Off",
         @"low power mode on": @"Low Power Mode On",
@@ -1683,6 +1687,15 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
             @"suffixes": @[@"on", @"off", @"toggle"],
             @"displaySuffixes": @[@"On", @"Off", @"Toggle"],
             @"exactMatches": @{ @"audiomix": @"toggle" }
+        },
+        @{
+            @"key": @"audiohandoff_auto",
+            @"name": @"AudioHandoff: Automatic Switching",
+            @"icon": @"headphones",
+            @"prefixes": @[@"audiohandoff auto "],
+            @"suffixes": @[@"on", @"off", @"toggle"],
+            @"displaySuffixes": @[@"On", @"Off", @"Toggle"],
+            @"exactMatches": @{ @"audiohandoff auto": @"toggle" }
         },
         @{
             @"key": @"rotate",
