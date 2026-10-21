@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [4.0.0] - Unreleased
+## [4.0.0]
 
 ### Added
 - **Button Timing Engine & Settings**:
@@ -31,22 +31,34 @@ All notable changes to this project will be documented in this file.
   - Bottom Bar Swipe Left/Right gesture support on bezel-less Face ID devices.
 
 ### Fixed
-- **iOS 17 Compatibility**:
+- **iOS 15+ & 17 Compatibility & Shortcuts**:
   - Fixed Power and Volume hardware button hooks and synthetic HID event dispatch.
   - Resolved Camera Shutter action crashing the native Camera app on iOS 17.
   - Fixed Camera zoom levels, Time-Lapse mode selection, and flashlight state for video actions.
   - Fixed Siri activation, App Switcher toggle, and Ringer Switch triggers on iOS 17.
   - Fixed Low Power Mode toggle commands on iOS 15+.
-- **Hardware Button Reliability**:
+  - Shortcuts now run reliably on iOS 17 without silent loss when `siriactionsd` stops, removing the dependency on SpringCuts (#78).
+- **Hardware Button & Gesture Reliability**:
   - Resolved race condition where two rapid Power presses dropped the second event as a phantom press.
+  - Fast Home multi-clicks are now counted accurately so three or four rapid presses fire Double, Triple, or Quadruple clicks consistently (#73).
+  - Home Double Click replaces the native App Switcher, and Triple or Quadruple clicks no longer open the App Switcher or send the user home (#74).
+  - Power + Volume Up/Down triggers now fire on the Lock Screen on iOS 14 instead of putting the device to sleep (#71).
+  - Edge swipe gestures continue working properly after being toggled off and back on without requiring a respring (#66).
+  - Bottom Swipe Up gesture zones no longer block Lock Screen interactions (Face ID unlock or Control Center pull-down) (#72).
   - Moved foreground app identification off SpringBoard's main thread with a 25ms timeout to prevent button event lag during device wake.
   - Fixed Volume Both Press firing twice on overlapping button presses.
   - Fixed screenshot combo (`Volume Up + Power` and `Home + Power`) sleeping the device after capturing.
+- **System States & Conditions**:
+  - Pulling down Notification Center no longer falsely triggers Device Locked/Unlocked events, and the Locked condition no longer evaluates as `Locked` while CoverSheet is pulled down (#75).
   - Fixed Media Player condition reading `Stopped` properly when no media is playing.
   - Corrected `End If` conditional block nesting and parsing.
+- **UI & Layout**:
+  - Fixed Trigger cards not updating width dynamically when rotating screen orientation (#76).
+  - Fixed missing checkmark indicator for Bluetooth "Connected to Device" trigger state (#77).
 - **Web UI & Performance**:
   - Fixed empty Web UI app picker by adding dedicated `/api/apps` endpoint serving installed application names and bundle IDs (#88).
   - Optimized config lookup on fresh installs by throttling app folder searches and suppressing repetitive "No trigger config found" log spam (#79).
+
 
 ## [3.7.0] - 2026-10-01
 
@@ -58,11 +70,62 @@ All notable changes to this project will be documented in this file.
 - AudioStream auto-connect.
 
 ### Fixed
-- Long action names being cut off.
-- Select App screen styling.
-- Toast positioning on newer devices and in landscape.
-- Terminal Command execution in rootless environments.
-- Lua errors are now logged for debugging.
+- **iOS 15+ & 17 Compatibility & Shortcuts**:
+  - Fixed Power and Volume hardware button hooks and synthetic HID event dispatch.
+  - Resolved Camera Shutter action crashing the native Camera app on iOS 17.
+  - Fixed Camera zoom levels, Time-Lapse mode selection, and flashlight state for video actions.
+  - Fixed Siri activation, App Switcher toggle, and Ringer Switch triggers on iOS 17.
+  - Fixed Low Power Mode toggle commands on iOS 15+.
+  - Shortcuts now run reliably on iOS 17 without silent loss when `siriactionsd` stops, removing the dependency on SpringCuts (#78).
+- **Hardware Button & Gesture Reliability**:
+  - Resolved race condition where two rapid Power presses dropped the second event as a phantom press.
+  - Fast Home multi-clicks are now counted accurately so three or four rapid presses fire Double, Triple, or Quadruple clicks consistently (#73).
+  - Home Double Click replaces the native App Switcher, and Triple or Quadruple clicks no longer open the App Switcher or send the user home (#74).
+  - Power + Volume Up/Down triggers now fire on the Lock Screen on iOS 14 instead of putting the device to sleep (#71).
+  - Edge swipe gestures continue working properly after being toggled off and back on without requiring a respring (#66).
+  - Bottom Swipe Up gesture zones no longer block Lock Screen interactions (Face ID unlock or Control Center pull-down) (#72).
+  - Moved foreground app identification off SpringBoard's main thread with a 25ms timeout to prevent button event lag during device wake.
+  - Fixed Volume Both Press firing twice on overlapping button presses.
+  - Fixed screenshot combo (`Volume Up + Power` and `Home + Power`) sleeping the device after capturing.
+- **System States & Conditions**:
+  - Pulling down Notification Center no longer falsely triggers Device Locked/Unlocked events, and the Locked condition no longer evaluates as `Locked` while CoverSheet is pulled down (#75).
+  - Fixed Media Player condition reading `Stopped` properly when no media is playing.
+  - Corrected `End If` conditional block nesting and parsing.
+- **UI & Layout**:
+  - Fixed Trigger cards not updating width dynamically when rotating screen orientation (#76).
+  - Fixed missing checkmark indicator for Bluetooth "Connected to Device" trigger state (#77).
+- **Web UI & Performance**:
+  - Fixed empty Web UI app picker by adding dedicated `/api/apps` endpoint serving installed application names and bundle IDs (#88).
+  - Optimized config lookup on fresh installs by throttling app folder searches and suppressing repetitive "No trigger config found" log spam (#79).
+
+- **iOS 17 Compatibility & Shortcuts**:
+  - Fixed Power and Volume hardware button hooks and synthetic HID event dispatch.
+  - Resolved Camera Shutter action crashing the native Camera app on iOS 17.
+  - Fixed Camera zoom levels, Time-Lapse mode selection, and flashlight state for video actions.
+  - Fixed Siri activation, App Switcher toggle, and Ringer Switch triggers on iOS 17.
+  - Fixed Low Power Mode toggle commands on iOS 15+.
+  - Shortcuts now run reliably on iOS 17 without silent loss when `siriactionsd` stops, removing the dependency on SpringCuts (#78).
+- **Hardware Button & Gesture Reliability**:
+  - Resolved race condition where two rapid Power presses dropped the second event as a phantom press.
+  - Fast Home multi-clicks are now counted accurately so three or four rapid presses fire Double, Triple, or Quadruple clicks consistently (#73).
+  - Home Double Click replaces the native App Switcher, and Triple or Quadruple clicks no longer open the App Switcher or send the user home (#74).
+  - Power + Volume Up/Down triggers now fire on the Lock Screen on iOS 14 instead of putting the device to sleep (#71).
+  - Edge swipe gestures continue working properly after being toggled off and back on without requiring a respring (#66).
+  - Bottom Swipe Up gesture zones no longer block Lock Screen interactions (Face ID unlock or Control Center pull-down) (#72).
+  - Moved foreground app identification off SpringBoard's main thread with a 25ms timeout to prevent button event lag during device wake.
+  - Fixed Volume Both Press firing twice on overlapping button presses.
+  - Fixed screenshot combo (`Volume Up + Power` and `Home + Power`) sleeping the device after capturing.
+- **System States & Conditions**:
+  - Pulling down Notification Center no longer falsely triggers Device Locked/Unlocked events, and the Locked condition no longer evaluates as `Locked` while CoverSheet is pulled down (#75).
+  - Fixed Media Player condition reading `Stopped` properly when no media is playing.
+  - Corrected `End If` conditional block nesting and parsing.
+- **UI & Layout**:
+  - Fixed Trigger cards not updating width dynamically when rotating screen orientation (#76).
+  - Fixed missing checkmark indicator for Bluetooth "Connected to Device" trigger state (#77).
+- **Web UI & Performance**:
+  - Fixed empty Web UI app picker by adding dedicated `/api/apps` endpoint serving installed application names and bundle IDs (#88).
+  - Optimized config lookup on fresh installs by throttling app folder searches and suppressing repetitive "No trigger config found" log spam (#79).
+
 
 ## [3.6.4] - 2026-09-10
 
