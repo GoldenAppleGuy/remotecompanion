@@ -22,10 +22,10 @@ RemoteCompanion provides fast, scriptable system control for modern rootless jai
 </p>
 
 <p align="center">
-  <img src="images/4.0.0/IMG_2285.PNG" width="160" alt="Main Interface" />
-  <img src="images/4.0.0/IMG_2284.PNG" width="160" alt="Action Picker" />
-  <img src="images/4.0.0/IMG_2283.PNG" width="160" alt="If Conditions" />
-  <img src="images/4.0.0/IMG_2286.PNG" width="160" alt="Settings & Backup" />
+  <img src="images/4.0.0/IMG_2285.PNG" width="200" alt="Main Interface" />
+  <img src="images/4.0.0/IMG_2284.PNG" width="200" alt="Action Picker" />
+  <img src="images/4.0.0/IMG_2283.PNG" width="200" alt="If Conditions" />
+  <img src="images/4.0.0/IMG_2286.PNG" width="200" alt="Settings & Backup" />
 </p>
 
 ## Features
