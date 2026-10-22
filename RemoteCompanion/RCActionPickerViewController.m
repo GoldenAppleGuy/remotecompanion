@@ -1,8 +1,10 @@
 #import "RCActionPickerViewController.h"
 #import "RCServerClient.h"
+#import "RCDevicePickerViewController.h"
 #import "RCConfigManager.h"
 #import "RCHAEntityPickerViewController.h"
 #import "RCKMMacroPickerViewController.h"
+#import "RCCategoryBar.h"
 
 @interface RCActionPickerViewController () <UISearchResultsUpdating>
 @property (nonatomic, strong) NSArray<NSString *> *sectionTitles;
@@ -11,12 +13,16 @@
 @property (nonatomic, strong) UISearchController *searchController;
 @property (nonatomic, strong) UIAlertController *activeAlert;
 @property (nonatomic, assign) BOOL isWaitingForTapRecord;
+// Category bar: -1 = All, otherwise an index into sections / sectionTitles
+@property (nonatomic, assign) NSInteger selectedCategory;
+@property (nonatomic, strong) RCCategoryBar *categoryBar;
 @end
 
 @implementation RCActionPickerViewController
 
 - (instancetype)init {
     self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    if (self) _selectedCategory = -1;
     return self;
 }
 
@@ -41,10 +47,14 @@
     
     self.title = @"Select Action";
     
-    // Reduce gap above first section (below search bar)
-    self.tableView.tableHeaderView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, CGFLOAT_MIN)];
+    // Category bar floating below the search bar
+    [self rebuildSections];
+    self.categoryBar = [self makeCategoryBar];
+    [self.categoryBar attachToTableView:self.tableView];
     if (@available(iOS 15.0, *)) {
-        self.tableView.sectionHeaderTopPadding = 15;
+        // Spacing above headers is built into the header views instead (see
+        // heightForHeaderInSection:), so the first one can sit close to the category bar
+        self.tableView.sectionHeaderTopPadding = 0;
     }
     
     // Use proper Cancel button style
@@ -79,7 +89,7 @@
 - (void)rebuildSections {
     RCConfigManager *cm = [RCConfigManager sharedManager];
     
-    _sectionTitles = @[@"Media", @"Device Controls", @"Connectivity", @"System", @"Integrations", @"Scripting & Logic"];
+    _sectionTitles = @[@"Media", @"Sound", @"Capture", @"Apps & Navigation", @"Device Controls", @"Connectivity", @"System", @"Integrations", @"Scripting & Logic"];
     
     _sections = @[
         // Media
@@ -89,19 +99,7 @@
                 @{ @"name": @"Pause", @"command": @"pause", @"icon": @"pause.fill" },
                 @{ @"name": @"Play/Pause", @"command": @"playpause", @"icon": @"playpause.fill" },
                 @{ @"name": @"Next Track", @"command": @"next", @"icon": @"forward.fill" },
-                @{ @"name": @"Previous Track", @"command": @"prev", @"icon": @"backward.fill" },
-                @{ @"name": @"Volume Up", @"command": @"volume up", @"icon": @"speaker.wave.3.fill" },
-                @{ @"name": @"Volume Down", @"command": @"volume down", @"icon": @"speaker.wave.1.fill" },
-                @{ @"name": @"Set Volume...", @"command": @"__SET_VOLUME__", @"icon": @"speaker.wave.3.fill" },
-                @{ @"name": @"Set Brightness...", @"command": @"__SET_BRIGHTNESS__", @"icon": @"sun.max.fill" },
-                @{ @"name": @"Mute", @"command": @"mute toggle", @"icon": @"speaker.slash.fill" },
-                @{ @"name": @"ANC On", @"command": @"anc on", @"icon": @"ear.badge.checkmark" },
-                @{ @"name": @"ANC Off", @"command": @"anc off", @"icon": @"ear" },
-                @{ @"name": @"Transparency Mode", @"command": @"anc transparency", @"icon": @"waveform.circle.fill" },
-                @{ @"name": @"Open Camera...", @"command": @"__CAMERA_PICKER__", @"icon": @"camera.fill" },
-                @{ @"name": @"Open Video Camera...", @"command": @"__CAMERA_VIDEO_PICKER__", @"icon": @"video.fill" },
-                @{ @"name": @"Camera Shutter / Snap", @"command": @"camera shutter", @"icon": @"camera.circle.fill" },
-                @{ @"name": @"Camera Record Toggle", @"command": @"camera record", @"icon": @"record.circle.fill" }
+                @{ @"name": @"Previous Track", @"command": @"prev", @"icon": @"backward.fill" }
             ]];
             NSArray *audioStreamPaths = @[
                 @"/Applications/AudioReceiver.app",
@@ -135,11 +133,48 @@
             }
             media;
         }),
+        // Sound
+        @[
+            @{ @"name": @"Volume Up", @"command": @"volume up", @"icon": @"speaker.wave.3.fill" },
+            @{ @"name": @"Volume Down", @"command": @"volume down", @"icon": @"speaker.wave.1.fill" },
+            @{ @"name": @"Set Volume...", @"command": @"__SET_VOLUME__", @"icon": @"slider.horizontal.3" },
+            @{ @"name": @"Set Ringer Volume...", @"command": @"__SET_RINGER_VOLUME__", @"icon": @"bell.fill" },
+            @{ @"name": @"Mute", @"command": @"mute toggle", @"icon": @"speaker.slash.fill" },
+            @{ @"name": @"Noise Control", @"command": @"anc on", @"icon": @"ear" },
+            @{ @"name": @"Silent Mode", @"command": @"ringer toggle", @"icon": @"bell.slash.fill" },
+            @{ @"name": @"Silent Vibration", @"command": @"vibration silent-toggle", @"icon": @"bell.slash" },
+            @{ @"name": @"Ring Vibration", @"command": @"vibration ring-toggle", @"icon": @"bell" }
+        ],
+        // Capture
+        @[
+            @{ @"name": @"Screenshot", @"command": @"screenshot", @"icon": @"camera.viewfinder" },
+            @{ @"name": @"Screen Recording", @"command": @"screenrecord toggle", @"icon": @"record.circle.fill" },
+            @{ @"name": @"Open Camera...", @"command": @"__CAMERA_PICKER__", @"icon": @"camera.fill" },
+            @{ @"name": @"Open Video Camera...", @"command": @"__CAMERA_VIDEO_PICKER__", @"icon": @"video.fill" },
+            @{ @"name": @"Camera Shutter / Snap", @"command": @"camera shutter", @"icon": @"camera.circle.fill" },
+            @{ @"name": @"Camera Record Toggle", @"command": @"camera record", @"icon": @"video.circle.fill" }
+        ],
+        // Apps & Navigation
+        @[
+            @{ @"name": @"Open App...", @"command": @"__OPEN_APP__", @"icon": @"square.grid.2x2.fill" },
+            @{ @"name": @"Kill App...", @"command": @"__KILL_APP__", @"icon": @"xmark.square.fill" },
+            @{ @"name": @"Home Button", @"command": @"home", @"icon": @"house.fill" },
+            @{ @"name": @"App Switcher", @"command": @"switcher", @"icon": @"square.stack.3d.up.fill" },
+            @{ @"name": @"Previous App", @"command": @"previous app", @"icon": @"arrow.uturn.backward" },
+            @{ @"name": @"Control Center", @"command": @"open control center", @"icon": @"switch.2" },
+            @{ @"name": @"Activate Siri", @"command": @"siri", @"icon": @"mic.circle.fill" }
+        ],
         // Device Controls
         @[
-            @{ @"name": @"Appearance", @"command": @"appearance toggle", @"icon": @"moon.fill" },
+            @{ @"name": @"Appearance", @"command": @"appearance toggle", @"icon": @"circle.lefthalf.fill" },
+            @{ @"name": @"Set Brightness...", @"command": @"__SET_BRIGHTNESS__", @"icon": @"sun.max.fill" },
             @{ @"name": @"Flashlight", @"command": @"flashlight toggle", @"icon": @"flashlight.on.fill" },
-            @{ @"name": @"Rotation Lock", @"command": @"rotate toggle", @"icon": @"lock.rotation" }
+            @{ @"name": @"Rotation Lock", @"command": @"rotate toggle", @"icon": @"lock.rotation" },
+            @{ @"name": @"Lock Device", @"command": @"lock", @"icon": @"lock.fill" },
+            @{ @"name": @"Unlock Device", @"command": @"unlock", @"icon": @"lock.open.fill" },
+            @{ @"name": @"Do Not Disturb", @"command": @"dnd toggle", @"icon": @"moon.circle.fill" },
+            @{ @"name": @"Low Power Mode", @"command": @"low power toggle", @"icon": @"battery.25" },
+            @{ @"name": @"Auto-Lock", @"command": @"autolock toggle", @"icon": @"timer" }
         ],
         // Connectivity
         @[
@@ -155,41 +190,25 @@
         ],
         // System
         @[
-            @{ @"name": @"Haptic Feedback", @"command": @"haptic", @"icon": @"hand.tap.fill" },
-            @{ @"name": @"Screenshot", @"command": @"screenshot", @"icon": @"camera.fill" },
-            @{ @"name": @"Screen Recording", @"command": @"screenrecord toggle", @"icon": @"record.circle.fill" },
-            @{ @"name": @"Open App...", @"command": @"__OPEN_APP__", @"icon": @"square.grid.2x2.fill" },
-            @{ @"name": @"Kill App...", @"command": @"__KILL_APP__", @"icon": @"xmark.square.fill" },
-            @{ @"name": @"Lock Device", @"command": @"lock", @"icon": @"lock.fill" },
-            @{ @"name": @"Unlock Device", @"command": @"unlock", @"icon": @"lock.open.fill" },
-            @{ @"name": @"Do Not Disturb", @"command": @"dnd toggle", @"icon": @"moon.fill" },
-            @{ @"name": @"Activate Siri", @"command": @"siri", @"icon": @"mic.circle.fill" },
-            @{ @"name": @"Home Button", @"command": @"home", @"icon": @"house.fill" },
-            @{ @"name": @"App Switcher", @"command": @"switcher", @"icon": @"square.stack.3d.up.fill" },
-            @{ @"name": @"Previous App", @"command": @"previous app", @"icon": @"arrow.uturn.backward" },
-            @{ @"name": @"Control Center", @"command": @"open control center", @"icon": @"gear" },
             @{ @"name": @"Respring Device", @"command": @"respring", @"icon": @"memories" },
             @{ @"name": @"Safe Mode", @"command": @"safemode", @"icon": @"shield.slash.fill" },
             @{ @"name": @"Soft Reboot (ldrestart)", @"command": @"ldrestart", @"icon": @"arrow.clockwise" },
             @{ @"name": @"Userspace Reboot", @"command": @"userspace-reboot", @"icon": @"arrow.clockwise.circle" },
-            @{ @"name": @"Refresh Icon Cache (uicache)", @"command": @"uicache", @"icon": @"square.grid.2x2" },
-            @{ @"name": @"Silent Vibration", @"command": @"vibration silent-toggle", @"icon": @"bell.slash" },
-            @{ @"name": @"Ring Vibration", @"command": @"vibration ring-toggle", @"icon": @"bell" },
-            @{ @"name": @"Low Power Mode", @"command": @"low power toggle", @"icon": @"battery.25" }
+            @{ @"name": @"Refresh Icon Cache (uicache)", @"command": @"uicache", @"icon": @"square.grid.2x2" }
         ],
         // Integrations
         ({
             NSMutableArray *integrations = [NSMutableArray array];
             if (cm.haEnabled) {
-                [integrations addObject:@{ @"name": @"Home Assistant: Control Entity...", @"command": @"__HA_PICKER__", @"icon": @"house.fill" }];
+                [integrations addObject:@{ @"name": @"Home Assistant: Control Entity...", @"command": @"__HA_PICKER__", @"icon": @"lightbulb.fill" }];
             }
             if (cm.kmEnabled) {
                 [integrations addObject:@{ @"name": @"Keyboard Maestro: Trigger Macro...", @"command": @"__KM_TRIGGER__", @"icon": @"command" }];
             }
             if (cm.mqttEnabled) {
-                [integrations addObject:@{ @"name": @"MQTT: Publish Topic...", @"command": @"__MQTT_PUBLISH__", @"icon": @"antenna.radiowaves.left.and.right" }];
+                [integrations addObject:@{ @"name": @"MQTT: Publish Topic...", @"command": @"__MQTT_PUBLISH__", @"icon": @"dot.radiowaves.left.and.right" }];
             }
-            [integrations addObject:@{ @"name": @"Shortcuts: Run Shortcut...", @"command": @"__SHORTCUT_PICKER__", @"icon": @"command" }];
+            [integrations addObject:@{ @"name": @"Shortcuts: Run Shortcut...", @"command": @"__SHORTCUT_PICKER__", @"icon": @"wand.and.stars" }];
             NSArray *sneakyPaths = @[
                 @"/Library/MobileSubstrate/DynamicLibraries/SneakyCam.dylib",
                 @"/Library/MobileSubstrate/DynamicLibraries/sneakycam.dylib",
@@ -213,7 +232,7 @@
             }
             if (sneakyInstalled) {
                 [integrations addObject:@{ @"name": @"SneakyCam: Take Photo", @"command": @"sneakycam photo", @"icon": @"camera.aperture" }];
-                [integrations addObject:@{ @"name": @"SneakyCam: Toggle Video", @"command": @"sneakycam video", @"icon": @"video.fill" }];
+                [integrations addObject:@{ @"name": @"SneakyCam: Toggle Video", @"command": @"sneakycam video", @"icon": @"eye.slash.fill" }];
             }
             NSArray *snapperPaths = @[
                 @"/Library/MobileSubstrate/DynamicLibraries/Snapper3.dylib",
@@ -253,7 +272,22 @@
                 [integrations addObject:@{ @"name": @"Snapper: Open Area", @"command": @"snapper open", @"icon": @"crop" }];
                 [integrations addObject:@{ @"name": @"Snapper: Freeze Screen", @"command": @"snapper freeze", @"icon": @"snowflake" }];
                 [integrations addObject:@{ @"name": @"Snapper: Instant Snap", @"command": @"snapper instant", @"icon": @"bolt.fill" }];
-                [integrations addObject:@{ @"name": @"Snapper: Close All", @"command": @"snapper close", @"icon": @"xmark.circle" }];
+                [integrations addObject:@{ @"name": @"Snapper: Close All", @"command": @"snapper close", @"icon": @"xmark.rectangle.fill" }];
+            }
+            NSArray *audioHandoffPaths = @[
+                @"/Library/MobileSubstrate/DynamicLibraries/AudioHandoff.dylib",
+                @"/Library/MobileSubstrate/DynamicLibraries/AudioHandoff.plist",
+                @"/usr/lib/TweakInject/AudioHandoff.dylib",
+                @"/var/jb/Library/MobileSubstrate/DynamicLibraries/AudioHandoff.dylib",
+                @"/var/jb/Library/MobileSubstrate/DynamicLibraries/AudioHandoff.plist",
+                @"/var/jb/usr/lib/TweakInject/AudioHandoff.dylib"
+            ];
+            BOOL audioHandoffInstalled = NO;
+            for (NSString *p in audioHandoffPaths) {
+                if ([fm fileExistsAtPath:p]) { audioHandoffInstalled = YES; break; }
+            }
+            if (audioHandoffInstalled) {
+                [integrations addObject:@{ @"name": @"AudioHandoff: Automatic Switching", @"command": @"audiohandoff enabled toggle", @"icon": @"headphones" }];
             }
             [integrations addObject:@{ @"name": @"AudioMix: Toggle", @"command": @"audiomix toggle", @"icon": @"music.note" }];
             integrations;
@@ -262,11 +296,43 @@
         @[
             @{ @"name": @"Custom Lua Script", @"command": @"__LUA_SCRIPT__", @"icon": @"scroll.fill" },
             @{ @"name": @"If Condition...", @"command": @"__IF_CONDITION__", @"icon": @"arrow.triangle.branch" },
-            @{ @"name": @"Delay", @"command": @"__DELAY__", @"icon": @"timer" },
+            @{ @"name": @"Delay", @"command": @"__DELAY__", @"icon": @"hourglass" },
             @{ @"name": @"Terminal Command", @"command": @"__CUSTOM__", @"icon": @"terminal.fill" },
-            @{ @"name": @"Toast...", @"command": @"__TOAST__", @"icon": @"text.bubble.fill" }
+            @{ @"name": @"Toast...", @"command": @"__TOAST__", @"icon": @"text.bubble.fill" },
+            @{ @"name": @"Haptic Feedback", @"command": @"haptic", @"icon": @"hand.tap.fill" }
         ]
     ];
+
+    // The vibration settings as this iOS version's Settings shows them: iOS 17's one Haptics
+    // menu in place of the two switches, or the switches by their name for this version
+    NSMutableArray *sections = [NSMutableArray array];
+    for (NSArray *section in _sections) {
+        NSMutableArray *items = [NSMutableArray array];
+        for (NSDictionary *item in section) {
+            NSString *command = item[@"command"];
+            BOOL silent = [command isEqualToString:@"vibration silent-toggle"], ring = [command isEqualToString:@"vibration ring-toggle"];
+            if (!silent && !ring) { [items addObject:item]; continue; }
+            if ([RCConfigManager usesHapticsMenu]) {
+                if (silent) [items addObject:@{ @"name": @"Haptics", @"command": @"haptics always", @"icon": @"iphone.radiowaves.left.and.right" }];
+                continue;
+            }
+            NSMutableDictionary *renamed = [item mutableCopy];
+            renamed[@"name"] = [RCConfigManager vibrationNameForSilentMode:silent];
+            [items addObject:renamed];
+        }
+        [sections addObject:items];
+    }
+    _sections = sections;
+}
+
+- (NSArray<NSArray<NSDictionary *> *> *)catalogSections {
+    [self rebuildSections];
+    return _sections;
+}
+
+- (NSArray<NSString *> *)catalogSectionTitles {
+    [self rebuildSections];
+    return _sectionTitles;
 }
 
 - (void)cancel {
@@ -293,25 +359,70 @@
     }
 }
 
+#pragma mark - Category bar
+
+// All + one chip per catalog section. Tapping one shows only that section;
+// search then filters within it.
+- (RCCategoryBar *)makeCategoryBar {
+    RCCategoryBar *bar = [[RCCategoryBar alloc] initWithWidth:self.view.bounds.size.width];
+    [bar setChipTitles:self.sectionTitles];
+    bar.selectedIndex = self.selectedCategory;
+    __weak typeof(self) weakSelf = self;
+    bar.onSelect = ^(NSInteger index) {
+        weakSelf.selectedCategory = index;
+        [weakSelf updateSearchResultsForSearchController:weakSelf.searchController];
+    };
+    return bar;
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    [self.categoryBar scrollViewDidScroll:scrollView];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self.categoryBar layoutInScrollView:self.tableView];
+}
+
+#pragma mark - Display model
+
+- (BOOL)isSearching {
+    return self.searchController.isActive && self.searchController.searchBar.text.length > 0;
+}
+
+- (BOOL)hasCategory {
+    return self.selectedCategory >= 0 && self.selectedCategory < (NSInteger)_sections.count;
+}
+
+// What the table shows: search results, the selected category, or everything
+- (NSArray<NSArray<NSDictionary *> *> *)displaySections {
+    if ([self isSearching]) return @[self.filteredActions ?: @[]];
+    if ([self hasCategory]) return @[_sections[self.selectedCategory]];
+    return _sections;
+}
+
+- (NSString *)displayTitleForSection:(NSInteger)section {
+    if ([self isSearching]) return [self hasCategory] ? [NSString stringWithFormat:@"%@ Results", _sectionTitles[self.selectedCategory]] : @"Search Results";
+    if ([self hasCategory]) return _sectionTitles[self.selectedCategory];
+    return _sectionTitles[section];
+}
+
+- (NSDictionary *)actionAtIndexPath:(NSIndexPath *)indexPath {
+    return [self displaySections][indexPath.section][indexPath.row];
+}
+
 #pragma mark - Table View Data Source
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    if (self.searchController.isActive && self.searchController.searchBar.text.length > 0) {
-        return 1;
-    }
-    return _sections.count;
+    return [self displaySections].count;
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
-    NSString *title = nil;
-    if (self.searchController.isActive && self.searchController.searchBar.text.length > 0) {
-        title = @"SEARCH RESULTS";
-    } else {
-        title = _sectionTitles[section];
-    }
+    NSString *title = [self displayTitleForSection:section];
+    CGFloat height = [self tableView:tableView heightForHeaderInSection:section];
     
-    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 40)];
-    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, 15, tableView.bounds.size.width - 40, 20)];
+    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, height)];
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, height - 25, tableView.bounds.size.width - 40, 20)];
     label.text = [title uppercaseString];
     label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
     label.textColor = [UIColor secondaryLabelColor];
@@ -320,26 +431,23 @@
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    return 40.0f;
+    // The first section sits just below the category bar. The others keep their old
+    // spacing, including the 15pt sectionHeaderTopPadding they had on iOS 15+.
+    if (section == 0) return 29.0f;
+    CGFloat topPadding = 0;
+    if (@available(iOS 15.0, *)) topPadding = 15;
+    return 40.0f + topPadding;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (self.searchController.isActive && self.searchController.searchBar.text.length > 0) {
-        return self.filteredActions.count;
-    }
-    return _sections[section].count;
+    return [self displaySections][section].count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ActionCell" forIndexPath:indexPath];
     RCConfigManager *cm = [RCConfigManager sharedManager];
     
-    NSDictionary *action;
-    if (self.searchController.isActive && self.searchController.searchBar.text.length > 0) {
-        action = self.filteredActions[indexPath.row];
-    } else {
-        action = _sections[indexPath.section][indexPath.row];
-    }
+    NSDictionary *action = [self actionAtIndexPath:indexPath];
     cell.textLabel.text = action[@"name"];
     cell.textLabel.font = [UIFont systemFontOfSize:17];
     
@@ -372,6 +480,7 @@
     // Add disclosure for items requiring input
     NSString *cmd = action[@"command"];
     if ([cmd isEqualToString:@"__SET_VOLUME__"] || 
+        [cmd isEqualToString:@"__SET_RINGER_VOLUME__"] || 
         [cmd isEqualToString:@"__SET_BRIGHTNESS__"] || 
         [cmd isEqualToString:@"__BT_CONNECT__"] || 
         [cmd isEqualToString:@"__BT_DISCONNECT__"] || 
@@ -399,16 +508,11 @@
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     
-    NSDictionary *action;
-    if (self.searchController.isActive && self.searchController.searchBar.text.length > 0) {
-        action = self.filteredActions[indexPath.row];
-    } else {
-        action = _sections[indexPath.section][indexPath.row];
-    }
+    NSDictionary *action = [self actionAtIndexPath:indexPath];
     NSString *command = action[@"command"];
     
 
-    if ([command isEqualToString:@"__SET_VOLUME__"] || [command isEqualToString:@"__SET_BRIGHTNESS__"] || [command isEqualToString:@"__SET_FLASHLIGHT__"]) {
+    if ([command isEqualToString:@"__SET_VOLUME__"] || [command isEqualToString:@"__SET_RINGER_VOLUME__"] || [command isEqualToString:@"__SET_BRIGHTNESS__"] || [command isEqualToString:@"__SET_FLASHLIGHT__"]) {
         [self handleValueInputForCommand:command];
         return;
     }
@@ -636,8 +740,14 @@
 }
 
 - (void)handleValueInputForCommand:(NSString *)commandPlaceholder {
-    NSString *title = [commandPlaceholder isEqualToString:@"__SET_VOLUME__"] ? @"Set Volume" : ([commandPlaceholder isEqualToString:@"__SET_BRIGHTNESS__"] ? @"Set Brightness" : @"Set Flashlight");
-    NSString *prefix = [commandPlaceholder isEqualToString:@"__SET_VOLUME__"] ? @"set-vol" : ([commandPlaceholder isEqualToString:@"__SET_BRIGHTNESS__"] ? @"brightness" : @"flashlight");
+    NSDictionary *inputs = @{
+        @"__SET_VOLUME__": @[@"Set Volume", @"set-vol"],
+        @"__SET_RINGER_VOLUME__": @[@"Set Ringer Volume", @"ringer volume"],
+        @"__SET_BRIGHTNESS__": @[@"Set Brightness", @"brightness"],
+        @"__SET_FLASHLIGHT__": @[@"Set Flashlight", @"flashlight"],
+    };
+    NSString *title = inputs[commandPlaceholder][0] ?: @"Set Flashlight";
+    NSString *prefix = inputs[commandPlaceholder][1] ?: @"flashlight";
 
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title                                                                   message:@"Enter a value (0-100)" 
                                                             preferredStyle:UIAlertControllerStyleAlert];
@@ -680,218 +790,36 @@
 }
 
 - (void)handleAirPlayConnect {
-    UIAlertController *loading = [UIAlertController alertControllerWithTitle:@"Scanning for devices..." 
-                                                                     message:@"Please wait" 
-                                                              preferredStyle:UIAlertControllerStyleAlert];
-    [self presentViewController:loading animated:YES completion:nil];
-    
-    [[RCServerClient sharedClient] executeCommand:@"airplay list" completion:^(NSString * _Nullable output, NSError * _Nullable error) {
-        [loading dismissViewControllerAnimated:YES completion:^{
-            if (error) {
-                UIAlertController *errAlert = [UIAlertController alertControllerWithTitle:@"Error" 
-                                                                                message:error.localizedDescription 
-                                                                         preferredStyle:UIAlertControllerStyleAlert];
-                [errAlert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
-                [self presentViewController:errAlert animated:YES completion:nil];
-                return;
-            }
-            
-            // Parse output
-            // Output format expected: "UID - Name" per line, or "No AirPlay devices found."
-            NSArray *lines = [output componentsSeparatedByString:@"\n"];
-            NSMutableArray *devices = [NSMutableArray array];
-            
-            for (NSString *line in lines) {
-                NSString *clean = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                if (clean.length == 0) continue;
-                if ([clean isEqualToString:@"No AirPlay devices found."]) continue;
-                if ([clean hasPrefix:@"Error:"]) continue;
-                
-                // Format from Tweak.x: "  Name [UID]" or "* Name [UID]"
-                if (clean.length < 5) continue;
-                
-                // Strip leading status char if present (* or space)
-                NSString *workingLine = clean;
-                if ([workingLine hasPrefix:@"* "] || [workingLine hasPrefix:@"  "]) {
-                    workingLine = [workingLine substringFromIndex:2];
-                }
-                
-                NSRange openBracket = [workingLine rangeOfString:@" [" options:NSBackwardsSearch];
-                NSRange closeBracket = [workingLine rangeOfString:@"]" options:NSBackwardsSearch];
-                
-                if (openBracket.location != NSNotFound && closeBracket.location != NSNotFound && closeBracket.location > openBracket.location) {
-                    NSString *name = [[workingLine substringToIndex:openBracket.location] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-                    NSString *uid = [[workingLine substringWithRange:NSMakeRange(openBracket.location + 2, closeBracket.location - openBracket.location - 2)] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-                    [devices addObject:@{ @"uid": uid, @"name": name }];
-                }
-            }
-            
-            if (devices.count == 0) {
-                UIAlertController *empty = [UIAlertController alertControllerWithTitle:@"No Devices Found" 
-                                                                               message:@"Ensure AirPlay devices are reachable." 
-                                                                        preferredStyle:UIAlertControllerStyleAlert];
-                [empty addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
-                [self presentViewController:empty animated:YES completion:nil];
-                return;
-            }
-            
-            // Show selection
-            UIAlertController *picker = [UIAlertController alertControllerWithTitle:@"Select AirPlay Device" 
-                                                                            message:nil 
-                                                                     preferredStyle:UIAlertControllerStyleActionSheet];
-            
-            for (NSDictionary *device in devices) {
-                [picker addAction:[UIAlertAction actionWithTitle:device[@"name"] style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-                    NSString *finalCommand = [NSString stringWithFormat:@"airplay connect %@ # %@", device[@"uid"], device[@"name"]];
-                    
-                    if (self.onActionSelected) {
-                        self.onActionSelected(finalCommand);
-                    }
-                    if (self.searchController.isActive) {
-                        [self.searchController dismissViewControllerAnimated:NO completion:^{
-                            [self dismissViewControllerAnimated:YES completion:nil];
-                        }];
-                    } else {
-                        [self dismissViewControllerAnimated:YES completion:nil];
-                    }
-                }]];
-            }
-            
-            [picker addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-            
-            // iPad support
-            picker.popoverPresentationController.sourceView = self.view;
-            picker.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width/2, self.view.bounds.size.height/2, 1, 1);
-            
-            [self presentViewController:picker animated:YES completion:nil];
-        }];
-    }];
+    [self pushDevicePickerWithKind:RCDevicePickerKindAirPlay title:@"Connect AirPlay" commandPrefix:@"airplay connect"];
 }
 
-
-
 - (void)handleBluetoothConnect {
-    UIAlertController *loading = [UIAlertController alertControllerWithTitle:@"Fetching paired devices..." 
-                                                                     message:@"Please wait" 
-                                                              preferredStyle:UIAlertControllerStyleAlert];
-    [self presentViewController:loading animated:YES completion:nil];
-    
-    [[RCServerClient sharedClient] executeCommand:@"bluetooth list" completion:^(NSString * _Nullable output, NSError * _Nullable error) {
-        [loading dismissViewControllerAnimated:YES completion:^{
-            if (error || !output) {
-                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Error" message:error.localizedDescription ?: @"Failed to fetch devices" preferredStyle:UIAlertControllerStyleAlert];
-                [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
-                [self presentViewController:alert animated:YES completion:nil];
-                return;
-            }
-            
-            NSArray *lines = [output componentsSeparatedByString:@"\n"];
-            NSMutableArray *devices = [NSMutableArray array];
-            for (NSString *line in lines) {
-                NSString *trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                if (trimmed.length > 0) {
-                    [devices addObject:trimmed];
-                }
-            }
-            
-            if (devices.count == 0) {
-                UIAlertController *empty = [UIAlertController alertControllerWithTitle:@"No Devices Found" 
-                                                                               message:@"Ensure Bluetooth devices are paired." 
-                                                                        preferredStyle:UIAlertControllerStyleAlert];
-                [empty addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
-                [self presentViewController:empty animated:YES completion:nil];
-                return;
-            }
-            
-            UIAlertController *picker = [UIAlertController alertControllerWithTitle:@"Select Bluetooth Device" 
-                                                                            message:nil 
-                                                                     preferredStyle:UIAlertControllerStyleActionSheet];
-            
-            for (NSString *deviceName in devices) {
-                [picker addAction:[UIAlertAction actionWithTitle:deviceName style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-                    NSString *finalCommand = [NSString stringWithFormat:@"bt connect %@", deviceName];
-                    
-                    if (self.onActionSelected) {
-                        self.onActionSelected(finalCommand);
-                    }
-                    if (self.searchController.isActive) {
-                        [self.searchController dismissViewControllerAnimated:NO completion:^{
-                            [self dismissViewControllerAnimated:YES completion:nil];
-                        }];
-                    } else {
-                        [self dismissViewControllerAnimated:YES completion:nil];
-                    }
-                }]];
-            }
-            
-            [picker addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-            picker.popoverPresentationController.sourceView = self.view;
-            picker.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width/2, self.view.bounds.size.height/2, 1, 1);
-            [self presentViewController:picker animated:YES completion:nil];
-        }];
-    }];
+    [self pushDevicePickerWithKind:RCDevicePickerKindBluetooth title:@"Connect Bluetooth" commandPrefix:@"bt connect"];
 }
 
 - (void)handleBluetoothDisconnect {
-    UIAlertController *loading = [UIAlertController alertControllerWithTitle:@"Fetching paired devices..." 
-                                                                     message:@"Please wait" 
-                                                              preferredStyle:UIAlertControllerStyleAlert];
-    [self presentViewController:loading animated:YES completion:nil];
-    
-    [[RCServerClient sharedClient] executeCommand:@"bluetooth list" completion:^(NSString * _Nullable output, NSError * _Nullable error) {
-        [loading dismissViewControllerAnimated:YES completion:^{
-            if (error || !output) {
-                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Error" message:error.localizedDescription ?: @"Failed to fetch devices" preferredStyle:UIAlertControllerStyleAlert];
-                [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
-                [self presentViewController:alert animated:YES completion:nil];
-                return;
-            }
-            
-            NSArray *lines = [output componentsSeparatedByString:@"\n"];
-            NSMutableArray *devices = [NSMutableArray array];
-            for (NSString *line in lines) {
-                NSString *trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                if (trimmed.length > 0) {
-                    [devices addObject:trimmed];
-                }
-            }
-            
-            if (devices.count == 0) {
-                UIAlertController *empty = [UIAlertController alertControllerWithTitle:@"No Devices Found" 
-                                                                               message:@"Ensure Bluetooth devices are paired." 
-                                                                        preferredStyle:UIAlertControllerStyleAlert];
-                [empty addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
-                [self presentViewController:empty animated:YES completion:nil];
-                return;
-            }
-            
-            UIAlertController *picker = [UIAlertController alertControllerWithTitle:@"Select Bluetooth Device" 
-                                                                            message:nil 
-                                                                     preferredStyle:UIAlertControllerStyleActionSheet];
-            
-            for (NSString *deviceName in devices) {
-                [picker addAction:[UIAlertAction actionWithTitle:deviceName style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-                    NSString *finalCommand = [NSString stringWithFormat:@"bt disconnect %@", deviceName];
-                    
-                    if (self.onActionSelected) {
-                        self.onActionSelected(finalCommand);
-                    }
-                    if (self.searchController.isActive) {
-                        [self.searchController dismissViewControllerAnimated:NO completion:^{
-                            [self dismissViewControllerAnimated:YES completion:nil];
-                        }];
-                    } else {
-                        [self dismissViewControllerAnimated:YES completion:nil];
-                    }
-                }]];
-            }
-            
-            [picker addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-            picker.popoverPresentationController.sourceView = self.view;
-            picker.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width/2, self.view.bounds.size.height/2, 1, 1);
-            [self presentViewController:picker animated:YES completion:nil];
-        }];
-    }];
+    [self pushDevicePickerWithKind:RCDevicePickerKindBluetooth title:@"Disconnect Bluetooth" commandPrefix:@"bt disconnect"];
+}
+
+// Lists the devices; choosing one adds "<prefix> <device>" and closes the picker
+- (void)pushDevicePickerWithKind:(RCDevicePickerKind)kind title:(NSString *)title commandPrefix:(NSString *)prefix {
+    RCDevicePickerViewController *picker = [[RCDevicePickerViewController alloc] initWithKind:kind title:title];
+    __weak typeof(self) weakSelf = self;
+    picker.onDeviceSelected = ^(NSDictionary *device) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (strongSelf.onActionSelected) {
+            strongSelf.onActionSelected([NSString stringWithFormat:@"%@ %@", prefix, device[@"target"]]);
+        }
+        if (strongSelf.searchController.isActive) {
+            [strongSelf.searchController dismissViewControllerAnimated:NO completion:^{
+                [strongSelf dismissViewControllerAnimated:YES completion:nil];
+            }];
+        } else {
+            [strongSelf dismissViewControllerAnimated:YES completion:nil];
+        }
+    };
+    [self.navigationController pushViewController:picker animated:YES];
 }
 
 #pragma mark - Search
@@ -902,8 +830,12 @@
         self.filteredActions = @[];
     } else {
         NSMutableArray *allActions = [NSMutableArray array];
-        for (NSArray *section in self.sections) {
-            [allActions addObjectsFromArray:section];
+        if ([self hasCategory]) {
+            [allActions addObjectsFromArray:self.sections[self.selectedCategory]];
+        } else {
+            for (NSArray *section in self.sections) {
+                [allActions addObjectsFromArray:section];
+            }
         }
         
         NSPredicate *pred = [NSPredicate predicateWithFormat:@"name CONTAINS[cd] %@ OR command CONTAINS[cd] %@", text, text];

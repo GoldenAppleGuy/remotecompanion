@@ -242,6 +242,72 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     [self saveConfig];
 }
 
+- (NSString *)logLevel {
+    NSString *level = _config[@"logLevel"];
+    return [@[@"off", @"minimal", @"full"] containsObject:level] ? level : @"minimal";
+}
+
+- (void)setLogLevel:(NSString *)logLevel {
+    _config[@"logLevel"] = logLevel;
+    [self saveConfig];
+}
+
+- (double)volumeSequenceWindow {
+    id value = _config[@"volumeSequenceWindow"];
+    double window = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : 0.38;
+    return MIN(MAX(window, 0.15), 0.8);
+}
+
+- (void)setVolumeSequenceWindow:(double)volumeSequenceWindow {
+    _config[@"volumeSequenceWindow"] = @(volumeSequenceWindow);
+    [self saveConfig];
+}
+
+- (double)powerClickWindow {
+    id value = _config[@"powerClickWindow"];
+    double window = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : 0.4;
+    return MIN(MAX(window, 0.10), 0.8);
+}
+
+- (void)setPowerClickWindow:(double)powerClickWindow {
+    _config[@"powerClickWindow"] = @(powerClickWindow);
+    [self saveConfig];
+}
+
+// A saved number, kept inside its range
+- (double)timingForKey:(NSString *)key fallback:(double)fallback min:(double)min max:(double)max {
+    id value = _config[key];
+    double seconds = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : fallback;
+    return MIN(MAX(seconds, min), max);
+}
+
+- (double)homeClickWindow { return [self timingForKey:@"homeClickWindow" fallback:0.35 min:0.25 max:0.8]; }
+- (void)setHomeClickWindow:(double)seconds { _config[@"homeClickWindow"] = @(seconds); [self saveConfig]; }
+- (double)volumeHoldTime { return [self timingForKey:@"volumeHoldTime" fallback:0.35 min:0.2 max:0.8]; }
+- (void)setVolumeHoldTime:(double)seconds { _config[@"volumeHoldTime"] = @(seconds); [self saveConfig]; }
+- (double)powerHoldTime { return [self timingForKey:@"powerHoldTime" fallback:0.5 min:0.3 max:0.75]; }
+- (void)setPowerHoldTime:(double)seconds { _config[@"powerHoldTime"] = @(seconds); [self saveConfig]; }
+
+- (NSArray<NSDictionary *> *)bannerActions {
+    id list = _config[@"bannerActions"];
+    return [list isKindOfClass:[NSArray class]] ? list : @[];
+}
+
+- (void)setBannerActions:(NSArray<NSDictionary *> *)bannerActions {
+    _config[@"bannerActions"] = bannerActions ?: @[];
+    [self saveConfig];
+}
+
+- (NSArray<NSString *> *)bannerOptOut {
+    id list = _config[@"bannerOptOut"];
+    return [list isKindOfClass:[NSArray class]] ? list : @[];
+}
+
+- (void)setBannerOptOut:(NSArray<NSString *> *)bannerOptOut {
+    _config[@"bannerOptOut"] = bannerOptOut ?: @[];
+    [self saveConfig];
+}
+
 - (void)setNfcEnabled:(BOOL)nfcEnabled {
     _config[@"nfcEnabled"] = @(nfcEnabled);
     if (!nfcEnabled) {
@@ -265,6 +331,17 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         return YES;
     }
     return [_config[@"nfcEnabled"] boolValue];
+}
+
+- (double)nfcScreenOffSeconds {
+    id value = _config[@"nfcScreenOffSeconds"];
+    double seconds = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : 120.0;
+    return MIN(MAX(seconds, 0.0), 3600.0);
+}
+
+- (void)setNfcScreenOffSeconds:(double)seconds {
+    _config[@"nfcScreenOffSeconds"] = @(seconds);
+    [self saveConfig];
 }
 
 - (BOOL)hapticsEnabled {
@@ -650,6 +727,11 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     notify_post("com.pizzaman.rc.stop_nfc");
 }
 
+- (void)resumeBackgroundNFC {
+    NSLog(@"[RCConfigManager] Signaling that background NFC scanning can resume");
+    notify_post("com.pizzaman.rc.resume_nfc");
+}
+
 #pragma mark - UI Color Tweaks
 
 - (NSDictionary *)colorTweaks {
@@ -935,12 +1017,26 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"audiomix toggle": @"AudioMix Toggle",
         @"audiomix status": @"AudioMix Status",
         @"audiomix": @"AudioMix Toggle",
+        @"audiohandoff enabled on": @"AudioHandoff: Automatic Switching",
+        @"audiohandoff enabled off": @"AudioHandoff: Automatic Switching",
+        @"audiohandoff enabled toggle": @"AudioHandoff: Automatic Switching",
+        @"audiohandoff auto on": @"AudioHandoff: Automatic Switching",
+        @"audiohandoff auto off": @"AudioHandoff: Automatic Switching",
+        @"audiohandoff auto toggle": @"AudioHandoff: Automatic Switching",
         @"low power on": @"Low Power Mode On",
         @"low power off": @"Low Power Mode Off",
         @"low power mode on": @"Low Power Mode On",
         @"low power mode off": @"Low Power Mode Off",
         @"low power toggle": @"Low Power Mode Toggle",
         @"low power mode toggle": @"Low Power Mode Toggle",
+        @"autolock toggle": @"Auto-Lock Toggle",
+        @"autolock 30s": @"Auto-Lock 30 Seconds",
+        @"autolock 1m": @"Auto-Lock 1 Minute",
+        @"autolock 2m": @"Auto-Lock 2 Minutes",
+        @"autolock 3m": @"Auto-Lock 3 Minutes",
+        @"autolock 4m": @"Auto-Lock 4 Minutes",
+        @"autolock 5m": @"Auto-Lock 5 Minutes",
+        @"autolock never": @"Auto-Lock Never",
         @"mute toggle": @"Mute Toggle",
         @"mute on": @"Mute On",
         @"mute off": @"Mute Off",
@@ -993,6 +1089,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"camera video 2x flash": @"Open Video Camera (2x, Flash)",
         @"camera video 2x": @"Open Video Camera (2x)",
         @"camera video flash": @"Open Video Camera (2x, Flash)",
+        @"camera video 1x flash": @"Open Video Camera (1x, Flash)",
         @"camera video": @"Open Video Camera (2x)",
         @"open camera video 2x flash": @"Open Video Camera (2x, Flash)",
         @"open camera video 2x": @"Open Video Camera (2x)",
@@ -1074,6 +1171,8 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
             result = @"Disconnect Airplay";
         } else if ([cmd hasPrefix:@"set-vol "]) {
             result = [NSString stringWithFormat:@"Set Volume %@", [cmd substringFromIndex:8]];
+        } else if ([cmd hasPrefix:@"ringer volume "]) {
+            result = [NSString stringWithFormat:@"Set Ringer Volume %@", [cmd substringFromIndex:14]];
         } else if ([cmd hasPrefix:@"brightness "]) {
             result = [NSString stringWithFormat:@"Set Brightness %@", [cmd substringFromIndex:11]];
         } else if ([cmd hasPrefix:@"flashlight "] && ![[cmd lowercaseString] hasSuffix:@"on"] && ![[cmd lowercaseString] hasSuffix:@"off"] && ![[cmd lowercaseString] hasSuffix:@"toggle"]) {
@@ -1293,6 +1392,9 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     }
 
     NSString *cmd = [[(NSString *)cmdId stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+    if ([cmd hasPrefix:@"audiohandoff enabled "] || [cmd hasPrefix:@"audiohandoff auto "]) return @"headphones";
+    if ([cmd isEqualToString:@"camera record"]) return @"video.circle.fill";
+    if ([cmd isEqualToString:@"camera shutter"]) return @"camera.circle.fill";
     if ([cmd hasPrefix:@"camera"] || [cmd hasPrefix:@"open camera"]) {
         if ([cmd containsString:@"flash"] || [cmd containsString:@"torch"]) return @"bolt.fill";
         if ([cmd containsString:@"front"] || [cmd containsString:@"selfie"]) return @"person.fill";
@@ -1301,23 +1403,26 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         return @"camera.fill";
     }
     if ([cmd hasPrefix:@"sneakycam photo"] || [cmd isEqualToString:@"sneakycam takephoto"]) return @"camera.aperture";
-    if ([cmd hasPrefix:@"sneakycam video"] || [cmd isEqualToString:@"sneakycam record"] || [cmd isEqualToString:@"sneakycam startstopvideo"]) return @"video.fill";
+    if ([cmd hasPrefix:@"sneakycam video"] || [cmd isEqualToString:@"sneakycam record"] || [cmd isEqualToString:@"sneakycam startstopvideo"]) return @"eye.slash.fill";
     if ([cmd hasPrefix:@"snapper freeze"]) return @"snowflake";
     if ([cmd hasPrefix:@"snapper instant"]) return @"bolt.fill";
-    if ([cmd hasPrefix:@"snapper close"]) return @"xmark.circle";
+    if ([cmd hasPrefix:@"snapper close"]) return @"xmark.rectangle.fill";
     if ([cmd hasPrefix:@"snapper"]) return @"crop";
-    if ([cmd hasPrefix:@"ha "] || [cmd isEqualToString:@"ha"]) return @"house.fill";
+    if ([cmd hasPrefix:@"ha "] || [cmd isEqualToString:@"ha"]) return @"lightbulb.fill";
     if ([cmd hasPrefix:@"km "] || [cmd isEqualToString:@"km"]) return @"command";
-    if ([cmd hasPrefix:@"mqtt "] || [cmd isEqualToString:@"mqtt"]) return @"antenna.radiowaves.left.and.right";
+    if ([cmd hasPrefix:@"mqtt "] || [cmd isEqualToString:@"mqtt"]) return @"dot.radiowaves.left.and.right";
     if ([cmd hasPrefix:@"toast"]) return @"text.bubble.fill";
     if ([cmd hasPrefix:@"root "] || [cmd hasPrefix:@"exec-root "]) return @"terminal.fill";
     if ([cmd hasPrefix:@"exec "]) return @"terminal.fill";
-    if ([cmd hasPrefix:@"delay "]) return @"timer";
+    if ([cmd hasPrefix:@"delay "]) return @"hourglass";
     if ([cmd hasPrefix:@"bt connect "] || [cmd hasPrefix:@"bluetooth connect "]) return @"link";
     if ([cmd hasPrefix:@"bt disconnect "] || [cmd hasPrefix:@"bluetooth disconnect "]) return @"xmark.circle";
     if ([cmd hasPrefix:@"airplay connect "]) return @"airplayaudio";
-    if ([cmd hasPrefix:@"shortcut:"]) return @"command";
-    if ([cmd hasPrefix:@"set-vol "]) return @"speaker.wave.3.fill";
+    if ([cmd hasPrefix:@"shortcut:"]) return @"wand.and.stars";
+    if ([cmd hasPrefix:@"set-vol "]) return @"slider.horizontal.3";
+    if ([cmd hasPrefix:@"ringer volume "]) return @"bell.fill";
+    if ([cmd hasPrefix:@"ringer "]) return @"bell.slash.fill";
+    if ([cmd hasPrefix:@"haptics "]) return @"iphone.radiowaves.left.and.right";
     if ([cmd hasPrefix:@"brightness "]) return @"sun.max.fill";
     if ([cmd hasPrefix:@"flashlight "] || [cmd hasPrefix:@"flash "]) return @"flashlight.on.fill";
     if ([cmd hasPrefix:@"Lua "] || [cmd hasPrefix:@"lua_eval "] || [cmd hasPrefix:@"lua-eval "] || [cmd hasPrefix:@"lua "]) return @"scroll.fill";
@@ -1344,7 +1449,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"flashlight toggle": @"flashlight.on.fill",
         @"appearance dark": @"moon.fill",
         @"appearance light": @"sun.max.fill",
-        @"appearance toggle": @"moon.fill",
+        @"appearance toggle": @"circle.lefthalf.fill",
         @"rotate lock": @"lock.rotation",
         @"rotate unlock": @"lock.rotation.open",
         @"rotate toggle": @"lock.rotation",
@@ -1374,7 +1479,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"airplane off": @"airplane",
         @"airplane toggle": @"airplane",
         @"haptic": @"hand.tap.fill",
-        @"screenshot": @"camera.fill",
+        @"screenshot": @"camera.viewfinder",
         @"screenrecord": @"record.circle.fill",
         @"screenrecord toggle": @"record.circle.fill",
         @"screenrecord start": @"record.circle.fill",
@@ -1384,7 +1489,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"snapper open": @"crop",
         @"snapper freeze": @"snowflake",
         @"snapper instant": @"bolt.fill",
-        @"snapper close": @"xmark.circle",
+        @"snapper close": @"xmark.rectangle.fill",
         @"lock": @"lock.fill",
         @"unlock": @"lock.open.fill",
         @"lock toggle": @"lock.circle",
@@ -1461,13 +1566,25 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     
     if (!result) {
         if ([cmd hasPrefix:@"root "]) return @"command.square";
-        if ([cmd hasPrefix:@"delay "]) return @"timer";
+        if ([cmd hasPrefix:@"delay "]) return @"hourglass";
         if ([cmd hasPrefix:@"exec "]) return @"chevron.right.square";
         if ([cmd hasPrefix:@"flashlight "] || [cmd hasPrefix:@"flash "]) return @"flashlight.on.fill";
         if ([cmd hasPrefix:@"low power "]) return @"battery.100.bolt";
+        if ([cmd hasPrefix:@"autolock "] || [cmd hasPrefix:@"auto-lock "]) return @"timer";
     }
     
     return result ?: @"circle.fill";
+}
+
++ (BOOL)usesHapticsMenu {
+    return [[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){17, 0, 0}];
+}
+
++ (NSString *)vibrationNameForSilentMode:(BOOL)silent {
+    if ([[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){16, 0, 0}]) {
+        return silent ? @"Play Haptics in Silent Mode" : @"Play Haptics in Ring Mode";
+    }
+    return silent ? @"Vibrate on Silent" : @"Vibrate on Ring";
 }
 
 - (NSDictionary *)toggleInfoForCommand:(NSString *)cmd {
@@ -1502,9 +1619,17 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
             @"displaySuffixes": @[@"On", @"Off", @"Toggle"]
         },
         @{
+            @"key": @"autolock",
+            @"name": @"Auto-Lock",
+            @"icon": @"timer",
+            @"prefixes": @[@"autolock ", @"auto-lock "],
+            @"suffixes": @[@"toggle", @"30s", @"1m", @"2m", @"3m", @"4m", @"5m", @"never"],
+            @"displaySuffixes": @[@"Toggle (Never / Previous)", @"30 Seconds", @"1 Minute", @"2 Minutes", @"3 Minutes", @"4 Minutes", @"5 Minutes", @"Never"]
+        },
+        @{
             @"key": @"dnd",
             @"name": @"Do Not Disturb",
-            @"icon": @"moon.fill",
+            @"icon": @"moon.circle.fill",
             @"prefixes": @[@"dnd "],
             @"suffixes": @[@"on", @"off", @"toggle"],
             @"displaySuffixes": @[@"On", @"Off", @"Toggle"]
@@ -1552,7 +1677,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @{
             @"key": @"appearance",
             @"name": @"Appearance",
-            @"icon": @"moon.fill",
+            @"icon": @"circle.lefthalf.fill",
             @"prefixes": @[@"appearance "],
             @"suffixes": @[@"dark", @"light", @"toggle"],
             @"displaySuffixes": @[@"Dark", @"Light", @"Toggle"]
@@ -1567,6 +1692,15 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
             @"exactMatches": @{ @"audiomix": @"toggle" }
         },
         @{
+            @"key": @"audiohandoff_enabled",
+            @"name": @"AudioHandoff: Automatic Switching",
+            @"icon": @"headphones",
+            @"prefixes": @[@"audiohandoff enabled ", @"audiohandoff auto "],
+            @"suffixes": @[@"on", @"off", @"toggle"],
+            @"displaySuffixes": @[@"On", @"Off", @"Toggle"],
+            @"exactMatches": @{ @"audiohandoff enabled": @"toggle", @"audiohandoff auto": @"toggle" }
+        },
+        @{
             @"key": @"rotate",
             @"name": @"Rotation Lock",
             @"icon": @"lock.rotation",
@@ -1576,7 +1710,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         },
         @{
             @"key": @"vibration_silent",
-            @"name": @"Silent Vibration",
+            @"name": [RCConfigManager vibrationNameForSilentMode:YES],
             @"icon": @"bell.slash",
             @"prefixes": @[@"vibration silent-"],
             @"suffixes": @[@"on", @"off", @"toggle"],
@@ -1584,18 +1718,42 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         },
         @{
             @"key": @"vibration_ring",
-            @"name": @"Ring Vibration",
+            @"name": [RCConfigManager vibrationNameForSilentMode:NO],
             @"icon": @"bell",
             @"prefixes": @[@"vibration ring-"],
             @"suffixes": @[@"on", @"off", @"toggle"],
             @"displaySuffixes": @[@"On", @"Off", @"Toggle"]
         },
         @{
+            @"key": @"haptics",
+            @"name": @"Haptics",
+            @"icon": @"iphone.radiowaves.left.and.right",
+            @"prefixes": @[@"haptics "],
+            @"suffixes": @[@"always", @"silent-only", @"ring-only", @"never"],
+            @"displaySuffixes": @[@"Always Play", @"Play in Silent Mode", @"Don't Play in Silent Mode", @"Never Play"]
+        },
+        @{
+            @"key": @"ringer",
+            @"name": @"Silent Mode",
+            @"icon": @"bell.slash.fill",
+            @"prefixes": @[@"ringer "],
+            @"suffixes": @[@"silent", @"ring", @"toggle"],
+            @"displaySuffixes": @[@"On", @"Off", @"Toggle"]
+        },
+        @{
+            @"key": @"anc",
+            @"name": @"Noise Control",
+            @"icon": @"ear",
+            @"prefixes": @[@"anc "],
+            @"suffixes": @[@"on", @"transparency", @"off"],
+            @"displaySuffixes": @[@"Noise Cancellation", @"Transparency", @"Off"]
+        },
+        @{
             @"key": @"camera_video",
             @"name": @"Open Video Camera",
             @"icon": @"video.fill",
             @"prefixes": @[@"camera video "],
-            @"suffixes": @[@"2x", @"2x flash", @"1x", @"flash", @"0.5x", @"front"],
+            @"suffixes": @[@"2x", @"2x flash", @"1x", @"1x flash", @"0.5x", @"front"],
             @"displaySuffixes": @[@"Video (2x)", @"Video (2x, Flash)", @"Video (1x)", @"Video (1x, Flash)", @"Video (0.5x)", @"Video (Front)"],
             @"exactMatches": @{
                 @"camera video 2x": @"2x",
@@ -1606,8 +1764,10 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
                 @"open camera video 2x flash": @"2x flash",
                 @"camera video 1x": @"1x",
                 @"open camera video 1x": @"1x",
-                @"camera video flash": @"flash",
-                @"open camera video flash": @"flash",
+                @"camera video 1x flash": @"1x flash",
+                @"open camera video 1x flash": @"1x flash",
+                @"camera video flash": @"2x flash",
+                @"open camera video flash": @"2x flash",
                 @"camera video 0.5x": @"0.5x",
                 @"open camera video 0.5x": @"0.5x",
                 @"camera video front": @"front",

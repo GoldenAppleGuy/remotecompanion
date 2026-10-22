@@ -1,6 +1,7 @@
 #import "RCTriggersViewController.h"
 #import "RCConfigManager.h"
 #import "RCActionsViewController.h"
+#import "RCNewTriggerViewController.h"
 #import "RCSettingsViewController.h"
 #import "RCNFCTriggerViewController.h"
 #import <notify.h>
@@ -10,12 +11,19 @@
 #import "RCNotificationTriggerViewController.h"
 #import "RCScheduledTriggerViewController.h"
 #import "RCMQTTTriggerViewController.h"
+#import "RCCategoryBar.h"
 
 #define kSimulateNotificationPrefix "com.pizzaman.rc.simulate."
 
 @interface RCTriggersViewController ()
 @property (nonatomic, strong) NSArray<NSArray<NSString *> *> *sections;
 @property (nonatomic, strong) NSArray<NSString *> *sectionTitles;
+// Category bar: the section shown on its own, or nil for all. Kept by title because
+// sections come and go (Favorites, NFC, Wi-Fi, ... only appear when they have triggers).
+@property (nonatomic, strong) RCCategoryBar *categoryBar;
+@property (nonatomic, copy) NSString *selectedCategoryTitle;
+// The width the visible cells' card backgrounds were drawn for
+@property (nonatomic, assign) CGFloat cardStyleWidth;
 @end
 
 @implementation RCTriggersViewController
@@ -88,12 +96,19 @@
     
     self.tableView.rowHeight = 64;
     if (@available(iOS 15.0, *)) {
-        self.tableView.sectionHeaderTopPadding = 15; // increased padding
+        // Spacing above headers is built into the header views instead (see
+        // heightForHeaderInSection:), so the first one can sit close to the category bar
+        self.tableView.sectionHeaderTopPadding = 0;
     }
     self.tableView.contentInset = UIEdgeInsetsMake(0, 0, 0, 0); // Reset inset since we have large titles handling spacing better now
     
-    self.tableView.tableHeaderView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, 0.1)];
-    self.tableView.tableHeaderView.clipsToBounds = YES;
+    self.categoryBar = [[RCCategoryBar alloc] initWithWidth:self.view.bounds.size.width];
+    __weak typeof(self) weakSelf = self;
+    self.categoryBar.onSelect = ^(NSInteger index) {
+        weakSelf.selectedCategoryTitle = (index >= 0 && index < (NSInteger)weakSelf.sectionTitles.count) ? weakSelf.sectionTitles[index] : nil;
+        [weakSelf.tableView reloadData];
+    };
+    [self.categoryBar attachToTableView:self.tableView];
 
     // Pull-to-refresh
     self.refreshControl = [[UIRefreshControl alloc] init];
@@ -332,6 +347,16 @@
     self.sections = sections;
     self.sectionTitles = titles;
 
+    // Chips follow the sections; a selected section that has gone away falls back to All
+    NSMutableArray *chipTitles = [NSMutableArray array];
+    for (NSString *title in titles) {
+        [chipTitles addObject:[title hasSuffix:@" Triggers"] ? [title substringToIndex:title.length - 9] : title];
+    }
+    [self.categoryBar setChipTitles:chipTitles];
+    NSUInteger selected = self.selectedCategoryTitle ? [titles indexOfObject:self.selectedCategoryTitle] : NSNotFound;
+    if (selected == NSNotFound) self.selectedCategoryTitle = nil;
+    self.categoryBar.selectedIndex = (selected == NSNotFound) ? -1 : (NSInteger)selected;
+
     self.navigationItem.leftBarButtonItem = nil;
 
     [self.tableView reloadData];
@@ -351,141 +376,68 @@
 }
 
 - (void)addNewItem {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"New Trigger"
-        message:@"Select a trigger type to expand your RemoteCompanion setup."
-        preferredStyle:UIAlertControllerStyleActionSheet];
-        
-    [alert addAction:[UIAlertAction actionWithTitle:@"NFC Tag" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [self startNFCScan];
-    }]];
+    __weak typeof(self) weakSelf = self;
+    void (^push)(UIViewController *) = ^(UIViewController *vc) {
+        [weakSelf.navigationController pushViewController:vc animated:YES];
+    };
 
-    [alert addAction:[UIAlertAction actionWithTitle:@"WiFi Network" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        RCWiFiTriggerViewController *vc = [[RCWiFiTriggerViewController alloc] init];
-        [self.navigationController pushViewController:vc animated:YES];
-    }]];
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"Bluetooth Device" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        RCBluetoothTriggerViewController *vc = [[RCBluetoothTriggerViewController alloc] init];
-        [self.navigationController pushViewController:vc animated:YES];
-    }]];
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"App Launch" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        RCAppPickerViewController *vc = [[RCAppPickerViewController alloc] init];
-        vc.suppressAutoPop = YES; // We handle navigation ourselves
-        vc.onAppSelected = ^(NSString *appName, NSString *bundleId) {
-            NSString *triggerKey = [NSString stringWithFormat:@"app_launch_%@", bundleId];
-            NSString *friendlyName = [NSString stringWithFormat:@"Launch %@", appName];
-            
-            NSDictionary *triggerData = @{
-                @"name": friendlyName,
-                @"enabled": @YES,
-                @"actions": @[]
-            };
-            
-            [[RCConfigManager sharedManager] updateTrigger:triggerKey withData:triggerData];
-            
-            // Push actionsVC, then let the app picker pop (leaving [TriggersVC, ActionsVC])
-            RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:triggerKey];
-            NSMutableArray *vcs = [self.navigationController.viewControllers mutableCopy];
-            [vcs removeLastObject]; // Remove the app picker
-            [vcs addObject:actionsVC];
-            [self.navigationController setViewControllers:vcs animated:YES];
-        };
-        [self.navigationController pushViewController:vc animated:YES];
-    }]];
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"Notification" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        RCNotificationTriggerViewController *vc = [[RCNotificationTriggerViewController alloc] init];
-        [self.navigationController pushViewController:vc animated:YES];
-    }]];
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"Scheduled Trigger" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        RCScheduledTriggerViewController *vc = [[RCScheduledTriggerViewController alloc] init];
-        [self.navigationController pushViewController:vc animated:YES];
-    }]];
-    
-    [alert addAction:[UIAlertAction actionWithTitle:@"MQTT Topic" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        RCMQTTTriggerViewController *vc = [[RCMQTTTriggerViewController alloc] init];
-        [self.navigationController pushViewController:vc animated:YES];
-    }]];
-    
-    [alert addAction:[UIAlertAction actionWithTitle:@"System Event" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        UIAlertController *systemAlert = [UIAlertController alertControllerWithTitle:@"System Event" message:@"Select a system event to trigger actions." preferredStyle:UIAlertControllerStyleAlert];
-        
-        [systemAlert addAction:[UIAlertAction actionWithTitle:@"Device Locked" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            NSString *key = @"trigger_device_lock";
+    // System events can only be added once; one that exists just opens
+    NSArray *configured = [[RCConfigManager sharedManager] allConfiguredTriggerKeys];
+    NSMutableArray *systemEvents = [NSMutableArray array];
+    for (NSArray *event in @[@[@"trigger_device_lock", @"Device Locked", @"lock.fill"],
+                             @[@"trigger_device_unlock", @"Device Unlocked", @"lock.open.fill"],
+                             @[@"trigger_power_connect", @"Power Connected", @"bolt.fill"],
+                             @[@"trigger_power_disconnect", @"Power Disconnected", @"bolt.slash.fill"],
+                             @[@"trigger_media_play", @"Media Playing", @"play.fill"],
+                             @[@"trigger_media_pause", @"Media Paused", @"pause.fill"],
+                             @[@"trigger_media_track_change", @"Media Track Changed", @"forward.fill"]]) {
+        NSString *key = event[0], *title = event[1];
+        NSMutableDictionary *child = [@{ @"title": title, @"icon": event[2], @"handler": ^{
             if (![[[RCConfigManager sharedManager] allConfiguredTriggerKeys] containsObject:key]) {
-                [[RCConfigManager sharedManager] updateTrigger:key withData:@{@"name": @"Device Locked", @"enabled": @YES, @"actions": @[]}];
+                [[RCConfigManager sharedManager] updateTrigger:key withData:@{@"name": title, @"enabled": @YES, @"actions": @[]}];
             }
-            RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:key];
-            [self.navigationController pushViewController:actionsVC animated:YES];
-        }]];
-        
-        [systemAlert addAction:[UIAlertAction actionWithTitle:@"Device Unlocked" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            NSString *key = @"trigger_device_unlock";
-            if (![[[RCConfigManager sharedManager] allConfiguredTriggerKeys] containsObject:key]) {
-                [[RCConfigManager sharedManager] updateTrigger:key withData:@{@"name": @"Device Unlocked", @"enabled": @YES, @"actions": @[]}];
-            }
-            RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:key];
-            [self.navigationController pushViewController:actionsVC animated:YES];
-        }]];
-        
-        [systemAlert addAction:[UIAlertAction actionWithTitle:@"Power Connected" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            NSString *key = @"trigger_power_connect";
-            if (![[[RCConfigManager sharedManager] allConfiguredTriggerKeys] containsObject:key]) {
-                [[RCConfigManager sharedManager] updateTrigger:key withData:@{@"name": @"Power Connected", @"enabled": @YES, @"actions": @[]}];
-            }
-            RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:key];
-            [self.navigationController pushViewController:actionsVC animated:YES];
-        }]];
-        
-        [systemAlert addAction:[UIAlertAction actionWithTitle:@"Power Disconnected" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            NSString *key = @"trigger_power_disconnect";
-            if (![[[RCConfigManager sharedManager] allConfiguredTriggerKeys] containsObject:key]) {
-                [[RCConfigManager sharedManager] updateTrigger:key withData:@{@"name": @"Power Disconnected", @"enabled": @YES, @"actions": @[]}];
-            }
-            RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:key];
-            [self.navigationController pushViewController:actionsVC animated:YES];
-        }]];
-        
-        [systemAlert addAction:[UIAlertAction actionWithTitle:@"Media Playing" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            NSString *key = @"trigger_media_play";
-            if (![[[RCConfigManager sharedManager] allConfiguredTriggerKeys] containsObject:key]) {
-                [[RCConfigManager sharedManager] updateTrigger:key withData:@{@"name": @"Media Playing", @"enabled": @YES, @"actions": @[]}];
-            }
-            RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:key];
-            [self.navigationController pushViewController:actionsVC animated:YES];
-        }]];
-        
-        [systemAlert addAction:[UIAlertAction actionWithTitle:@"Media Paused" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            NSString *key = @"trigger_media_pause";
-            if (![[[RCConfigManager sharedManager] allConfiguredTriggerKeys] containsObject:key]) {
-                [[RCConfigManager sharedManager] updateTrigger:key withData:@{@"name": @"Media Paused", @"enabled": @YES, @"actions": @[]}];
-            }
-            RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:key];
-            [self.navigationController pushViewController:actionsVC animated:YES];
-        }]];
-        
-        [systemAlert addAction:[UIAlertAction actionWithTitle:@"Media Track Changed" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            NSString *key = @"trigger_media_track_change";
-            if (![[[RCConfigManager sharedManager] allConfiguredTriggerKeys] containsObject:key]) {
-                [[RCConfigManager sharedManager] updateTrigger:key withData:@{@"name": @"Media Track Changed", @"enabled": @YES, @"actions": @[]}];
-            }
-            RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:key];
-            [self.navigationController pushViewController:actionsVC animated:YES];
-        }]];
-        
-        [systemAlert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-        [self presentViewController:systemAlert animated:YES completion:nil];
-    }]];
-    
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    
-    if (alert.popoverPresentationController) {
-        alert.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.firstObject;
+            push([[RCActionsViewController alloc] initWithTriggerKey:key]);
+        } } mutableCopy];
+        if ([configured containsObject:key]) child[@"detail"] = @"Added";
+        [systemEvents addObject:child];
     }
-    
-    [self presentViewController:alert animated:YES completion:nil];
+
+    NSArray *items = @[
+        @{ @"title": @"NFC Tag", @"icon": @"wave.3.right", @"section": @"Nearby", @"handler": ^{ push([[RCNFCTriggerViewController alloc] init]); } },
+        @{ @"title": @"Wi-Fi Network", @"icon": @"wifi", @"section": @"Nearby", @"handler": ^{ push([[RCWiFiTriggerViewController alloc] init]); } },
+        @{ @"title": @"Bluetooth Device", @"icon": @"dot.radiowaves.left.and.right", @"section": @"Nearby", @"handler": ^{ push([[RCBluetoothTriggerViewController alloc] init]); } },
+        @{ @"title": @"App Launch", @"icon": @"square.grid.2x2", @"section": @"Apps", @"handler": ^{
+            RCAppPickerViewController *vc = [[RCAppPickerViewController alloc] init];
+            vc.suppressAutoPop = YES; // We handle navigation ourselves
+            vc.onAppSelected = ^(NSString *appName, NSString *bundleId) {
+                __strong typeof(weakSelf) self = weakSelf;
+                if (!self) return;
+                NSString *triggerKey = [NSString stringWithFormat:@"app_launch_%@", bundleId];
+                NSString *friendlyName = [NSString stringWithFormat:@"Launch %@", appName];
+                
+                NSDictionary *triggerData = @{
+                    @"name": friendlyName,
+                    @"enabled": @YES,
+                    @"actions": @[]
+                };
+                
+                [[RCConfigManager sharedManager] updateTrigger:triggerKey withData:triggerData];
+                
+                // Push actionsVC, then let the app picker pop (leaving [TriggersVC, ActionsVC])
+                RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:triggerKey];
+                NSMutableArray *vcs = [self.navigationController.viewControllers mutableCopy];
+                [vcs removeLastObject]; // Remove the app picker
+                [vcs addObject:actionsVC];
+                [self.navigationController setViewControllers:vcs animated:YES];
+            };
+            push(vc);
+        } },
+        @{ @"title": @"Notification", @"icon": @"bell.badge", @"section": @"Apps", @"handler": ^{ push([[RCNotificationTriggerViewController alloc] init]); } },
+        @{ @"title": @"Scheduled Trigger", @"icon": @"calendar.badge.clock", @"section": @"Time", @"handler": ^{ push([[RCScheduledTriggerViewController alloc] init]); } },
+        @{ @"title": @"System Event", @"icon": @"gearshape", @"section": @"System", @"children": systemEvents },
+        @{ @"title": @"MQTT Topic", @"icon": @"antenna.radiowaves.left.and.right", @"section": @"Integrations", @"handler": ^{ push([[RCMQTTTriggerViewController alloc] init]); } },
+    ];
+    [self.navigationController pushViewController:[[RCNewTriggerViewController alloc] initWithItems:items] animated:YES];
 }
 
 - (void)startNFCScan {
@@ -636,7 +588,7 @@
     
     if (!indexPath) return;
     
-    NSString *triggerKey = _sections[indexPath.section][indexPath.row];
+    NSString *triggerKey = [self triggerKeyAtIndexPath:indexPath];
     
     RCConfigManager *config = [RCConfigManager sharedManager];
     NSArray *actions = [config actionsForTrigger:triggerKey];
@@ -667,20 +619,59 @@
     });
 }
 
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    [self.categoryBar scrollViewDidScroll:scrollView];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self.categoryBar layoutInScrollView:self.tableView];
+
+    // The card backgrounds are drawn for the cell's width when it's displayed: redraw the
+    // visible ones when the width changes (rotation), or they keep the old width
+    CGFloat width = CGRectGetWidth(self.tableView.bounds);
+    if (width != self.cardStyleWidth) {
+        self.cardStyleWidth = width;
+        for (NSIndexPath *indexPath in self.tableView.indexPathsForVisibleRows) {
+            UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
+            if (cell) [self applySectionCardStyleToCell:cell atIndexPath:indexPath];
+        }
+    }
+}
+
+#pragma mark - Display model
+
+// The sections the table shows: all of them, or just the selected category
+- (NSInteger)realSectionForDisplaySection:(NSInteger)section {
+    if (!self.selectedCategoryTitle) return section;
+    NSUInteger idx = [self.sectionTitles indexOfObject:self.selectedCategoryTitle];
+    return idx == NSNotFound ? section : (NSInteger)idx;
+}
+
+- (NSInteger)displaySectionCount {
+    return self.selectedCategoryTitle ? 1 : self.sections.count;
+}
+
+- (NSString *)triggerKeyAtIndexPath:(NSIndexPath *)indexPath {
+    return self.sections[[self realSectionForDisplaySection:indexPath.section]][indexPath.row];
+}
+
 #pragma mark - Table View Data Source
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return _sections.count;
+    return [self displaySectionCount];
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
-    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 40)];
-    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, 15, tableView.bounds.size.width - 40, 20)];
-    label.text = [_sectionTitles[section] uppercaseString];
+    NSString *title = _sectionTitles[[self realSectionForDisplaySection:section]];
+    CGFloat height = [self tableView:tableView heightForHeaderInSection:section];
+    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, height)];
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, height - 25, tableView.bounds.size.width - 40, 20)];
+    label.text = [title uppercaseString];
     label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
 
     // Yellow text for Favorites section
-    if ([_sectionTitles[section] isEqualToString:@"Favorites"]) {
+    if ([title isEqualToString:@"Favorites"]) {
         label.textColor = [UIColor colorWithRed:242/255.0 green:195/255.0 blue:80/255.0 alpha:1.0];
     } else {
         label.textColor = [UIColor secondaryLabelColor];
@@ -691,15 +682,20 @@
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    return 40.0f;
+    // The first section sits just below the category bar. The others keep their old
+    // spacing, including the 15pt sectionHeaderTopPadding they had on iOS 15+.
+    if (section == 0) return 29.0f;
+    CGFloat topPadding = 0;
+    if (@available(iOS 15.0, *)) topPadding = 15;
+    return 40.0f + topPadding;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return _sections[section].count;
+    return self.sections[[self realSectionForDisplaySection:section]].count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSString *triggerKey = _sections[indexPath.section][indexPath.row];
+    NSString *triggerKey = [self triggerKeyAtIndexPath:indexPath];
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"TriggerCell"];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"TriggerCell"];
@@ -753,14 +749,14 @@
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     
-    NSString *triggerKey = _sections[indexPath.section][indexPath.row];
+    NSString *triggerKey = [self triggerKeyAtIndexPath:indexPath];
     
     RCActionsViewController *actionsVC = [[RCActionsViewController alloc] initWithTriggerKey:triggerKey];
     [self.navigationController pushViewController:actionsVC animated:YES];
 }
 
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView leadingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSString *triggerKey = _sections[indexPath.section][indexPath.row];
+    NSString *triggerKey = [self triggerKeyAtIndexPath:indexPath];
 
     RCConfigManager *config = [RCConfigManager sharedManager];
     BOOL isFavorite = [config isTriggerFavorite:triggerKey];
@@ -787,7 +783,7 @@
 }
 
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSString *triggerKey = _sections[indexPath.section][indexPath.row];
+    NSString *triggerKey = [self triggerKeyAtIndexPath:indexPath];
 
     // Only allow delete for NFC, WiFi, BT, App, Notif, Sched, MQTT, Device State triggers
     if (![triggerKey hasPrefix:@"nfc_"] && ![triggerKey hasPrefix:@"wifi_"] && ![triggerKey hasPrefix:@"bt_"] && ![triggerKey hasPrefix:@"app_launch_"] && ![triggerKey hasPrefix:@"notif_"] && ![triggerKey hasPrefix:@"notify_"] && ![triggerKey hasPrefix:@"sched_"] && ![triggerKey hasPrefix:@"mqtt_"] && ![triggerKey hasPrefix:@"mqtt_sub_"] && ![triggerKey hasPrefix:@"trigger_device_"] && ![triggerKey hasPrefix:@"trigger_media_"]) {
@@ -816,7 +812,7 @@
 }
 
 - (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (_sectionTitles.count > 0 && [_sectionTitles[indexPath.section] isEqualToString:@"Favorites"]) {
+    if (_sectionTitles.count > 0 && [_sectionTitles[[self realSectionForDisplaySection:indexPath.section]] isEqualToString:@"Favorites"]) {
         return YES;
     }
     return NO;
@@ -824,7 +820,7 @@
 
 - (NSIndexPath *)tableView:(UITableView *)tableView targetIndexPathForMoveFromRowAtIndexPath:(NSIndexPath *)sourceIndexPath toProposedIndexPath:(NSIndexPath *)proposedDestinationIndexPath {
     if (sourceIndexPath.section != proposedDestinationIndexPath.section) {
-        NSInteger row = (proposedDestinationIndexPath.section < sourceIndexPath.section) ? 0 : [_sections[sourceIndexPath.section] count] - 1;
+        NSInteger row = (proposedDestinationIndexPath.section < sourceIndexPath.section) ? 0 : [self.sections[[self realSectionForDisplaySection:sourceIndexPath.section]] count] - 1;
         return [NSIndexPath indexPathForRow:row inSection:sourceIndexPath.section];
     }
     return proposedDestinationIndexPath;
@@ -837,12 +833,13 @@
     [favorites insertObject:movedItem atIndex:destinationIndexPath.row];
     [[RCConfigManager sharedManager] setOrderedFavorites:favorites];
 
-    NSMutableArray *sectionData = [_sections[sourceIndexPath.section] mutableCopy];
+    NSInteger realSection = [self realSectionForDisplaySection:sourceIndexPath.section];
+    NSMutableArray *sectionData = [_sections[realSection] mutableCopy];
     [sectionData removeObjectAtIndex:sourceIndexPath.row];
     [sectionData insertObject:movedItem atIndex:destinationIndexPath.row];
 
     NSMutableArray *mutableSections = [_sections mutableCopy];
-    mutableSections[sourceIndexPath.section] = sectionData;
+    mutableSections[realSection] = sectionData;
     _sections = mutableSections;
 }
 

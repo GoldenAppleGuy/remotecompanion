@@ -2,6 +2,7 @@
 #import "RCConfigManager.h"
 #import "RCUITweaker.h"
 #import "RCIntegrationsViewController.h"
+#import "RCBannersViewController.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 @interface RCSettingsViewController () <UIDocumentPickerDelegate>
@@ -12,6 +13,14 @@
 @property (nonatomic, strong) UISwitch *nfcSwitch;
 @property (nonatomic, strong) UISwitch *webUISwitch;
 @end
+
+// Sections of the Settings table, in order
+typedef NS_ENUM(NSInteger, RCSettingsSection) {
+    RCSettingsSectionGeneral,
+    RCSettingsSectionTiming,
+    RCSettingsSectionIntegrations,
+    RCSettingsSectionBackup,
+};
 
 @implementation RCSettingsViewController
 
@@ -101,6 +110,11 @@
     [self applyTweaks];
 }
 
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self.tableView reloadData]; // refresh the Banners count after returning from it
+}
+
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
@@ -135,14 +149,47 @@
 
 #pragma mark - Table View Data Source
 
+// The Button Timing rows, in order: the click and sequence windows, then the hold times. Home
+// Clicks only on a phone with a Home button.
+- (NSArray<NSDictionary *> *)timingRows {
+    RCConfigManager *cm = [RCConfigManager sharedManager];
+    NSMutableArray *rows = [NSMutableArray array];
+    [rows addObject:@{ @"title": @"Volume Sequence",
+        @"message": @"How soon after a volume press the other volume button completes an Up then Down or Down then Up sequence.",
+        @"values": @[@0.20, @0.25, @0.30, @0.38, @0.45, @0.55, @0.65], @"default": @0.38,
+        @"get": ^double{ return cm.volumeSequenceWindow; }, @"set": ^(double v) { cm.volumeSequenceWindow = v; } }];
+    [rows addObject:@{ @"title": @"Power Clicks",
+        @"message": @"How long a Power press waits for the next click before the clicks count as a double, triple or quadruple click.",
+        @"values": @[@0.10, @0.15, @0.20, @0.25, @0.30, @0.35, @0.40, @0.50, @0.60, @0.70], @"default": @0.40,
+        @"get": ^double{ return cm.powerClickWindow; }, @"set": ^(double v) { cm.powerClickWindow = v; } }];
+    // A phone with a Home button has no safe area at the bottom of the screen
+    UIWindow *window = self.view.window ?: [UIApplication sharedApplication].windows.firstObject;
+    if (window && window.safeAreaInsets.bottom <= 0) {
+        [rows addObject:@{ @"title": @"Home Clicks",
+            @"message": @"How long a Home press waits for the next click before the clicks count as a double, triple or quadruple click.",
+            @"values": @[@0.25, @0.30, @0.35, @0.45, @0.55, @0.65], @"default": @0.35,
+            @"get": ^double{ return cm.homeClickWindow; }, @"set": ^(double v) { cm.homeClickWindow = v; } }];
+    }
+    [rows addObject:@{ @"title": @"Volume Hold",
+        @"message": @"How long a Volume Up or Down press is held before it counts as a hold rather than a tap. Taps wait this long when a hold trigger is set.",
+        @"values": @[@0.20, @0.25, @0.30, @0.35, @0.45, @0.55, @0.70], @"default": @0.35,
+        @"get": ^double{ return cm.volumeHoldTime; }, @"set": ^(double v) { cm.volumeHoldTime = v; } }];
+    [rows addObject:@{ @"title": @"Power Hold",
+        @"message": @"How long a Power press is held before it counts as a long press.",
+        @"values": @[@0.30, @0.40, @0.50, @0.60, @0.75], @"default": @0.50,
+        @"get": ^double{ return cm.powerHoldTime; }, @"set": ^(double v) { cm.powerHoldTime = v; } }];
+    return rows;
+}
+
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 3;
+    return 4;
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
     NSString *title;
-    if (section == 0) title = @"General";
-    else if (section == 1) title = @"Integrations";
+    if (section == RCSettingsSectionGeneral) title = @"General";
+    else if (section == RCSettingsSectionTiming) title = @"Button Timing";
+    else if (section == RCSettingsSectionIntegrations) title = @"Integrations";
     else title = @"Backup";
     
     UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 40)];
@@ -159,26 +206,30 @@
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0) {
+    if (section == RCSettingsSectionGeneral) {
         return nil;
-    } else if (section == 1) {
+    } else if (section == RCSettingsSectionTiming) {
+        return @"How long a press waits for the next one before it counts. A shorter time responds sooner and needs quicker presses.";
+    } else if (section == RCSettingsSectionIntegrations) {
         return @"Configure connections to external services and automations.";
-    } else if (section == 2) {
+    } else if (section == RCSettingsSectionBackup) {
         return @"Export your configuration to share or backup. Import to restore.";
     }
     return nil;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 3; // Master + NFC + WebUI
-    if (section == 1) return 1; // Integrations Submenu Row
+    if (section == RCSettingsSectionGeneral) return 6; // Master + NFC + NFC screen off + WebUI + Banners + Logging
+    if (section == RCSettingsSectionTiming) return (NSInteger)[self timingRows].count;
+    if (section == RCSettingsSectionIntegrations) return 1; // Integrations Submenu Row
     return 2; // Export, Import
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     RCConfigManager *cm = [RCConfigManager sharedManager];
     
-    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+    BOOL isValueRow = (indexPath.section == RCSettingsSectionGeneral && (indexPath.row == 2 || indexPath.row >= 4)) || indexPath.section == RCSettingsSectionTiming; // NFC With Screen Off, Banners, Logging, the timings
+    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:isValueRow ? UITableViewCellStyleValue1 : UITableViewCellStyleDefault reuseIdentifier:nil];
     cell.backgroundColor = [cm tweakColorForKey:@"blockBackground" defaultVal:0.12];
     
     UIView *selBg = [[UIView alloc] init];
@@ -194,7 +245,7 @@
         cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
     }
     
-    if (indexPath.section == 0) {
+    if (indexPath.section == RCSettingsSectionGeneral) {
         if (indexPath.row == 0) {
             cell.textLabel.text = @"Enable All Triggers";
             _masterSwitch = [[UISwitch alloc] init];
@@ -210,14 +261,33 @@
             cell.accessoryView = _nfcSwitch;
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
         } else if (indexPath.row == 2) {
+            cell.textLabel.text = @"NFC With Screen Off";
+            cell.detailTextLabel.text = [self nfcWindowTitleForSeconds:cm.nfcScreenOffSeconds];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        } else if (indexPath.row == 3) {
             cell.textLabel.text = @"Web UI";
             _webUISwitch = [[UISwitch alloc] init];
             _webUISwitch.on = cm.webUIEnabled;
             [_webUISwitch addTarget:self action:@selector(webUIToggleChanged:) forControlEvents:UIControlEventValueChanged];
             cell.accessoryView = _webUISwitch;
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        } else if (indexPath.row == 4) {
+            cell.textLabel.text = @"Banners";
+            NSUInteger count = [RCBannersViewController checkedCount];
+            cell.detailTextLabel.text = count ? [NSString stringWithFormat:@"%lu", (unsigned long)count] : @"Off";
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        } else if (indexPath.row == 5) {
+            cell.textLabel.text = @"Logging";
+            cell.detailTextLabel.text = [cm.logLevel capitalizedString];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         }
-    } else if (indexPath.section == 1) {
+    } else if (indexPath.section == RCSettingsSectionTiming) {
+        NSDictionary *row = [self timingRows][indexPath.row];
+        double (^get)(void) = row[@"get"];
+        cell.textLabel.text = row[@"title"];
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%.2f s", get()];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    } else if (indexPath.section == RCSettingsSectionIntegrations) {
         cell.textLabel.text = @"Integrations";
         UIImage *puzzleImg = [UIImage systemImageNamed:@"puzzlepiece.extension.fill"];
         if (!puzzleImg) {
@@ -246,10 +316,22 @@
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
 
-    if (indexPath.section == 1) {
+    if (indexPath.section == RCSettingsSectionGeneral && indexPath.row == 2) {
+        [self chooseNFCWindowFromView:[tableView cellForRowAtIndexPath:indexPath]];
+    } else if (indexPath.section == RCSettingsSectionGeneral && indexPath.row == 4) {
+        [self.navigationController pushViewController:[[RCBannersViewController alloc] init] animated:YES];
+    } else if (indexPath.section == RCSettingsSectionGeneral && indexPath.row == 5) {
+        [self chooseLogLevelFromView:[tableView cellForRowAtIndexPath:indexPath]];
+    } else if (indexPath.section == RCSettingsSectionTiming) {
+        NSDictionary *row = [self timingRows][indexPath.row];
+        double (^get)(void) = row[@"get"];
+        void (^set)(double) = row[@"set"];
+        [self chooseTimingNamed:row[@"title"] message:row[@"message"] values:row[@"values"] defaultValue:[row[@"default"] doubleValue]
+                        current:get() from:[tableView cellForRowAtIndexPath:indexPath] apply:set];
+    } else if (indexPath.section == RCSettingsSectionIntegrations) {
         RCIntegrationsViewController *integrationsVC = [[RCIntegrationsViewController alloc] init];
         [self.navigationController pushViewController:integrationsVC animated:YES];
-    } else if (indexPath.section == 2) {
+    } else if (indexPath.section == RCSettingsSectionBackup) {
         if (indexPath.row == 0) {
             [self exportConfig];
         } else {
@@ -270,6 +352,88 @@
 
 - (void)webUIToggleChanged:(UISwitch *)sender {
     [RCConfigManager sharedManager].webUIEnabled = sender.on;
+}
+
+// A list of times in seconds, the current one ticked, for one of the Button Timing rows
+- (void)chooseTimingNamed:(NSString *)name message:(NSString *)message values:(NSArray<NSNumber *> *)values defaultValue:(double)defaultValue
+                  current:(double)current from:(UIView *)sourceView apply:(void (^)(double value))apply {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:name message:message preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSNumber *value in values) {
+        BOOL isCurrent = fabs(value.doubleValue - current) < 0.005;
+        BOOL isDefault = fabs(value.doubleValue - defaultValue) < 0.005;
+        NSString *title = [NSString stringWithFormat:@"%.2f s%@%@", value.doubleValue, isDefault ? @" (Default)" : @"", isCurrent ? @" \u2713" : @""];
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            apply(value.doubleValue);
+            [self.tableView reloadData];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = sourceView;
+    sheet.popoverPresentationController.sourceRect = sourceView.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+// How long the NFC scan keeps going after the screen turns off. A window longer than the default
+// asks first: it costs battery and keeps the reader in use.
+static const double kRCNFCDefaultWindow = 120.0;
+
+- (NSString *)nfcWindowTitleForSeconds:(double)seconds {
+    if (seconds <= 0) return @"Off";
+    if (seconds < 60) return [NSString stringWithFormat:@"%.0f s", seconds];
+    NSInteger minutes = (NSInteger)lround(seconds / 60.0);
+    return minutes == 1 ? @"1 min" : [NSString stringWithFormat:@"%ld min", (long)minutes];
+}
+
+- (void)chooseNFCWindowFromView:(UIView *)sourceView {
+    RCConfigManager *cm = [RCConfigManager sharedManager];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"NFC With Screen Off"
+        message:@"How long a tag can still be tapped after the screen turns off. Off reads tags only while the screen is on."
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray<NSNumber *> *choices = @[@0, @30, @60, @120, @300, @600, @1800];
+    NSArray<NSString *> *names = @[@"Off", @"30 Seconds", @"1 Minute", @"2 Minutes", @"5 Minutes", @"10 Minutes", @"30 Minutes"];
+    for (NSUInteger i = 0; i < choices.count; i++) {
+        double seconds = choices[i].doubleValue;
+        BOOL isCurrent = fabs(seconds - cm.nfcScreenOffSeconds) < 1.0;
+        NSString *title = [NSString stringWithFormat:@"%@%@%@", names[i], seconds == kRCNFCDefaultWindow ? @" (Default)" : @"", isCurrent ? @" \u2713" : @""];
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            if (seconds <= kRCNFCDefaultWindow) {
+                cm.nfcScreenOffSeconds = seconds;
+                [self.tableView reloadData];
+                return;
+            }
+            UIAlertController *warning = [UIAlertController alertControllerWithTitle:@"Longer Scan Window"
+                message:@"The NFC reader stays in use while the screen is off. That costs battery (about 3% an hour on an iPhone 8) and warms the phone, and the system may switch the reader off for a few minutes. A longer window only helps when tags are tapped long after the screen goes dark."
+                preferredStyle:UIAlertControllerStyleAlert];
+            [warning addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"Use %@", names[i]] style:UIAlertActionStyleDefault handler:^(UIAlertAction *confirm) {
+                cm.nfcScreenOffSeconds = seconds;
+                [self.tableView reloadData];
+            }]];
+            [warning addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+            [self presentViewController:warning animated:YES completion:nil];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = sourceView;
+    sheet.popoverPresentationController.sourceRect = sourceView.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)chooseLogLevelFromView:(UIView *)sourceView {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Logging"
+        message:@"Minimal records triggers, their actions and conditions, and errors. Full records every step, for tracking down a problem."
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    NSString *current = [RCConfigManager sharedManager].logLevel;
+    for (NSString *level in @[@"off", @"minimal", @"full"]) {
+        NSString *title = [level isEqualToString:current] ? [NSString stringWithFormat:@"%@ \u2713", [level capitalizedString]] : [level capitalizedString];
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [RCConfigManager sharedManager].logLevel = level;
+            [self.tableView reloadData];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = sourceView;
+    sheet.popoverPresentationController.sourceRect = sourceView.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 - (void)exportConfig {
