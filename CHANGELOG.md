@@ -29,6 +29,11 @@ All notable changes to this project will be documented in this file.
   - 13 new If Conditions including Auto-Lock timeout state, Haptics mode, Silent/Ring vibration states, and more.
   - **Auto-Lock** system action and condition support (`autolock toggle`, `never`, `30s`, `1m`, etc.).
   - Bottom Bar Swipe Left/Right gesture support on bezel-less Face ID devices.
+- App Exit trigger: fires when a chosen app is switched away from (the inverse of App Launch).
+- App Launch and App Exit triggers can cover several apps: tick as many as needed in the app picker and one trigger runs its actions for any of them.
+- Auto-Lock action and condition support.
+- Configurable banners for action triggers.
+- Smaller relative volume steps with `volume up N` and `volume down N`.
 
 ### Fixed
 - **iOS 15+ & 17 Compatibility & Shortcuts**:

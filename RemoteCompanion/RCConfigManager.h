@@ -61,6 +61,12 @@
 - (NSDictionary *)triggerDataForKey:(NSString *)triggerKey;
 - (void)updateTrigger:(NSString *)triggerKey withData:(NSDictionary *)data;
 - (void)removeTrigger:(NSString *)triggerKey;
+
+// Saves an App Launch ("app_launch_") or App Exit ("app_exit_") trigger for these apps and
+// returns its key, which is the first app's. The actions of the trigger it replaces (oldKey),
+// or of one that already exists for the first app, are kept. Two or more apps are stored
+// in the trigger's "apps" list.
+- (NSString *)saveAppTriggerWithPrefix:(NSString *)prefix names:(NSArray<NSString *> *)names bundleIds:(NSArray<NSString *> *)bundleIds replacing:(NSString *)oldKey;
 - (void)renameTrigger:(NSString *)triggerKey toName:(NSString *)newName;
 - (NSArray<NSString *> *)nfcTriggerKeys;
 - (NSArray<NSDictionary *> *)notificationTriggers;

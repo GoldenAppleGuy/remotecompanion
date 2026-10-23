@@ -16,6 +16,7 @@
 #import "RCFocusPickerViewController.h"
 #import "RCKMMacroPickerViewController.h"
 #import <notify.h>
+#import <objc/runtime.h>
 
 #define kSimulateNotificationPrefix "com.pizzaman.rc.simulate."
 
@@ -313,7 +314,8 @@ static id g_actionClipboard = nil;
                           [_triggerKey hasPrefix:@"notify_"] ||
                           [_triggerKey hasPrefix:@"wifi_"] ||
                           [_triggerKey hasPrefix:@"bt_"] ||
-                          [_triggerKey hasPrefix:@"app_launch_"];
+                          [_triggerKey hasPrefix:@"app_launch_"] ||
+                          [_triggerKey hasPrefix:@"app_exit_"];
     
     if (isConfigurable) {
         UIBarButtonItem *settingsButton = [[UIBarButtonItem alloc] 
@@ -370,6 +372,7 @@ static id g_actionClipboard = nil;
     
     // Load actions
     _actions = [[[RCConfigManager sharedManager] actionsForTrigger:_triggerKey] mutableCopy];
+    [self updateWrappedTitle];
     
     // Non-editing mode to allow swipe actions
     self.tableView.editing = NO;
@@ -391,6 +394,52 @@ static id g_actionClipboard = nil;
 - (void)wrapLongNamesSettingChanged:(NSNotification *)note {
     self.tableView.rowHeight = [[NSUserDefaults standardUserDefaults] boolForKey:@"RCWrapLongNamesEnabled"] ? UITableViewAutomaticDimension : 70.0;
     [self.tableView reloadData];
+}
+
+// A long trigger name ("Launch Alaska, Amazon, Notes") is cut off in a large title, which can't wrap:
+// when it doesn't fit, the name is shown wrapped above the list instead, and the bar title is left empty.
+// Once the screen shows the name that way it keeps doing so until it is closed: the navigation bar
+// can't be switched back to a large title in place (it stayed at its small size), so a name that
+// becomes short just shows in the same header at the large-title size.
+- (void)updateWrappedTitle {
+    if ([_triggerKey hasPrefix:@"nfc_"]) return; // has its own tappable title
+    NSString *name = self.title ?: @"";
+    // Known before the screen is laid out for the first time, so the right title is there from the start
+    CGFloat width = self.tableView.bounds.size.width;
+    if (width <= 0) width = self.navigationController.view.bounds.size.width;
+    if (width <= 0) width = [UIScreen mainScreen].bounds.size.width;
+    CGFloat available = width - 40.0;
+    UIFont *largeFont = [UIFont systemFontOfSize:34 weight:UIFontWeightBold];
+    BOOL fits = ceil([name sizeWithAttributes:@{ NSFontAttributeName: largeFont }].width) <= available;
+    BOOL showingHeader = (self.tableView.tableHeaderView != nil);
+    if (fits && !showingHeader) return; // an ordinary large title
+
+    if (!showingHeader) {
+        self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+        self.navigationItem.titleView = [[UIView alloc] init];
+    }
+    UILabel *label = [[UILabel alloc] init];
+    label.numberOfLines = 0;
+    label.lineBreakMode = NSLineBreakByWordWrapping;
+    label.font = fits ? largeFont : [UIFont systemFontOfSize:28 weight:UIFontWeightBold];
+    label.textColor = [UIColor labelColor];
+    label.text = name;
+    CGSize size = [label sizeThatFits:CGSizeMake(available, CGFLOAT_MAX)];
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, available + 40.0, ceil(size.height) + 24.0)];
+    label.frame = CGRectMake(20.0, 4.0, available, ceil(size.height));
+    label.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [header addSubview:label];
+    self.tableView.tableHeaderView = header;
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    static const void *kWidthKey = &kWidthKey;
+    NSNumber *last = objc_getAssociatedObject(self, kWidthKey);
+    if (!last || fabs(last.doubleValue - self.tableView.bounds.size.width) > 0.5) {
+        objc_setAssociatedObject(self, kWidthKey, @(self.tableView.bounds.size.width), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [self updateWrappedTitle];
+    }
 }
 
 - (void)handleTweaksChanged:(NSNotification *)note {
@@ -444,34 +493,25 @@ static id g_actionClipboard = nil;
         vc = [[RCWiFiTriggerViewController alloc] initWithTriggerKey:_triggerKey];
     } else if ([_triggerKey hasPrefix:@"bt_"]) {
         vc = [[RCBluetoothTriggerViewController alloc] initWithTriggerKey:_triggerKey];
-    } else if ([_triggerKey hasPrefix:@"app_launch_"]) {
+    } else if ([_triggerKey hasPrefix:@"app_launch_"] || [_triggerKey hasPrefix:@"app_exit_"]) {
+        BOOL isExit = [_triggerKey hasPrefix:@"app_exit_"];
+        NSString *prefix = isExit ? @"app_exit_" : @"app_launch_";
         RCAppPickerViewController *appVC = [[RCAppPickerViewController alloc] init];
-        appVC.onAppSelected = ^(NSString *appName, NSString *bundleId) {
-            NSString *newKey = [NSString stringWithFormat:@"app_launch_%@", bundleId];
-            NSString *friendlyName = [NSString stringWithFormat:@"Launch %@", appName];
-            
+        appVC.allowsMultipleApps = YES;
+        NSArray *apps = [[RCConfigManager sharedManager] triggerDataForKey:_triggerKey][@"apps"];
+        appVC.selectedBundleIds = ([apps isKindOfClass:[NSArray class]] && apps.count) ? apps : @[ [_triggerKey substringFromIndex:prefix.length] ];
+        appVC.onAppsSelected = ^(NSArray<NSString *> *names, NSArray<NSString *> *bundleIds) {
+            // The key follows the first app; the actions go with the trigger
             RCConfigManager *config = [RCConfigManager sharedManager];
-            if (![self.triggerKey isEqualToString:newKey]) {
-                // Migrate
-                NSDictionary *oldData = [config triggerDataForKey:self.triggerKey];
-                NSArray *actions = oldData[@"actions"] ?: @[];
-                
-                NSDictionary *newData = @{
-                    @"name": friendlyName,
-                    @"enabled": @YES,
-                    @"actions": actions
-                };
-                [config updateTrigger:newKey withData:newData];
-                [config removeTrigger:self.triggerKey];
-                
-                // Update our own key for the current view if needed, 
-                // but we are popping/reloading so it's better to just go back.
-            } else {
-                NSMutableDictionary *mutableData = [[config triggerDataForKey:newKey] mutableCopy];
-                mutableData[@"name"] = friendlyName;
-                [config updateTrigger:newKey withData:mutableData];
-            }
-            [self.navigationController popViewControllerAnimated:YES];
+            NSString *newKey = [config saveAppTriggerWithPrefix:prefix names:names bundleIds:bundleIds replacing:self.triggerKey];
+            // This screen moves to the new key with the trigger. Left on the old one, its next
+            // reload of the actions would read it and bring it back as an empty, disabled trigger.
+            self.triggerKey = newKey;
+            self.title = [config displayNameForTrigger:newKey];
+            self.actions = [[config actionsForTrigger:newKey] mutableCopy];
+            [self.tableView reloadData];
+            [self updateWrappedTitle];
+            // The picker closes itself once this returns (popping here too went back a screen too far)
         };
         vc = appVC;
     } else if ([_triggerKey hasPrefix:@"nfc_"]) {
