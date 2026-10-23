@@ -171,6 +171,7 @@ Configure these in the `RemoteCompanion` app for custom action sequences. Tip: *
   - **WiFi/Bluetooth**: Trigger actions on network or device connectivity.
   - **App Launch**: Fire actions when a specific app is opened.
   - **App Exit**: Fire actions when a specific app is switched away from.
+  - **Audio Output**: Fire actions when an AirPlay, Bluetooth, or iPhone output is set or unset.
 
 </details>
 
