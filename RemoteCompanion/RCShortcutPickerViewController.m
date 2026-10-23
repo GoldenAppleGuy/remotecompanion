@@ -1,4 +1,5 @@
 #import "RCShortcutPickerViewController.h"
+#import "RCServerClient.h"
 #import <dlfcn.h>
 #import <objc/runtime.h>
 
@@ -53,9 +54,22 @@
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSMutableArray *results = [NSMutableArray array];
         NSMutableString *debugLog = [NSMutableString string];
-        [debugLog appendString:@"Loading via springcuts -l...\n"];
-        
-        @try {
+
+        // From the tweak, which reads them from the Shortcuts database (no SpringCuts needed)
+        dispatch_semaphore_t listed = dispatch_semaphore_create(0);
+        __block NSString *listOutput = nil;
+        [[RCServerClient sharedClient] executeCommand:@"shortcuts list" completion:^(NSString *output, NSError *error) {
+            listOutput = output;
+            dispatch_semaphore_signal(listed);
+        }];
+        BOOL answered = dispatch_semaphore_wait(listed, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC))) == 0;
+        for (NSString *line in [listOutput componentsSeparatedByString:@"\n"]) {
+            if (line.length && ![results containsObject:line]) [results addObject:line];
+        }
+        BOOL listedByTweak = listOutput.length > 0; // a lone newline: no shortcuts
+        if (!listedByTweak) [debugLog appendFormat:@"%@\nLoading via springcuts -l...\n", answered ? @"No list from RemoteCompanion" : @"RemoteCompanion didn't answer"];
+
+        if (!listedByTweak) @try {
             Class NSTaskClass = NSClassFromString(@"NSTask");
             if (!NSTaskClass) {
                  [debugLog appendString:@"❌ NSTask class not found\n"];
