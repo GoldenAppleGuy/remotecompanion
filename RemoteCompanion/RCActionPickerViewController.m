@@ -162,7 +162,8 @@
             @{ @"name": @"App Switcher", @"command": @"switcher", @"icon": @"square.stack.3d.up.fill" },
             @{ @"name": @"Previous App", @"command": @"previous app", @"icon": @"arrow.uturn.backward" },
             @{ @"name": @"Control Center", @"command": @"open control center", @"icon": @"switch.2" },
-            @{ @"name": @"Activate Siri", @"command": @"siri", @"icon": @"mic.circle.fill" }
+            @{ @"name": @"Activate Siri", @"command": @"siri", @"icon": @"mic.circle.fill" },
+            @{ @"name": @"Accessibility Shortcut", @"command": @"accessibility shortcut", @"icon": ([UIImage systemImageNamed:@"accessibility"] ? @"accessibility" : @"figure.stand") }
         ],
         // Device Controls
         @[
