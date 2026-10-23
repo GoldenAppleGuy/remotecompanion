@@ -1755,6 +1755,9 @@ static NSString *get_human_name_for_trigger(NSString *key, NSDictionary *trigger
     return key;
 }
 
+static void RC_RefreshAXTriplePress(void);
+static BOOL RC_RunAccessibilityShortcut(void);
+
 static void load_trigger_config() {
     @autoreleasepool {
         // Find the config file
@@ -1789,6 +1792,8 @@ static void load_trigger_config() {
                 SRLogMin(@"Loaded trigger config from %@: triggers=%lu",
                       path,
                       (unsigned long)[g_triggerConfig[@"triggers"] count]);
+                // A triple press binding may have changed: tell iOS whether its own shortcut is on
+                dispatch_async(dispatch_get_main_queue(), ^{ RC_RefreshAXTriplePress(); });
             } else {
                 SRLogMin(@"Failed to parse config at %@", path);
             }
@@ -7471,6 +7476,11 @@ static NSString *handle_command(NSString *cmd) {
         }
     } else if ([cleanCmd isEqualToString:@"siri"]) {
         return handle_command(@"button siri");
+    } else if ([cleanCmd isEqualToString:@"accessibility shortcut"]) {
+        __block BOOL ran = NO;
+        if ([NSThread isMainThread]) ran = RC_RunAccessibilityShortcut();
+        else dispatch_sync(dispatch_get_main_queue(), ^{ ran = RC_RunAccessibilityShortcut(); });
+        return ran ? @"Accessibility Shortcut triggered\n" : @"No Accessibility Shortcut set\n";
     } else if ([cleanCmd isEqualToString:@"open control center"] ||
                [cleanCmd isEqualToString:@"control center"] ||
                [cleanCmd isEqualToString:@"open-control-center"] ||
@@ -10515,6 +10525,7 @@ static void start_web_server() {
                                     @{@"command": @"camera video [zoom] [flash]", @"desc": @"Camera: Open Camera in Video mode (e.g. 2x, 2x flash)"},
                                     @{@"command": @"open control center", @"desc": @"System: Open Control Center"},
                                     @{@"command": @"app switcher", @"desc": @"System: Open App Switcher"},
+                                    @{@"command": @"accessibility shortcut", @"desc": @"System: Run the Accessibility Shortcut"},
                                     @{@"command": @"open <bundleId>", @"desc": @"System: Launch an application by bundle identifier"},
                                     @{@"command": @"kill <bundleId>", @"desc": @"System: Force-close an application"},
                                     @{@"command": @"respring", @"desc": @"System: Restart SpringBoard"},
@@ -12049,7 +12060,7 @@ static NSTimer *g_homeClickTimer = nil;
 // iOS's own Home double press action (the App Switcher), held back until the click count is
 // known (see RC_HoldHomeSwitcher): if a trigger takes the clicks it replaces the App Switcher,
 // otherwise the App Switcher opens late. (The triple press action, the Accessibility Shortcut, is
-// left alone: it can be turned off in Settings.)
+// taken over by Home Triple Click: see RC_AXTriplePressTakenOver.)
 static BOOL g_homeDoubleActionHeld = NO, g_homeActionReplaying = NO;
 static __weak id g_homeActionsTarget = nil;
 
@@ -12063,6 +12074,69 @@ static BOOL RC_AccessibilityShortcutSet(void) {
     return set;
 }
 
+// Whether the side button's triple press is iOS's own (an Accessibility Shortcut on a phone with no
+// Home button; on one with a Home button the shortcut is a Home triple press instead)
+static BOOL RC_SideButtonHasAccessibilityShortcut(void) {
+    static long type = -1;
+    if (type == -1) {
+        id app = [UIApplication sharedApplication];
+        SEL lockButtonSel = NSSelectorFromString(@"lockHardwareButton"), typeSel = NSSelectorFromString(@"homeButtonType");
+        id lockButton = [app respondsToSelector:lockButtonSel] ? ((id (*)(id, SEL))objc_msgSend)(app, lockButtonSel) : nil;
+        if ([lockButton respondsToSelector:typeSel]) type = ((long (*)(id, SEL))objc_msgSend)(lockButton, typeSel);
+    }
+    return type == 2 && RC_AccessibilityShortcutSet(); // 2: no Home button
+}
+
+// The Accessibility Shortcut runs on a triple press of the side button, or of the Home button on
+// a phone with one. Binding that triple press in RC (Power Triple Click / Home Triple Click) takes
+// it over: iOS then treats the shortcut as off for that button, so it no longer waits for a third
+// press or runs the shortcut, and the "accessibility shortcut" action runs it on any trigger.
+static NSHashTable *g_axInteractions = nil; // iOS's SBAccessibilityHardwareButtonInteraction objects; main thread
+static BOOL g_axShortcutBypass = NO;        // set while the action runs iOS's shortcut
+
+static id RC_AXGet(id obj, NSString *name) {
+    SEL sel = NSSelectorFromString(name);
+    return [obj respondsToSelector:sel] ? ((id (*)(id, SEL))objc_msgSend)(obj, sel) : nil;
+}
+
+// Whether a triple press binding takes over the button this interaction belongs to
+static BOOL RC_AXTriplePressTakenOver(id interaction) {
+    id sideButton = RC_AXGet(RC_AXGet([UIApplication sharedApplication], @"lockHardwareButton"), @"buttonActions");
+    BOOL side = sideButton && RC_AXGet(sideButton, @"accessibilityButtonInteraction") == interaction;
+    return RC_TriggerIsActionable(side ? @"power_triple_click" : @"trigger_home_triple_click");
+}
+
+// Has iOS read the press settings again (as it does when the shortcut is changed in Settings)
+// once either triple press binding changes. Main thread.
+static void RC_RefreshAXTriplePress(void) {
+    static int last = -1;
+    int state = (RC_TriggerIsActionable(@"power_triple_click") ? 1 : 0) | (RC_TriggerIsActionable(@"trigger_home_triple_click") ? 2 : 0);
+    if (state == last) return;
+    last = state;
+    SEL publish = NSSelectorFromString(@"publishUpdatedParameters:");
+    for (id interaction in g_axInteractions.allObjects) {
+        id params = RC_AXGet(interaction, @"hardwareButtonGestureParameters");
+        if (!params || ![interaction respondsToSelector:publish]) continue;
+        ((void (*)(id, SEL, id))objc_msgSend)(interaction, publish, params);
+        SRLog(@"[AXShortcut] Press settings updated: %@", params);
+    }
+}
+
+// Runs iOS's Accessibility Shortcut, as a triple press would. Main thread.
+static BOOL RC_RunAccessibilityShortcut(void) {
+    SEL supports = NSSelectorFromString(@"_supportsTripleClick"), consume = NSSelectorFromString(@"consumeTriplePressUp");
+    BOOL ran = NO;
+    g_axShortcutBypass = YES;
+    for (id interaction in g_axInteractions.allObjects) {
+        if (![interaction respondsToSelector:supports] || ![interaction respondsToSelector:consume]) continue;
+        if (!((BOOL (*)(id, SEL))objc_msgSend)(interaction, supports)) continue;
+        ran = ((BOOL (*)(id, SEL))objc_msgSend)(interaction, consume);
+        break;
+    }
+    g_axShortcutBypass = NO;
+    return ran;
+}
+
 // Whether to hold the App Switcher: for Home Double Click always (it replaces the App Switcher);
 // for Triple or Quadruple Click only when iOS doesn't wait itself, so the App Switcher doesn't open
 // partway through those clicks. With a shortcut set iOS already waits, and holding as well doubled
@@ -12071,7 +12145,8 @@ static BOOL RC_HoldHomeSwitcher(void) {
     if (RC_IsForegroundAppExcluded()) return NO;
     if (RC_TriggerIsActionable(@"trigger_home_double_click")) return YES;
     if (!RC_TriggerIsActionable(@"trigger_home_triple_click") && !RC_TriggerIsActionable(@"trigger_home_quadruple_click")) return NO;
-    return !RC_AccessibilityShortcutSet();
+    // Home Triple Click takes the shortcut over, so iOS no longer waits
+    return !RC_AccessibilityShortcutSet() || RC_TriggerIsActionable(@"trigger_home_triple_click");
 }
 
 // The end of a click sequence: drops the held App Switcher if a trigger fired or the clicks went
@@ -12210,8 +12285,11 @@ static void RC_CheckAndFirePower() {
     // first press waits 0.3 s, and the second one ends the sequence at once.
     // The window is Settings > Power Clicks (0.4 s by default); with only Double-Tap bound the
     // first press waits three quarters of it (0.3 s by default)
+    // An Accessibility Shortcut on the side button is a triple press too: with one set, the third
+    // click is waited for as if a Triple Click were bound, or every Accessibility Shortcut also fired
+    // Double-Tap on its second click
     NSTimeInterval timeout = RC_PowerClickWindow();
-    if (!RC_HigherPowerMultiClickArmed()) {
+    if (!RC_HigherPowerMultiClickArmed() && !RC_SideButtonHasAccessibilityShortcut()) {
         timeout = (g_powerClickCount >= 2) ? 0.02 : timeout * 0.75;
     }
     
@@ -12794,6 +12872,27 @@ static void setup_background_hid_listener() {
     g_proximitySensorManager = orig;
     SRLog(@"[RemoteCompanion] Hooked SBProximitySensorManager custom init: %@", g_proximitySensorManager);
     return orig;
+}
+%end
+
+// Accessibility Shortcut: see RC_AXTriplePressTakenOver
+%hook SBAccessibilityHardwareButtonInteraction
+- (id)initWithButtonType:(unsigned long)type {
+    id interaction = %orig;
+    if (interaction) {
+        if (!g_axInteractions) g_axInteractions = [NSHashTable weakObjectsHashTable];
+        [g_axInteractions addObject:interaction];
+    }
+    return interaction;
+}
+- (BOOL)_supportsTripleClick {
+    BOOL supports = %orig;
+    if (supports && !g_axShortcutBypass && RC_AXTriplePressTakenOver(self)) return NO;
+    return supports;
+}
+- (BOOL)consumeTriplePressUp {
+    if (!g_axShortcutBypass && RC_AXTriplePressTakenOver(self)) return NO;
+    return %orig;
 }
 %end
 
