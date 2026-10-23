@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [4.0.1] - Nightly
+
+### Fixed
+- A triple-click of the side button for the Accessibility Shortcut no longer also runs Power Double-Tap's action (since 4.0.0, a Double-Tap bound to Flashlight turned the flashlight on every time).
+
+### Added
+- Binding Power Triple Click (or Home Triple Click, on a phone with a Home button) takes the triple-click over from iOS's Accessibility Shortcut, so only RemoteCompanion's action runs.
+- Accessibility Shortcut action (`accessibility shortcut`): runs the Accessibility Shortcut from any trigger.
+
 ## [4.0.0]
 
 ### Added
