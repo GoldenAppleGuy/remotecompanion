@@ -80,6 +80,7 @@ static void rc_parse_km_cmd(NSString *cmd, NSString **outMacro, NSString **outPa
 
 // Grows to show the whole title and subtitle, never below the usual row height
 - (CGSize)systemLayoutSizeFittingSize:(CGSize)targetSize withHorizontalFittingPriority:(UILayoutPriority)horizontalFittingPriority verticalFittingPriority:(UILayoutPriority)verticalFittingPriority {
+    if (![[NSUserDefaults standardUserDefaults] boolForKey:@"RCWrapLongNamesEnabled"]) return CGSizeMake(targetSize.width, 70.0);
     return CGSizeMake(targetSize.width, RCWrappedCellHeight(self, targetSize.width, 70.0));
 }
 
@@ -364,6 +365,7 @@ static id g_actionClipboard = nil;
                                              selector:@selector(handleConfigChanged:) 
                                                   name:RCConfigChangedNotification 
                                                object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(wrapLongNamesSettingChanged:) name:@"RCWrapLongNamesSettingChanged" object:nil];
     [self applyTweaks];
     
     // Load actions
@@ -382,8 +384,13 @@ static id g_actionClipboard = nil;
 
     [self.tableView registerClass:[RCActionCell class] forCellReuseIdentifier:@"ActionCell"];
     // Long names wrap and the row grows with them, never below the usual 70
-    self.tableView.rowHeight = UITableViewAutomaticDimension;
+    self.tableView.rowHeight = [[NSUserDefaults standardUserDefaults] boolForKey:@"RCWrapLongNamesEnabled"] ? UITableViewAutomaticDimension : 70.0;
     self.tableView.estimatedRowHeight = 70;
+}
+
+- (void)wrapLongNamesSettingChanged:(NSNotification *)note {
+    self.tableView.rowHeight = [[NSUserDefaults standardUserDefaults] boolForKey:@"RCWrapLongNamesEnabled"] ? UITableViewAutomaticDimension : 70.0;
+    [self.tableView reloadData];
 }
 
 - (void)handleTweaksChanged:(NSNotification *)note {
@@ -2508,7 +2515,9 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     cell.indentationWidth = 14.0f;
     cell.indentationLevel = indentationLevel;
 
-    cell.detailTextLabel.numberOfLines = 0;
+    BOOL wrapLongNames = [[NSUserDefaults standardUserDefaults] boolForKey:@"RCWrapLongNamesEnabled"];
+    cell.textLabel.numberOfLines = wrapLongNames ? 0 : 1;
+    cell.detailTextLabel.numberOfLines = wrapLongNames ? 0 : 1;
 
     cell.textLabel.adjustsFontSizeToFitWidth = YES;
     cell.textLabel.minimumScaleFactor = 0.80f;
@@ -2519,7 +2528,7 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         cell.textLabel.text = cleanName;
         cell.textLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
         // If / Else If rows can be long ("If Bluetooth Device Connected is …"): wrap to a second line
-        cell.textLabel.numberOfLines = 0;
+        cell.textLabel.numberOfLines = wrapLongNames ? 0 : 1;
         cell.textLabel.lineBreakMode = NSLineBreakByTruncatingTail;
         BOOL isControl = [self isEndIfActionItem:actionItem] || [self isElseActionItem:actionItem];
         cell.textLabel.textColor = isControl ? [UIColor secondaryLabelColor] : [UIColor labelColor];
@@ -2540,7 +2549,7 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     }
 
     NSString *action = [actionItem isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)actionItem)[@"command"] : (NSString *)actionItem;
-    cell.textLabel.numberOfLines = 0;
+    cell.textLabel.numberOfLines = wrapLongNames ? 0 : 1;
     NSDictionary *toggleInfo = [[RCConfigManager sharedManager] toggleInfoForCommand:action];
 
     // Logic to separate "Type" from "Value"
@@ -2625,7 +2634,7 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         // Use monospace for code-like things
         if ([action hasPrefix:@"exec "] || [action hasPrefix:@"root "] || [action hasPrefix:@"Lua "] || [action hasPrefix:@"lua "]) {
             cell.textLabel.font = [UIFont monospacedSystemFontOfSize:15 weight:UIFontWeightRegular];
-            cell.textLabel.numberOfLines = 0;
+            cell.textLabel.numberOfLines = wrapLongNames ? 0 : 1;
             cell.textLabel.lineBreakMode = NSLineBreakByTruncatingTail;
             
             cell.detailTextLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
@@ -2633,13 +2642,13 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         } else {
              cell.detailTextLabel.font = [UIFont systemFontOfSize:15];
              cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
-             cell.textLabel.numberOfLines = 0;
+             cell.textLabel.numberOfLines = wrapLongNames ? 0 : 1;
         }
     } else {
         cell.detailTextLabel.text = nil;
         // No subtitle: long names (shortcuts, apps, entities, toast text) wrap to a
         // second line rather than being cut off
-        cell.textLabel.numberOfLines = 0;
+        cell.textLabel.numberOfLines = wrapLongNames ? 0 : 1;
         cell.textLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     }
 

@@ -12,6 +12,7 @@
 @property (nonatomic, strong) UISwitch *masterSwitch;
 @property (nonatomic, strong) UISwitch *nfcSwitch;
 @property (nonatomic, strong) UISwitch *webUISwitch;
+@property (nonatomic, strong) UISwitch *wrapLongNamesSwitch;
 @end
 
 // Sections of the Settings table, in order
@@ -219,7 +220,7 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == RCSettingsSectionGeneral) return 6; // Master + NFC + NFC screen off + WebUI + Banners + Logging
+    if (section == RCSettingsSectionGeneral) return 7; // Master + NFC + NFC screen off + WebUI + wrapping + Banners + Logging
     if (section == RCSettingsSectionTiming) return (NSInteger)[self timingRows].count;
     if (section == RCSettingsSectionIntegrations) return 1; // Integrations Submenu Row
     return 2; // Export, Import
@@ -228,7 +229,7 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     RCConfigManager *cm = [RCConfigManager sharedManager];
     
-    BOOL isValueRow = (indexPath.section == RCSettingsSectionGeneral && (indexPath.row == 2 || indexPath.row >= 4)) || indexPath.section == RCSettingsSectionTiming; // NFC With Screen Off, Banners, Logging, the timings
+    BOOL isValueRow = (indexPath.section == RCSettingsSectionGeneral && (indexPath.row == 2 || indexPath.row >= 5)) || indexPath.section == RCSettingsSectionTiming; // NFC With Screen Off, Banners, Logging, the timings
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:isValueRow ? UITableViewCellStyleValue1 : UITableViewCellStyleDefault reuseIdentifier:nil];
     cell.backgroundColor = [cm tweakColorForKey:@"blockBackground" defaultVal:0.12];
     
@@ -272,11 +273,18 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
             cell.accessoryView = _webUISwitch;
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
         } else if (indexPath.row == 4) {
+            cell.textLabel.text = @"Wrap Long Names";
+            _wrapLongNamesSwitch = [[UISwitch alloc] init];
+            _wrapLongNamesSwitch.on = [[NSUserDefaults standardUserDefaults] boolForKey:@"RCWrapLongNamesEnabled"];
+            [_wrapLongNamesSwitch addTarget:self action:@selector(wrapLongNamesToggleChanged:) forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = _wrapLongNamesSwitch;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        } else if (indexPath.row == 5) {
             cell.textLabel.text = @"Banners";
             NSUInteger count = [RCBannersViewController checkedCount];
             cell.detailTextLabel.text = count ? [NSString stringWithFormat:@"%lu", (unsigned long)count] : @"Off";
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        } else if (indexPath.row == 5) {
+        } else if (indexPath.row == 6) {
             cell.textLabel.text = @"Logging";
             cell.detailTextLabel.text = [cm.logLevel capitalizedString];
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
@@ -318,9 +326,9 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 
     if (indexPath.section == RCSettingsSectionGeneral && indexPath.row == 2) {
         [self chooseNFCWindowFromView:[tableView cellForRowAtIndexPath:indexPath]];
-    } else if (indexPath.section == RCSettingsSectionGeneral && indexPath.row == 4) {
-        [self.navigationController pushViewController:[[RCBannersViewController alloc] init] animated:YES];
     } else if (indexPath.section == RCSettingsSectionGeneral && indexPath.row == 5) {
+        [self.navigationController pushViewController:[[RCBannersViewController alloc] init] animated:YES];
+    } else if (indexPath.section == RCSettingsSectionGeneral && indexPath.row == 6) {
         [self chooseLogLevelFromView:[tableView cellForRowAtIndexPath:indexPath]];
     } else if (indexPath.section == RCSettingsSectionTiming) {
         NSDictionary *row = [self timingRows][indexPath.row];
@@ -352,6 +360,11 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 
 - (void)webUIToggleChanged:(UISwitch *)sender {
     [RCConfigManager sharedManager].webUIEnabled = sender.on;
+}
+
+- (void)wrapLongNamesToggleChanged:(UISwitch *)sender {
+    [[NSUserDefaults standardUserDefaults] setBool:sender.on forKey:@"RCWrapLongNamesEnabled"];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"RCWrapLongNamesSettingChanged" object:nil];
 }
 
 // A list of times in seconds, the current one ticked, for one of the Button Timing rows
