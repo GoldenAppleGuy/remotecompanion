@@ -146,7 +146,7 @@
 - (void)tagReaderSession:(NFCTagReaderSession *)session didInvalidateWithError:(NSError *)error {
     if (error.code != NFCReaderSessionInvalidationErrorUserCanceled) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.statusLabel.text = [NSString stringWithFormat:@"Error: %@", error.localizedDescription];
+            self.statusLabel.text = [NSString stringWithFormat:@"Error: %@ (%@ %ld)", error.localizedDescription, error.domain, (long)error.code];
         });
     } else {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -186,6 +186,18 @@
 
 - (void)readerSession:(NFCNDEFReaderSession *)session didDetectNDEFs:(NSArray<NFCNDEFMessage *> *)messages {
     // Legacy method, not used if didDetectTags is implemented
+}
+
+// The page's own scan ends with the page, and the tweak's scan can start again at once instead of
+// waiting for the next screen wake
+- (void)didMoveToParentViewController:(UIViewController *)parent {
+    [super didMoveToParentViewController:parent];
+    if (parent) return;
+    [self.tagSession invalidateSession];
+    self.tagSession = nil;
+    [self.ndefSession invalidateSession];
+    self.ndefSession = nil;
+    [[RCConfigManager sharedManager] resumeBackgroundNFC];
 }
 
 - (void)handleTagDetected:(NSString *)triggerKey {

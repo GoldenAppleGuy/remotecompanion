@@ -772,6 +772,37 @@ body {
   text-align: center;
 }
 
+/* Screenshots Showcase (v4.0.0) */
+.screenshots-section {
+  text-align: center;
+}
+
+.screenshots-container {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.screenshots-container img,
+.app-screenshot {
+  width: 160px;
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.screenshots-container img:hover,
+.app-screenshot:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 30px rgba(0, 113, 227, 0.25);
+}
+
 /* CLI & Cheatsheet Terminal Card */
 .terminal-card {
   background: var(--bg-terminal);
