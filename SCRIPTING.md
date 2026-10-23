@@ -86,6 +86,8 @@ A sequence is a **JSON array** of actions. Each action is either:
 | `dnd toggle` | Toggle Do Not Disturb |
 | `uiopen com.bundle.id` | Open an app by bundle ID |
 | `shortcut:My Shortcut Name` | Run an Apple Shortcut by name |
+| `shortcut:My Shortcut Name -i` | Run it silently (no Shortcuts progress on screen) |
+| `shortcut:My Shortcut Name -p Some text` | Run it with text input (`-i` goes before `-p`) |
 
 ### Connectivity
 | Command | What it does |

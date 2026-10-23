@@ -1189,7 +1189,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         } else if ([cmd hasPrefix:@"flash "] && ![[cmd lowercaseString] hasSuffix:@"on"] && ![[cmd lowercaseString] hasSuffix:@"off"] && ![[cmd lowercaseString] hasSuffix:@"toggle"]) {
             result = [NSString stringWithFormat:@"Flashlight %@%%", [cmd substringFromIndex:6]];
         } else if ([cmd hasPrefix:@"shortcut:"]) {
-            result = [NSString stringWithFormat:@"Run %@", [cmd substringFromIndex:9]];
+            result = [NSString stringWithFormat:@"Run %@", [RCConfigManager shortcutNameForAction:cmd silent:NULL input:NULL]];
         } else if ([cmd hasPrefix:@"snapper "] || [cmd isEqualToString:@"snapper"]) {
             NSString *sub = [cmd hasPrefix:@"snapper "] ? [cmd substringFromIndex:8] : @"";
             if ([sub isEqualToString:@"freeze"]) result = @"Snapper: Freeze Screen";
@@ -1606,6 +1606,53 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
 
 + (BOOL)supportsFocus {
     return [[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){15, 0, 0}];
+}
+
+// The same format the tweak reads (rc_parse_shortcut_args): the name, quoted when it needs to be,
+// then -i, then -p and the input
++ (NSString *)shortcutNameForAction:(NSString *)action silent:(BOOL *)silent input:(NSString **)input {
+    NSCharacterSet *spaces = [NSCharacterSet whitespaceCharacterSet];
+    NSString *args = [action hasPrefix:@"shortcut:"] ? [action substringFromIndex:9] : action;
+    args = [args stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([args hasPrefix:@"-r "]) args = [[args substringFromIndex:3] stringByTrimmingCharactersInSet:spaces];
+    NSString *name = args, *rest = @"";
+    if ([args hasPrefix:@"\""]) {
+        NSRange endQuote = args.length > 1 ? [args rangeOfString:@"\"" options:0 range:NSMakeRange(1, args.length - 1)] : NSMakeRange(NSNotFound, 0);
+        if (endQuote.location != NSNotFound) {
+            name = [args substringWithRange:NSMakeRange(1, endQuote.location - 1)];
+            rest = [[args substringFromIndex:endQuote.location + 1] stringByTrimmingCharactersInSet:spaces];
+        }
+    } else {
+        NSRange p = [args rangeOfString:@" -p "];
+        if (p.location != NSNotFound) {
+            name = [args substringToIndex:p.location];
+            rest = [args substringFromIndex:p.location + 1];
+        }
+        if ([name hasSuffix:@" -i"]) {
+            name = [name substringToIndex:name.length - 3];
+            rest = [@"-i " stringByAppendingString:rest];
+        }
+        name = [name stringByTrimmingCharactersInSet:spaces];
+    }
+    BOOL isSilent = [rest isEqualToString:@"-i"] || [rest hasPrefix:@"-i "];
+    if (isSilent) rest = [[rest substringFromIndex:2] stringByTrimmingCharactersInSet:spaces];
+    NSString *text = nil;
+    if ([rest hasPrefix:@"-p "]) {
+        text = [[rest substringFromIndex:3] stringByTrimmingCharactersInSet:spaces];
+        if ([text hasPrefix:@"\""] && [text hasSuffix:@"\""] && text.length >= 2) text = [text substringWithRange:NSMakeRange(1, text.length - 2)];
+    }
+    if (silent) *silent = isSilent;
+    if (input) *input = text;
+    return name;
+}
+
++ (NSString *)shortcutActionWithName:(NSString *)name silent:(BOOL)silent input:(NSString *)input {
+    // Quoted only when the name would read as options or a quoted name
+    BOOL quote = [name hasPrefix:@"\""] || [name hasPrefix:@"-r "] || [name hasSuffix:@" -i"] || [name containsString:@" -p "];
+    NSMutableString *action = [NSMutableString stringWithFormat:quote ? @"shortcut:\"%@\"" : @"shortcut:%@", name];
+    if (silent) [action appendString:@" -i"];
+    if (input.length) [action appendFormat:@" -p %@", input];
+    return action;
 }
 
 + (NSString *)vibrationNameForSilentMode:(BOOL)silent {

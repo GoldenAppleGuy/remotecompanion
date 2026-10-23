@@ -163,7 +163,7 @@ static id g_actionClipboard = nil;
         paramText = [NSString stringWithFormat:@"%@s", [cmd substringFromIndex:6]];
     } else if ([lower hasPrefix:@"shortcut:"]) {
         baseText = @"Shortcut: ";
-        paramText = [cmd substringFromIndex:9];
+        paramText = [RCConfigManager shortcutNameForAction:cmd silent:NULL input:NULL];
     } else if ([lower hasPrefix:@"uiopen "]) {
         baseText = @"Open ";
         NSString *bundleId = [cmd substringFromIndex:7];
@@ -654,8 +654,10 @@ static id g_actionClipboard = nil;
         if ([action isEqualToString:@"__SHORTCUT_PICKER__"]) {
             // Present Shortcut Picker
             RCShortcutPickerViewController *vc = [[RCShortcutPickerViewController alloc] init];
+            vc.showsSilentOption = YES;
+            __weak RCShortcutPickerViewController *weakPicker = vc;
             vc.onShortcutSelected = ^(NSString *shortcutName) {
-                [self.actions addObject:[NSString stringWithFormat:@"shortcut:%@", shortcutName]];
+                [self.actions addObject:[RCConfigManager shortcutActionWithName:shortcutName silent:weakPicker.runSilently input:nil]];
                 [self saveActions];
                 [self.tableView reloadData];
                 // Dismiss picker
@@ -2109,16 +2111,36 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
 
         [self presentViewController:alert animated:YES completion:nil];
     } else if ([currentAction hasPrefix:@"shortcut:"]) {
-        // Edit Shortcut
-        RCShortcutPickerViewController *shortcutPicker = [[RCShortcutPickerViewController alloc] init];
-        shortcutPicker.onShortcutSelected = ^(NSString *name) {
-            self.actions[indexPath.row] = [NSString stringWithFormat:@"shortcut:%@", name];
+        // Change the shortcut, or whether it runs silently (keeping its input)
+        BOOL silent = NO;
+        NSString *input = nil;
+        NSString *shortcutName = [RCConfigManager shortcutNameForAction:currentAction silent:&silent input:&input];
+        UIAlertController *sheet = [UIAlertController alertControllerWithTitle:shortcutName message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Change Shortcut" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+            RCShortcutPickerViewController *shortcutPicker = [[RCShortcutPickerViewController alloc] init];
+            shortcutPicker.showsSilentOption = YES;
+            shortcutPicker.runSilently = silent;
+            __weak RCShortcutPickerViewController *weakPicker = shortcutPicker;
+            shortcutPicker.onShortcutSelected = ^(NSString *name) {
+                self.actions[indexPath.row] = [RCConfigManager shortcutActionWithName:name silent:weakPicker.runSilently input:input];
+                [self saveActions];
+                [self.tableView reloadData];
+            };
+            UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:shortcutPicker];
+            [self presentViewController:nav animated:YES completion:nil];
+        }]];
+        UIAlertAction *silentAction = [UIAlertAction actionWithTitle:@"Run Silently" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+            self.actions[indexPath.row] = [RCConfigManager shortcutActionWithName:shortcutName silent:!silent input:input];
             [self saveActions];
             [self.tableView reloadData];
-        };
-        
-        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:shortcutPicker];
-        [self presentViewController:nav animated:YES completion:nil];
+        }];
+        @try { [silentAction setValue:@(silent) forKey:@"checked"]; } @catch (NSException *e) {} // the tick
+        [sheet addAction:silentAction];
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+        UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
+        sheet.popoverPresentationController.sourceView = cell ?: self.view;
+        sheet.popoverPresentationController.sourceRect = cell ? cell.bounds : self.view.bounds;
+        [self presentViewController:sheet animated:YES completion:nil];
     } else if ([currentAction hasPrefix:@"uiopen "]) {
         // Edit App
         RCAppPickerViewController *appPicker = [[RCAppPickerViewController alloc] init];
@@ -2578,6 +2600,11 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         if (paramAttrStr) {
             cell.textLabel.attributedText = paramAttrStr;
             subtitle = nil;
+            if ([action hasPrefix:@"shortcut:"]) {
+                BOOL silent = NO;
+                [RCConfigManager shortcutNameForAction:action silent:&silent input:NULL];
+                if (silent) subtitle = @"Silent";
+            }
         } else {
             if ([action hasPrefix:@"exec "]) {
                 cell.textLabel.text = [action substringFromIndex:5];

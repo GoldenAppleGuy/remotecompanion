@@ -43,7 +43,46 @@
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
     
+    if (self.showsSilentOption) self.tableView.tableHeaderView = [self silentOptionHeader];
     [self loadShortcuts];
+}
+
+- (UIView *)silentOptionHeader {
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.tableView.bounds.size.width, 64)];
+    UIView *card = [[UIView alloc] init];
+    card.backgroundColor = [UIColor secondarySystemBackgroundColor];
+    card.layer.cornerRadius = 10;
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    [header addSubview:card];
+
+    UILabel *label = [[UILabel alloc] init];
+    label.text = @"Run Silently";
+    label.font = [UIFont systemFontOfSize:17];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:label];
+
+    UISwitch *toggle = [[UISwitch alloc] init];
+    toggle.on = self.runSilently;
+    [toggle addTarget:self action:@selector(silentSwitchChanged:) forControlEvents:UIControlEventValueChanged];
+    toggle.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:toggle];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [card.leadingAnchor constraintEqualToAnchor:header.layoutMarginsGuide.leadingAnchor],
+        [card.trailingAnchor constraintEqualToAnchor:header.layoutMarginsGuide.trailingAnchor],
+        [card.topAnchor constraintEqualToAnchor:header.topAnchor constant:8],
+        [card.bottomAnchor constraintEqualToAnchor:header.bottomAnchor constant:-8],
+        [label.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
+        [label.centerYAnchor constraintEqualToAnchor:card.centerYAnchor],
+        [toggle.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16],
+        [toggle.centerYAnchor constraintEqualToAnchor:card.centerYAnchor],
+        [label.trailingAnchor constraintLessThanOrEqualToAnchor:toggle.leadingAnchor constant:-8],
+    ]];
+    return header;
+}
+
+- (void)silentSwitchChanged:(UISwitch *)sender {
+    self.runSilently = sender.on;
 }
 
 - (void)loadShortcuts {

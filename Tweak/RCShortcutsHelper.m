@@ -45,7 +45,7 @@ static BOOL rc_add_initWithWorkflowIdentifier(void) {
 @interface RCShortcutRun : NSObject
 @property (nonatomic, copy) NSString *requestID;
 @property (nonatomic, copy) NSString *name;
-@property (nonatomic, copy) NSString *identifier; // set while its input is given
+@property (nonatomic, copy) NSString *identifier; // set while its input or silent run is in place
 @property (nonatomic, retain) id client;
 @end
 
@@ -122,7 +122,13 @@ static NSString *rc_input_for_identifier(id identifier) {
     @synchronized (g_inputs) { return [[[g_inputs objectForKey:identifier] retain] autorelease]; }
 }
 
+// Silent runs (presentation mode 3, what SpringCuts uses for -i): no Shortcuts progress on
+// screen. Set on the client's run request, and on requests made from a descriptor while it runs.
+static const unsigned long kRCSilentPresentationMode = 3;
+static NSMutableSet *g_silent; // workflow identifiers
+
 static id rc_initWithDescriptor(id self, SEL _cmd, id descriptor, id input, unsigned long mode) {
+    @synchronized (g_inputs) { if ([g_silent containsObject:rc_send(descriptor, "identifier") ?: @""]) mode = kRCSilentPresentationMode; }
     NSString *text = input ? nil : rc_input_for_identifier(rc_send(descriptor, "identifier"));
     if (text) input = rc_collection_with_text(text);
     return ((id (*)(id, SEL, id, id, unsigned long))g_origInitWithDescriptor)(self, _cmd, descriptor, input, mode);
@@ -156,7 +162,7 @@ static BOOL rc_hook_input(void) {
 // WFWorkflowRunnerClientDelegate, added to RCShortcutRun at load
 static void rc_run_did_finish(RCShortcutRun *self, SEL _cmd, id client, NSError *error, BOOL cancelled) {
     if (self.identifier) {
-        @synchronized (g_inputs) { [g_inputs removeObjectForKey:self.identifier]; }
+        @synchronized (g_inputs) { [g_inputs removeObjectForKey:self.identifier]; [g_silent removeObject:self.identifier]; }
     }
     if (error) rc_reply(self.requestID, @"failed", [error localizedDescription] ?: [error description]);
     else rc_reply(self.requestID, cancelled ? @"cancelled" : @"finished", nil);
@@ -177,7 +183,8 @@ static void rc_run_shortcut(NSDictionary *request) {
         return;
     }
     BOOL withInput = [input isKindOfClass:[NSString class]] && [input length];
-    if (withInput && !rc_hook_input()) {
+    BOOL silent = [[request objectForKey:@"silent"] boolValue];
+    if ((withInput || silent) && !rc_hook_input()) {
         [client release];
         rc_reply(requestID, @"unsupported", @"no way to pass the input");
         return;
@@ -186,6 +193,17 @@ static void rc_run_shortcut(NSDictionary *request) {
     run.requestID = requestID;
     run.name = name;
     run.client = client;
+    if (silent) {
+        NSString *identifier = rc_send(reference, "identifier");
+        run.identifier = identifier;
+        @synchronized (g_inputs) {
+            if (!g_silent) g_silent = [[NSMutableSet alloc] init];
+            if (identifier) [g_silent addObject:identifier];
+        }
+        id runRequest = rc_send(client, "runRequest");
+        SEL setMode = sel_registerName("setPresentationMode:");
+        if ([runRequest respondsToSelector:setMode]) ((void (*)(id, SEL, unsigned long))objc_msgSend)(runRequest, setMode, kRCSilentPresentationMode);
+    }
     if (withInput) {
         NSString *identifier = rc_send(reference, "identifier");
         run.identifier = identifier;
