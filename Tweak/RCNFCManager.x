@@ -2,6 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <CoreNFC/CoreNFC.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <dlfcn.h>
 #import <AudioToolbox/AudioToolbox.h>
 
@@ -13,6 +14,9 @@ extern void SRLog(NSString *format, ...);
 
 // Declare the external NFC enabled check
 extern BOOL RCIsNFCEnabled();
+
+// Declare the screen-off window from Tweak.x
+extern NSTimeInterval RCNFCScreenOffWindow();
 
 // ============ Private NearField API ============
 @class NFReaderSession, NFTag;
@@ -42,6 +46,17 @@ extern BOOL RCIsNFCEnabled();
 @property (nonatomic, assign) BOOL isScanning;
 @property (nonatomic, strong) NSDate *lastScanTime;
 @property (nonatomic, assign) BOOL wakeHandled;
+@property (nonatomic, copy) NSString *lastTagUID;     // the tag read last, and when: held against the phone, it isn't read again
+@property (nonatomic, strong) NSDate *lastTagTime;
+@property (nonatomic, assign) NSUInteger heldReads;            // reads of the same tag in a row: it is staying on the phone
+@property (nonatomic, assign) NSTimeInterval lastRescanDelay;  // how long the scan waited before the read just made
+@property (nonatomic, assign) NSTimeInterval rescanLateness;   // how much later than planned the scan that made the read started
+@property (nonatomic, strong) NSDate *suspendedUntil; // the app is scanning itself: no restart before then
+@property (nonatomic, strong) NSDate *sessionStart;
+@property (nonatomic, strong) NSDate *lastActivity;   // the last wake or tag
+@property (nonatomic, strong) NSDate *screenOffSince; // when the screen was first seen off, nil while it is on
+@property (nonatomic, strong) NSTimer *screenWatch;   // checks the screen while a scan is open
+@property (nonatomic, assign) NSUInteger endedEarly;  // sessions iOS ended on its own, in a row
 
 + (instancetype)sharedInstance;
 - (void)startScanning;
@@ -70,6 +85,121 @@ extern BOOL RCIsNFCEnabled();
     return self;
 }
 
+// A tag seen again within this long of the last time it was seen is still on the phone, so it is
+// not a new tap. Each look takes about a rescan delay plus the time polling needs to start, so
+// this has to be longer than that and short enough that taking the tag away for a moment counts.
+static const NSTimeInterval kRCNFCRepeatWindow = 1.0;
+// A scan starts again this long after a tag was read, while the screen is on
+static const NSTimeInterval kRCNFCRescanDelay = 0.3;
+// A tag that stays on the phone is looked for less and less often, up to this long between looks:
+// a scan started every moment keeps the reader on, which makes nfcd switch it off for a while
+static const NSTimeInterval kRCNFCMaxRescanDelay = 5.0;
+// The app's own scanner has the reader this long after it asks the tweak to stop
+static const NSTimeInterval kRCNFCAppHoldsReader = 120.0;
+
+static BOOL rcnfc_screenIsOn(void) {
+    Class backlightClass = objc_getClass("SBBacklightController");
+    id backlight = backlightClass ? ((id (*)(Class, SEL))objc_msgSend)(backlightClass, NSSelectorFromString(@"sharedInstance")) : nil;
+    SEL screenIsOn = NSSelectorFromString(@"screenIsOn");
+    if ([backlight respondsToSelector:screenIsOn]) return ((BOOL (*)(id, SEL))objc_msgSend)(backlight, screenIsOn);
+    return YES;
+}
+
+// Starts a scan again while the screen stays on: a read, or iOS ending the session, closes the
+// scan, and without this the next tag waits for the next wake
+- (void)scheduleRescanAfter:(NSTimeInterval)delay {
+    NSDate *planned = [NSDate dateWithTimeIntervalSinceNow:delay];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (self.isScanning) return;
+        if (self.suspendedUntil && [self.suspendedUntil timeIntervalSinceNow] > 0) {
+            SRLog(@"[NFC] Not restarting: the app is scanning");
+            return;
+        }
+        if (![self screenOffWindowOpen]) {
+            SRLog(@"[NFC] Not restarting: the screen is off and nothing was read for %.0f s", RCNFCScreenOffWindow());
+            return;
+        }
+        // Timers stand still while the phone idles with the screen off, so the scan can restart much
+        // later than planned. A tag that stayed on the phone meanwhile is the same tap, not a new one.
+        self.rescanLateness = MAX(0, -[planned timeIntervalSinceNow]);
+        if (self.rescanLateness > 2.0) SRLog(@"[NFC] The restart ran %.0f s late", self.rescanLateness);
+        SRLog(@"[NFC] Restarting the scan");
+        [self startScanning];
+    });
+}
+
+- (void)scheduleRescan {
+    [self scheduleRescanAfter:kRCNFCRescanDelay];
+}
+
+// With the screen off the scan goes on until the window has passed since the screen turned off
+// or the last wake or tag, whichever is later (Settings > NFC With Screen Off). YES while the
+// screen is on, or the window is still open.
+- (BOOL)screenOffWindowOpen {
+    if (rcnfc_screenIsOn()) {
+        self.screenOffSince = nil;
+        return YES;
+    }
+    if (!self.screenOffSince) self.screenOffSince = [NSDate date];
+    NSDate *base = self.lastActivity && [self.lastActivity compare:self.screenOffSince] == NSOrderedDescending ? self.lastActivity : self.screenOffSince;
+    return -[base timeIntervalSinceNow] < RCNFCScreenOffWindow();
+}
+
+- (void)noteActivity {
+    self.lastActivity = [NSDate date];
+}
+
+// No callback says the screen has gone dark on every iOS version, so an open scan looks at it
+- (void)startScreenWatch {
+    [self.screenWatch invalidate];
+    self.screenWatch = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *timer) {
+        if (!self.isScanning) {
+            [timer invalidate];
+            self.screenWatch = nil;
+            return;
+        }
+        if ([self screenOffWindowOpen]) return;
+        SRLog(@"[NFC] Screen off and nothing read for %.0f s - stopping the scan", RCNFCScreenOffWindow());
+        [self stopScanning];
+    }];
+}
+
+// YES when the tag is the one just read: held against the phone, not a new tap. The longer the
+// scan waits between looks, the longer a tag that is still there can go unseen.
+- (BOOL)isRepeatOfTag:(NSString *)uid {
+    NSTimeInterval window = MAX(kRCNFCRepeatWindow, self.lastRescanDelay + 0.8) + self.rescanLateness;
+    BOOL repeat = self.lastTagUID && [self.lastTagUID isEqualToString:uid] && self.lastTagTime &&
+                  [[NSDate date] timeIntervalSinceDate:self.lastTagTime] < window;
+    self.lastTagUID = uid;
+    self.lastTagTime = [NSDate date];
+    return repeat;
+}
+
+// A new reader session is active a moment after it is created, and polling is refused until then
+// ("Session not active"): on iOS 15 and later an immediate call left the scan open but deaf. It is
+// tried again a few times.
+- (void)startPollingSession:(id)session attempt:(int)attempt {
+    if (session != self.privateSession) return;
+    NSError *error = nil;
+    BOOL polling = ((BOOL (*)(id, SEL, NSError **))objc_msgSend)(session, NSSelectorFromString(@"startPollingWithError:"), &error);
+    if (polling) {
+        SRLog(@"[NFC] Polling started (attempt %d)", attempt);
+        return;
+    }
+    if (attempt >= 20) {
+        SRLog(@"[NFC] Polling would not start after %d attempts: %@", attempt, error);
+        // Error 47: nfcd has switched reader mode off for a while (its heat protection). Try again later
+        if (error.code == 47) {
+            [self stopScanning];
+            [self scheduleRescanAfter:30.0];
+        }
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self startPollingSession:session attempt:attempt + 1];
+    });
+}
+
 - (void)startScanning {
     if (!RCIsNFCEnabled()) {
         SRLog(@"[NFC] Scanning is DISABLED in settings, skipping");
@@ -81,17 +211,19 @@ extern BOOL RCIsNFCEnabled();
         return;
     }
 
-    // Debounce (1 second, was 2)
-    if (self.lastScanTime && [[NSDate date] timeIntervalSinceDate:self.lastScanTime] < 1.0) {
-        SRLog(@"[NFC] Skipping scan (debounce)");
+    // Debounce: a start right after another one (several wake hooks fire together)
+    if (self.lastScanTime && [[NSDate date] timeIntervalSinceDate:self.lastScanTime] < 0.3) {
+        SRLog(@"[NFC] Skipping scan (debounce) - trying again shortly");
+        [self scheduleRescanAfter:0.4];
         return;
     }
 
     SRLog(@"[NFC] Starting NFC Session...");
+    [self stopScanning];
+
     self.isScanning = YES;
     self.lastScanTime = [NSDate date];
-
-    [self stopScanning];
+    self.sessionStart = [NSDate date];
 
     // Force load NearField
     void *nfHandle = dlopen("/System/Library/PrivateFrameworks/NearField.framework/NearField", RTLD_NOW);
@@ -135,9 +267,12 @@ extern BOOL RCIsNFCEnabled();
                     SRLog(@"[NFC] Set delegate via setSessionDelegate:");
                 }
 
-                if ([session respondsToSelector:NSSelectorFromString(@"startPolling")]) {
-                    [session performSelector:NSSelectorFromString(@"startPolling")];
-                    SRLog(@"[NFC] Private NFC Polling Started! SUCCESS");
+                if ([session respondsToSelector:NSSelectorFromString(@"startPollingWithError:")]) {
+                    [self startPollingSession:session attempt:1];
+                    privateStarted = YES;
+                } else if ([session respondsToSelector:NSSelectorFromString(@"startPolling")]) {
+                    BOOL polling = ((BOOL (*)(id, SEL))objc_msgSend)(session, NSSelectorFromString(@"startPolling"));
+                    SRLog(@"[NFC] startPolling: %@", polling ? @"YES" : @"NO");
                     privateStarted = YES;
                 } else {
                     SRLog(@"[NFC] Session doesn't respond to startPolling!");
@@ -149,6 +284,7 @@ extern BOOL RCIsNFCEnabled();
 
     if (privateStarted) {
         SRLog(@"[NFC] Using Private API - scan active");
+        [self startScreenWatch];
         return;
     }
 
@@ -190,6 +326,8 @@ extern BOOL RCIsNFCEnabled();
         SRLog(@"[NFC] Stopped private session");
     }
 #pragma clang diagnostic pop
+    [self.screenWatch invalidate];
+    self.screenWatch = nil;
     self.isScanning = NO;
 }
 
@@ -204,6 +342,8 @@ extern BOOL RCIsNFCEnabled();
         return;
     }
     self.wakeHandled = YES;
+    self.suspendedUntil = nil;
+    [self noteActivity];
     
     // Reset wake flag after 1 second (was 3s)
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -211,6 +351,7 @@ extern BOOL RCIsNFCEnabled();
     });
     
     SRLog(@"[NFC-WAKE] Screen wake detected - waiting 500ms before NFC...");
+    self.rescanLateness = 0;
     
     // Delay before starting NFC to let hardware warm up after sleep
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
@@ -344,10 +485,24 @@ static NSString *sr_hexStringFromData(NSData *data) {
             SRLog(@"Private Tag UID: %@ -> Trigger Key: %@", uidString, triggerKey);
             
             dispatch_async(dispatch_get_main_queue(), ^{
-                // Haptic Feedback
-                AudioServicesPlaySystemSound(1520);
-                RCExecuteTrigger(triggerKey);
+                BOOL repeat = [self isRepeatOfTag:uidString];
+                SRLog(@"[NFC] Tag read with the screen %@", rcnfc_screenIsOn() ? @"on" : @"off");
+                if (repeat) {
+                    SRLog(@"[NFC] Same tag as a moment ago - not triggering again");
+                } else {
+                    // Haptic Feedback
+                    AudioServicesPlaySystemSound(1520);
+                    RCExecuteTrigger(triggerKey);
+                }
+                self.endedEarly = 0;
+                [self noteActivity];
                 [self stopScanning];
+                // Looking again: quickly after a new tap, then 0.3 s, 0.6 s, 1.2 s ... while the same tag stays
+                self.heldReads = repeat ? self.heldReads + 1 : 0;
+                NSTimeInterval delay = self.heldReads == 0 ? kRCNFCRescanDelay
+                    : MIN(kRCNFCRescanDelay * pow(2.0, (double)(self.heldReads - 1)), kRCNFCMaxRescanDelay);
+                self.lastRescanDelay = delay;
+                [self scheduleRescanAfter:delay];
             });
         } else {
             SRLog(@"Could not extract UID from private tag: %@", tag);
@@ -361,8 +516,14 @@ static NSString *sr_hexStringFromData(NSData *data) {
 }
 
 - (void)readerSessionDidEndUnexpectedly:(id)session {
-    SRLog(@"Private NFC Session ended unexpectedly");
-    if (session == self.privateSession) self.isScanning = NO;
+    NSTimeInterval lasted = self.sessionStart ? -[self.sessionStart timeIntervalSinceNow] : 0;
+    SRLog(@"Private NFC Session ended unexpectedly after %.1f s", lasted);
+    if (session != nil && session != self.privateSession) return;
+    self.isScanning = NO;
+    // A session that ends again and again at once is left alone, so it can't loop
+    self.endedEarly = lasted < 5.0 ? self.endedEarly + 1 : 0;
+    if (self.endedEarly <= 3) [self scheduleRescan];
+    else SRLog(@"[NFC] The session keeps ending - not restarting until the next wake");
 }
 
 @end
@@ -389,6 +550,7 @@ static NSString *sr_hexStringFromData(NSData *data) {
 
 - (void)setBacklightLevel:(float)level {
     %orig;
+    SRLog(@"[NFC] Backlight level %.2f (scanning: %@)", level, [[RCNFCManager sharedInstance] isScanning] ? @"yes" : @"no");
     if (level == 0) {
         SRLog(@"[NFC] Screen turned OFF (level 0) - stopping scan");
         [[RCNFCManager sharedInstance] stopScanning];
@@ -418,7 +580,18 @@ static NSString *sr_hexStringFromData(NSData *data) {
 
 static void stop_nfc_callback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     SRLog(@"[NFC] Received stop_nfc notification - yielding to app");
+    [RCNFCManager sharedInstance].suspendedUntil = [NSDate dateWithTimeIntervalSinceNow:kRCNFCAppHoldsReader];
     [[RCNFCManager sharedInstance] stopScanning];
+}
+
+static void resume_nfc_callback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    SRLog(@"[NFC] Received resume_nfc notification - the app is done");
+    RCNFCManager *manager = [RCNFCManager sharedInstance];
+    manager.suspendedUntil = nil;
+    [manager noteActivity];
+    // A page that has just read a tag takes a moment to let go of the reader: on iOS 14 a scan
+    // started sooner reports that it is polling and hears nothing for the rest of the session
+    [manager scheduleRescanAfter:2.5];
 }
 
 %ctor {
@@ -429,6 +602,14 @@ static void stop_nfc_callback(CFNotificationCenterRef center, void *observer, CF
         NULL,
         stop_nfc_callback,
         CFSTR("com.pizzaman.rc.stop_nfc"),
+        NULL,
+        CFNotificationSuspensionBehaviorDeliverImmediately);
+
+    CFNotificationCenterAddObserver(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        NULL,
+        resume_nfc_callback,
+        CFSTR("com.pizzaman.rc.resume_nfc"),
         NULL,
         CFNotificationSuspensionBehaviorDeliverImmediately);
         

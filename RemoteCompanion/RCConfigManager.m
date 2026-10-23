@@ -1,4 +1,5 @@
 #import "RCConfigManager.h"
+#import <LocalAuthentication/LocalAuthentication.h>
 #import <notify.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -252,6 +253,42 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     [self saveConfig];
 }
 
+- (double)volumeSequenceWindow {
+    id value = _config[@"volumeSequenceWindow"];
+    double window = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : 0.38;
+    return MIN(MAX(window, 0.15), 0.8);
+}
+
+- (void)setVolumeSequenceWindow:(double)volumeSequenceWindow {
+    _config[@"volumeSequenceWindow"] = @(volumeSequenceWindow);
+    [self saveConfig];
+}
+
+- (double)powerClickWindow {
+    id value = _config[@"powerClickWindow"];
+    double window = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : 0.4;
+    return MIN(MAX(window, 0.10), 0.8);
+}
+
+- (void)setPowerClickWindow:(double)powerClickWindow {
+    _config[@"powerClickWindow"] = @(powerClickWindow);
+    [self saveConfig];
+}
+
+// A saved number, kept inside its range
+- (double)timingForKey:(NSString *)key fallback:(double)fallback min:(double)min max:(double)max {
+    id value = _config[key];
+    double seconds = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : fallback;
+    return MIN(MAX(seconds, min), max);
+}
+
+- (double)homeClickWindow { return [self timingForKey:@"homeClickWindow" fallback:0.35 min:0.25 max:0.8]; }
+- (void)setHomeClickWindow:(double)seconds { _config[@"homeClickWindow"] = @(seconds); [self saveConfig]; }
+- (double)volumeHoldTime { return [self timingForKey:@"volumeHoldTime" fallback:0.35 min:0.2 max:0.8]; }
+- (void)setVolumeHoldTime:(double)seconds { _config[@"volumeHoldTime"] = @(seconds); [self saveConfig]; }
+- (double)powerHoldTime { return [self timingForKey:@"powerHoldTime" fallback:0.5 min:0.3 max:0.75]; }
+- (void)setPowerHoldTime:(double)seconds { _config[@"powerHoldTime"] = @(seconds); [self saveConfig]; }
+
 - (NSArray<NSDictionary *> *)bannerActions {
     id list = _config[@"bannerActions"];
     return [list isKindOfClass:[NSArray class]] ? list : @[];
@@ -295,6 +332,17 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         return YES;
     }
     return [_config[@"nfcEnabled"] boolValue];
+}
+
+- (double)nfcScreenOffSeconds {
+    id value = _config[@"nfcScreenOffSeconds"];
+    double seconds = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : 120.0;
+    return MIN(MAX(seconds, 0.0), 3600.0);
+}
+
+- (void)setNfcScreenOffSeconds:(double)seconds {
+    _config[@"nfcScreenOffSeconds"] = @(seconds);
+    [self saveConfig];
 }
 
 - (BOOL)hapticsEnabled {
@@ -516,6 +564,8 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"trigger_device_unlock": @"Device Unlocked",
         @"trigger_power_connect": @"Power Connected",
         @"trigger_power_disconnect": @"Power Disconnected",
+        @"trigger_carplay_connect": @"CarPlay Connected",
+        @"trigger_carplay_disconnect": @"CarPlay Disconnected",
         @"trigger_media_play": @"Media Playing",
         @"trigger_media_pause": @"Media Paused",
         @"trigger_media_track_change": @"Media Track Changed",
@@ -682,6 +732,11 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
 - (void)stopBackgroundNFC {
     NSLog(@"[RCConfigManager] Signaling to stop background NFC scanning");
     notify_post("com.pizzaman.rc.stop_nfc");
+}
+
+- (void)resumeBackgroundNFC {
+    NSLog(@"[RCConfigManager] Signaling that background NFC scanning can resume");
+    notify_post("com.pizzaman.rc.resume_nfc");
 }
 
 #pragma mark - UI Color Tweaks
@@ -950,6 +1005,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"dnd on": @"Do Not Disturb On",
         @"dnd off": @"Do Not Disturb Off",
         @"dnd toggle": @"Do Not Disturb Toggle",
+        @"focus off": @"Focus Off",
         @"respring": @"Respring",
         @"safemode": @"Safe Mode",
         @"safe-mode": @"Safe Mode",
@@ -969,6 +1025,12 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"audiomix toggle": @"AudioMix Toggle",
         @"audiomix status": @"AudioMix Status",
         @"audiomix": @"AudioMix Toggle",
+        @"audiohandoff enabled on": @"AudioHandoff: Automatic Switching",
+        @"audiohandoff enabled off": @"AudioHandoff: Automatic Switching",
+        @"audiohandoff enabled toggle": @"AudioHandoff: Automatic Switching",
+        @"audiohandoff auto on": @"AudioHandoff: Automatic Switching",
+        @"audiohandoff auto off": @"AudioHandoff: Automatic Switching",
+        @"audiohandoff auto toggle": @"AudioHandoff: Automatic Switching",
         @"low power on": @"Low Power Mode On",
         @"low power off": @"Low Power Mode Off",
         @"low power mode on": @"Low Power Mode On",
@@ -989,6 +1051,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"mute status": @"Mute Status",
         @"mute": @"Mute Toggle",
         @"siri": @"Activate Siri",
+        @"accessibility shortcut": @"Accessibility Shortcut",
         @"home": @"Home Button",
         @"open control center": @"Open Control Center",
         @"control center": @"Open Control Center",
@@ -1107,6 +1170,10 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         } else if ([cmd hasPrefix:@"bt disconnect "] || [cmd hasPrefix:@"bluetooth disconnect "]) {
             NSString *val = [cmd hasPrefix:@"bluetooth disconnect "] ? [cmd substringFromIndex:21] : [cmd substringFromIndex:14];
             result = [NSString stringWithFormat:@"Disconnect %@", val];
+        } else if ([cmd hasPrefix:@"focus on "]) {
+            result = [NSString stringWithFormat:@"Turn On %@", [cmd substringFromIndex:9]];
+        } else if ([cmd hasPrefix:@"focus toggle "]) {
+            result = [NSString stringWithFormat:@"Toggle %@", [cmd substringFromIndex:13]];
         } else if ([cmd hasPrefix:@"airplay connect "]) {
             NSString *val = [cmd substringFromIndex:16];
             if ([val containsString:@" # "]) {
@@ -1338,6 +1405,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     }
 
     NSString *cmd = [[(NSString *)cmdId stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+    if ([cmd hasPrefix:@"audiohandoff enabled "] || [cmd hasPrefix:@"audiohandoff auto "]) return @"headphones";
     if ([cmd isEqualToString:@"camera record"]) return @"video.circle.fill";
     if ([cmd isEqualToString:@"camera shutter"]) return @"camera.circle.fill";
     if ([cmd hasPrefix:@"camera"] || [cmd hasPrefix:@"open camera"]) {
@@ -1363,6 +1431,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     if ([cmd hasPrefix:@"bt connect "] || [cmd hasPrefix:@"bluetooth connect "]) return @"link";
     if ([cmd hasPrefix:@"bt disconnect "] || [cmd hasPrefix:@"bluetooth disconnect "]) return @"xmark.circle";
     if ([cmd hasPrefix:@"airplay connect "]) return @"airplayaudio";
+    if ([cmd hasPrefix:@"focus "]) return @"moon.circle";
     if ([cmd hasPrefix:@"shortcut:"]) return @"wand.and.stars";
     if ([cmd hasPrefix:@"set-vol "]) return @"slider.horizontal.3";
     if ([cmd hasPrefix:@"ringer volume "]) return @"bell.fill";
@@ -1470,6 +1539,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"mute status": @"speaker.slash.fill",
         @"mute": @"speaker.slash.fill",
         @"siri": @"mic.circle.fill",
+        @"accessibility shortcut": ([UIImage systemImageNamed:@"accessibility"] ? @"accessibility" : @"figure.stand"), // "accessibility" is iOS 15+
         @"open control center": @"switch.2",
         @"control center": @"switch.2",
         @"ldrestart": @"arrow.clockwise",
@@ -1521,8 +1591,25 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     return result ?: @"circle.fill";
 }
 
+// iPhones with Face ID are the ones without a Home button. biometryType is set by
+// canEvaluatePolicy: whatever it returns, so this holds without Face ID set up too.
++ (BOOL)hasHomeButton {
+    static BOOL hasHomeButton;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        LAContext *context = [[LAContext alloc] init];
+        [context canEvaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics error:nil];
+        hasHomeButton = context.biometryType != LABiometryTypeFaceID;
+    });
+    return hasHomeButton;
+}
+
 + (BOOL)usesHapticsMenu {
     return [[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){17, 0, 0}];
+}
+
++ (BOOL)supportsFocus {
+    return [[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){15, 0, 0}];
 }
 
 + (NSString *)vibrationNameForSilentMode:(BOOL)silent {
@@ -1635,6 +1722,15 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
             @"suffixes": @[@"on", @"off", @"toggle"],
             @"displaySuffixes": @[@"On", @"Off", @"Toggle"],
             @"exactMatches": @{ @"audiomix": @"toggle" }
+        },
+        @{
+            @"key": @"audiohandoff_enabled",
+            @"name": @"AudioHandoff: Automatic Switching",
+            @"icon": @"headphones",
+            @"prefixes": @[@"audiohandoff enabled ", @"audiohandoff auto "],
+            @"suffixes": @[@"on", @"off", @"toggle"],
+            @"displaySuffixes": @[@"On", @"Off", @"Toggle"],
+            @"exactMatches": @{ @"audiohandoff enabled": @"toggle", @"audiohandoff auto": @"toggle" }
         },
         @{
             @"key": @"rotate",
