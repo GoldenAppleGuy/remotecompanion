@@ -83,6 +83,7 @@
 - (NSDictionary *)toggleInfoForCommand:(NSString *)cmd;
 // Vibration settings, the way this iOS version's Settings shows them: one Haptics menu from
 // iOS 17 (over the same two on/off values), the two switches by their names before that
++ (BOOL)hasHomeButton;
 + (BOOL)usesHapticsMenu;
 + (NSString *)vibrationNameForSilentMode:(BOOL)silent;
 // Focus modes (the Set Focus action, the Focus condition) came with iOS 15
