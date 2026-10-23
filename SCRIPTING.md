@@ -76,6 +76,7 @@ A sequence is a **JSON array** of actions. Each action is either:
 | `camera record` | Toggle video recording in Camera app |
 | `haptic` | Trigger haptic feedback |
 | `siri` | Activate Siri |
+| `accessibility shortcut` | Run the Accessibility Shortcut |
 | `respring` | Respring (restart SpringBoard) |
 | `safemode` | Enter Safe Mode (restart SpringBoard with tweaks disabled) |
 | `ldrestart` | Soft reboot |

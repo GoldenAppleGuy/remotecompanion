@@ -7,6 +7,7 @@
 #import <notify.h>
 #import "RCWiFiTriggerViewController.h"
 #import "RCBluetoothTriggerViewController.h"
+#import "RCWrapSizing.h"
 #import "RCAppPickerViewController.h"
 #import "RCNotificationTriggerViewController.h"
 #import "RCScheduledTriggerViewController.h"
@@ -15,6 +16,17 @@
 
 #define kSimulateNotificationPrefix "com.pizzaman.rc.simulate."
 
+// Grows to show the whole title and subtitle, never below the usual row height
+@interface RCTriggerCell : UITableViewCell
+@end
+
+@implementation RCTriggerCell
+- (CGSize)systemLayoutSizeFittingSize:(CGSize)targetSize withHorizontalFittingPriority:(UILayoutPriority)horizontalFittingPriority verticalFittingPriority:(UILayoutPriority)verticalFittingPriority {
+    if (![[NSUserDefaults standardUserDefaults] boolForKey:@"RCWrapLongNamesEnabled"]) return CGSizeMake(targetSize.width, 64.0);
+    return CGSizeMake(targetSize.width, RCWrappedCellHeight(self, targetSize.width, 64.0));
+}
+@end
+
 @interface RCTriggersViewController ()
 @property (nonatomic, strong) NSArray<NSArray<NSString *> *> *sections;
 @property (nonatomic, strong) NSArray<NSString *> *sectionTitles;
@@ -22,6 +34,8 @@
 // sections come and go (Favorites, NFC, Wi-Fi, ... only appear when they have triggers).
 @property (nonatomic, strong) RCCategoryBar *categoryBar;
 @property (nonatomic, copy) NSString *selectedCategoryTitle;
+// The width the visible cells' card backgrounds were drawn for
+@property (nonatomic, assign) CGFloat cardStyleWidth;
 @end
 
 @implementation RCTriggersViewController
@@ -55,6 +69,8 @@
     if ([triggerKey isEqualToString:@"shake"]) return @"waveform.path.ecg";
     if ([triggerKey isEqualToString:@"trigger_power_connect"]) return @"bolt.fill";
     if ([triggerKey isEqualToString:@"trigger_power_disconnect"]) return @"bolt.slash.fill";
+    if ([triggerKey isEqualToString:@"trigger_carplay_connect"]) return @"car.fill";
+    if ([triggerKey isEqualToString:@"trigger_carplay_disconnect"]) return @"car";
     if ([triggerKey isEqualToString:@"trigger_device_lock"]) return @"lock.fill";
     if ([triggerKey isEqualToString:@"trigger_device_unlock"]) return @"lock.open.fill";
     if ([triggerKey isEqualToString:@"trigger_media_play"]) return @"play.fill";
@@ -92,7 +108,9 @@
 
     self.navigationItem.rightBarButtonItems = @[settingsItem, addItem];
     
-    self.tableView.rowHeight = 64;
+    // Long names (a device or app name, a chain of actions) wrap, and the row grows with them
+    self.tableView.rowHeight = [[NSUserDefaults standardUserDefaults] boolForKey:@"RCWrapLongNamesEnabled"] ? UITableViewAutomaticDimension : 64.0;
+    self.tableView.estimatedRowHeight = 64;
     if (@available(iOS 15.0, *)) {
         // Spacing above headers is built into the header views instead (see
         // heightForHeaderInSection:), so the first one can sit close to the category bar
@@ -132,6 +150,7 @@
                                              selector:@selector(handleTweaksChanged:) 
                                                  name:@"RCConfigTweaksChangedNotification" 
                                                object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(wrapLongNamesSettingChanged:) name:@"RCWrapLongNamesSettingChanged" object:nil];
                                                
     [self setupFooterView];
     [self applyTweaks];
@@ -139,6 +158,11 @@
 
 - (void)handleTweaksChanged:(NSNotification *)note {
     [self applyTweaks];
+}
+
+- (void)wrapLongNamesSettingChanged:(NSNotification *)note {
+    self.tableView.rowHeight = [[NSUserDefaults standardUserDefaults] boolForKey:@"RCWrapLongNamesEnabled"] ? UITableViewAutomaticDimension : 64.0;
+    [self.tableView reloadData];
 }
 
 - (void)applyTweaks {
@@ -268,7 +292,9 @@
     addSection(@[@"trigger_statusbar_left_hold", @"trigger_statusbar_center_hold", @"trigger_statusbar_right_hold", @"trigger_statusbar_swipe_left", @"trigger_statusbar_swipe_right", @"trigger_statusbar_double_tap"], @"Screen Gestures", NO);
     addSection(@[@"trigger_edge_left_swipe_up", @"trigger_edge_left_swipe_down", @"trigger_edge_right_swipe_up", @"trigger_edge_right_swipe_down"], @"Edge Gestures", NO);
     addSection(@[@"trigger_bottombar_swipe_left", @"trigger_bottombar_swipe_right", @"trigger_bottom_swipe_up_left", @"trigger_bottom_swipe_up_center", @"trigger_bottom_swipe_up_right"], @"Bottom Bar Gestures", NO);
-    addSection(@[@"trigger_home_double_click", @"trigger_home_triple_click", @"trigger_home_quadruple_click", @"touchid_tap", @"touchid_hold"], @"Home Button", NO);
+    if ([RCConfigManager hasHomeButton]) {
+        addSection(@[@"trigger_home_double_click", @"trigger_home_triple_click", @"trigger_home_quadruple_click", @"touchid_tap", @"touchid_hold"], @"Home Button", NO);
+    }
     addSection(@[@"trigger_ringer_mute", @"trigger_ringer_unmute", @"trigger_ringer_toggle"], @"Ringer Switch", NO);
     // Device State Section (Only show if configured, hide if empty)
     NSMutableArray *deviceStateKeys = [NSMutableArray array];
@@ -284,6 +310,12 @@
     }
     if ([configuredKeys containsObject:@"trigger_power_disconnect"]) {
         [deviceStateKeys addObject:@"trigger_power_disconnect"];
+    }
+    if ([configuredKeys containsObject:@"trigger_carplay_connect"]) {
+        [deviceStateKeys addObject:@"trigger_carplay_connect"];
+    }
+    if ([configuredKeys containsObject:@"trigger_carplay_disconnect"]) {
+        [deviceStateKeys addObject:@"trigger_carplay_disconnect"];
     }
     if ([configuredKeys containsObject:@"trigger_media_play"]) {
         [deviceStateKeys addObject:@"trigger_media_play"];
@@ -382,25 +414,27 @@
     // System events can only be added once; one that exists just opens
     NSArray *configured = [[RCConfigManager sharedManager] allConfiguredTriggerKeys];
     NSMutableArray *systemEvents = [NSMutableArray array];
-    for (NSArray *event in @[@[@"trigger_device_lock", @"Device Locked", @"lock.fill"],
-                             @[@"trigger_device_unlock", @"Device Unlocked", @"lock.open.fill"],
-                             @[@"trigger_power_connect", @"Power Connected", @"bolt.fill"],
-                             @[@"trigger_power_disconnect", @"Power Disconnected", @"bolt.slash.fill"],
-                             @[@"trigger_media_play", @"Media Playing", @"play.fill"],
-                             @[@"trigger_media_pause", @"Media Paused", @"pause.fill"],
-                             @[@"trigger_media_track_change", @"Media Track Changed", @"forward.fill"]]) {
+    for (NSArray *event in @[@[@"trigger_device_lock", @"Device Locked", @"lock.fill", @"Device"],
+                             @[@"trigger_device_unlock", @"Device Unlocked", @"lock.open.fill", @"Device"],
+                             @[@"trigger_power_connect", @"Power Connected", @"bolt.fill", @"Device"],
+                             @[@"trigger_power_disconnect", @"Power Disconnected", @"bolt.slash.fill", @"Device"],
+                             @[@"trigger_carplay_connect", @"CarPlay Connected", @"car.fill", @"Device"],
+                             @[@"trigger_carplay_disconnect", @"CarPlay Disconnected", @"car", @"Device"],
+                             @[@"trigger_media_play", @"Media Playing", @"play.fill", @"Media"],
+                             @[@"trigger_media_pause", @"Media Paused", @"pause.fill", @"Media"],
+                             @[@"trigger_media_track_change", @"Media Track Changed", @"forward.fill", @"Media"]]) {
         NSString *key = event[0], *title = event[1];
-        NSMutableDictionary *child = [@{ @"title": title, @"icon": event[2], @"handler": ^{
+        NSMutableDictionary *item = [@{ @"title": title, @"icon": event[2], @"section": event[3], @"handler": ^{
             if (![[[RCConfigManager sharedManager] allConfiguredTriggerKeys] containsObject:key]) {
                 [[RCConfigManager sharedManager] updateTrigger:key withData:@{@"name": title, @"enabled": @YES, @"actions": @[]}];
             }
             push([[RCActionsViewController alloc] initWithTriggerKey:key]);
         } } mutableCopy];
-        if ([configured containsObject:key]) child[@"detail"] = @"Added";
-        [systemEvents addObject:child];
+        if ([configured containsObject:key]) item[@"detail"] = @"Added";
+        [systemEvents addObject:item];
     }
 
-    NSArray *items = @[
+    NSMutableArray *items = [@[
         @{ @"title": @"NFC Tag", @"icon": @"wave.3.right", @"section": @"Nearby", @"handler": ^{ push([[RCNFCTriggerViewController alloc] init]); } },
         @{ @"title": @"Wi-Fi Network", @"icon": @"wifi", @"section": @"Nearby", @"handler": ^{ push([[RCWiFiTriggerViewController alloc] init]); } },
         @{ @"title": @"Bluetooth Device", @"icon": @"dot.radiowaves.left.and.right", @"section": @"Nearby", @"handler": ^{ push([[RCBluetoothTriggerViewController alloc] init]); } },
@@ -432,9 +466,9 @@
         } },
         @{ @"title": @"Notification", @"icon": @"bell.badge", @"section": @"Apps", @"handler": ^{ push([[RCNotificationTriggerViewController alloc] init]); } },
         @{ @"title": @"Scheduled Trigger", @"icon": @"calendar.badge.clock", @"section": @"Time", @"handler": ^{ push([[RCScheduledTriggerViewController alloc] init]); } },
-        @{ @"title": @"System Event", @"icon": @"gearshape", @"section": @"System", @"children": systemEvents },
-        @{ @"title": @"MQTT Topic", @"icon": @"antenna.radiowaves.left.and.right", @"section": @"Integrations", @"handler": ^{ push([[RCMQTTTriggerViewController alloc] init]); } },
-    ];
+    ] mutableCopy];
+    [items addObjectsFromArray:systemEvents];
+    [items addObject:@{ @"title": @"MQTT Topic", @"icon": @"antenna.radiowaves.left.and.right", @"section": @"Integrations", @"handler": ^{ push([[RCMQTTTriggerViewController alloc] init]); } }];
     [self.navigationController pushViewController:[[RCNewTriggerViewController alloc] initWithItems:items] animated:YES];
 }
 
@@ -624,6 +658,17 @@
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     [self.categoryBar layoutInScrollView:self.tableView];
+
+    // The card backgrounds are drawn for the cell's width when it's displayed: redraw the
+    // visible ones when the width changes (rotation), or they keep the old width
+    CGFloat width = CGRectGetWidth(self.tableView.bounds);
+    if (width != self.cardStyleWidth) {
+        self.cardStyleWidth = width;
+        for (NSIndexPath *indexPath in self.tableView.indexPathsForVisibleRows) {
+            UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
+            if (cell) [self applySectionCardStyleToCell:cell atIndexPath:indexPath];
+        }
+    }
 }
 
 #pragma mark - Display model
@@ -685,8 +730,12 @@
     NSString *triggerKey = [self triggerKeyAtIndexPath:indexPath];
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"TriggerCell"];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"TriggerCell"];
+        cell = [[RCTriggerCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"TriggerCell"];
     }
+
+    BOOL wrapLongNames = [[NSUserDefaults standardUserDefaults] boolForKey:@"RCWrapLongNamesEnabled"];
+    cell.textLabel.numberOfLines = wrapLongNames ? 0 : 1;
+    cell.detailTextLabel.numberOfLines = wrapLongNames ? 0 : 1;
     
     RCConfigManager *config = [RCConfigManager sharedManager];
     
@@ -773,7 +822,7 @@
     NSString *triggerKey = [self triggerKeyAtIndexPath:indexPath];
 
     // Only allow delete for NFC, WiFi, BT, App, Notif, Sched, MQTT, Device State triggers
-    if (![triggerKey hasPrefix:@"nfc_"] && ![triggerKey hasPrefix:@"wifi_"] && ![triggerKey hasPrefix:@"bt_"] && ![triggerKey hasPrefix:@"app_launch_"] && ![triggerKey hasPrefix:@"notif_"] && ![triggerKey hasPrefix:@"notify_"] && ![triggerKey hasPrefix:@"sched_"] && ![triggerKey hasPrefix:@"mqtt_"] && ![triggerKey hasPrefix:@"mqtt_sub_"] && ![triggerKey hasPrefix:@"trigger_device_"] && ![triggerKey hasPrefix:@"trigger_media_"]) {
+    if (![triggerKey hasPrefix:@"nfc_"] && ![triggerKey hasPrefix:@"wifi_"] && ![triggerKey hasPrefix:@"bt_"] && ![triggerKey hasPrefix:@"app_launch_"] && ![triggerKey hasPrefix:@"notif_"] && ![triggerKey hasPrefix:@"notify_"] && ![triggerKey hasPrefix:@"sched_"] && ![triggerKey hasPrefix:@"mqtt_"] && ![triggerKey hasPrefix:@"mqtt_sub_"] && ![triggerKey hasPrefix:@"trigger_device_"] && ![triggerKey hasPrefix:@"trigger_media_"] && ![triggerKey hasPrefix:@"trigger_power_"] && ![triggerKey hasPrefix:@"trigger_carplay_"]) {
         return [UISwipeActionsConfiguration configurationWithActions:@[]];
     }
 

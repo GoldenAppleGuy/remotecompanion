@@ -3,12 +3,12 @@
 RemoteCompanion provides fast, scriptable system control for modern rootless jailbreaks. It lets you bind physical gestures and hardware buttons, or send commands remotely from your computer, to trigger system actions, control media playback, and run custom scripts.
 
 > [!IMPORTANT]
-> **What’s New in v3.7**
-> - **Screen Recording Controls**: Start, stop, toggle, and query screen recording from RemoteCompanion actions and the CLI.
-> - **Snapper 2 and Snapper 3 Support**: Open, freeze, instantly capture, close, reopen the last capture, and view Snapper history.
-> - **Three-Zone Bottom Swipe Gestures**: Use separate left, center, and right bottom-edge swipe-up triggers.
-> - **Sequential Volume Triggers**: Trigger actions with Volume Up → Down or Volume Down → Up.
-> - **UI and Compatibility Fixes**: Better long-name wrapping, Select App styling, toast positioning, rootless Terminal Commands, and Lua error logging.
+> **What’s New in v4.0**
+> - **Button Timing Engine & Settings**: Fine-grained configuration for Power Clicks, Home Clicks, Volume Sequences, and Holds. Instant native button responsiveness without lag.
+> - **Sound & Haptics Category**: Direct controls for Silent Mode, Ringer Volume (0-100%), Haptics modes (always/silent-only/ring-only/never), unified Noise Control (ANC), and custom relative volume adjustments (`volume up N` / `volume down N`) reporting the updated volume percentage.
+> - **New UI Experience**: Brand new New Trigger screen, collapsible category navigation bars, AirPlay/Bluetooth picker modals, and configurable action banners.
+> - **iOS 17 Compatibility**: Complete support for iOS 17 button hooks, Camera actions, App Switcher, Siri, and Ringer Switch.
+> - **Expanded Automation**: 13 new If Conditions (Auto-Lock, Haptics, vibration modes) and Auto-Lock system controls.
 
 <p align="center">
   <a href="https://saihgupr.github.io/remotecompanion/">Official Website</a> •
@@ -22,11 +22,10 @@ RemoteCompanion provides fast, scriptable system control for modern rootless jai
 </p>
 
 <p align="center">
-  <img src="images/IMG_1514.PNG" width="160" alt="Main Interface" />
-  <img src="images/IMG_1515.PNG" width="160" alt="Action Picker" />
-  <img src="images/IMG_1517.PNG" width="160" alt="Design Engine" />
-  <img src="images/IMG_1518.PNG" width="160" alt="Settings & Backup" />
-  <img src="images/IMG_1516.PNG" width="160" alt="Trigger Config" />
+  <img src="images/4.0.0/IMG_2285.PNG" width="200" alt="Main Interface" />
+  <img src="images/4.0.0/IMG_2284.PNG" width="200" alt="Action Picker" />
+  <img src="images/4.0.0/IMG_2283.PNG" width="200" alt="If Conditions" />
+  <img src="images/4.0.0/IMG_2286.PNG" width="200" alt="Settings & Backup" />
 </p>
 
 ## Features
@@ -72,15 +71,20 @@ Access the desktop-class automation hub at `http://[DEVICE_IP]:8080` from any co
 
 ## CLI Commands & System Control
 
-### Media & Volume
+### Media, Sound & Volume
 - `rc play` / `rc pause` / `rc playpause` / `rc next` / `rc prev` - Control media playback.
 - `rc volume 0-100` - Set volume level.
+- `rc volume up [N]` / `rc volume down [N]` - Step volume up or down by N percent (default is 1 native step) and return the resulting volume percentage (e.g. `Volume: 45%`).
 - `rc mute [on|off|toggle|status]` - Control media mute state.
+- `rc ringer [silent|ring|toggle]` - Control Silent Mode / Ringer Switch state.
+- `rc ringer volume 0-100` - Set ringer volume percentage.
+- `rc haptics [always|silent-only|ring-only|never]` - Set system haptics mode.
 - `rc anc [on|off|transparency]` - Control headphone ANC (requires Sonitus).
 
 ### Device Control
 - `rc lock` / `rc lock toggle` - Lock the screen.
 - `rc unlock <pin>` - Wakes and unlocks the device.
+- `rc autolock [toggle|30s|1m|2m|3m|4m|5m|never]` - Configure or toggle auto-lock timeout.
 - `rc button [power|lock|home|volup|voldown|mute]` - Simulate physical button presses.
 - `rc brightness 0-100` - Set screen brightness.
 - `rc flashlight [on|off|toggle]` - Control the torch.
@@ -317,7 +321,7 @@ The background listener daemon runs inside SpringBoard with automatic 60s keep-a
 ### 2. Installation
 
 #### Option 1: Package Manager Repository (Recommended)
-Add `https://saihgupr.github.io/remotecompanion` to your package manager:
+Add `https://saihgupr.github.io/remotecompanion` to your package manager (or visit the [official website](https://saihgupr.github.io/remotecompanion/) for one-tap buttons):
 - [Add to Sileo](sileo://source/https://saihgupr.github.io/remotecompanion)
 - [Add to Zebra](zbra://sources/add/https://saihgupr.github.io/remotecompanion)
 

@@ -10,8 +10,10 @@
 #import "RCNotificationTriggerViewController.h"
 #import "RCWiFiTriggerViewController.h"
 #import "RCBluetoothTriggerViewController.h"
+#import "RCWrapSizing.h"
 #import "RCNFCTriggerViewController.h"
 #import "RCDevicePickerViewController.h"
+#import "RCFocusPickerViewController.h"
 #import "RCKMMacroPickerViewController.h"
 #import <notify.h>
 
@@ -74,6 +76,12 @@ static void rc_parse_km_cmd(NSString *cmd, NSString **outMacro, NSString **outPa
 - (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
     self = [super initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:reuseIdentifier];
     return self;
+}
+
+// Grows to show the whole title and subtitle, never below the usual row height
+- (CGSize)systemLayoutSizeFittingSize:(CGSize)targetSize withHorizontalFittingPriority:(UILayoutPriority)horizontalFittingPriority verticalFittingPriority:(UILayoutPriority)verticalFittingPriority {
+    if (![[NSUserDefaults standardUserDefaults] boolForKey:@"RCWrapLongNamesEnabled"]) return CGSizeMake(targetSize.width, 70.0);
+    return CGSizeMake(targetSize.width, RCWrappedCellHeight(self, targetSize.width, 70.0));
 }
 
 - (void)layoutSubviews {
@@ -201,6 +209,12 @@ static id g_actionClipboard = nil;
     } else if ([lower hasPrefix:@"bt disconnect "] || [lower hasPrefix:@"bluetooth disconnect "]) {
         baseText = @"Disconnect ";
         paramText = [cmd substringFromIndex:[lower hasPrefix:@"bt disconnect "] ? 14 : 21];
+    } else if ([lower hasPrefix:@"focus on "]) {
+        baseText = @"Turn On ";
+        paramText = [cmd substringFromIndex:9];
+    } else if ([lower hasPrefix:@"focus toggle "]) {
+        baseText = @"Toggle ";
+        paramText = [cmd substringFromIndex:13];
     } else if ([lower hasPrefix:@"toast "]) {
         baseText = @"Toast ";
         NSString *argString = [cmd substringFromIndex:6];
@@ -351,6 +365,7 @@ static id g_actionClipboard = nil;
                                              selector:@selector(handleConfigChanged:) 
                                                   name:RCConfigChangedNotification 
                                                object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(wrapLongNamesSettingChanged:) name:@"RCWrapLongNamesSettingChanged" object:nil];
     [self applyTweaks];
     
     // Load actions
@@ -368,7 +383,14 @@ static id g_actionClipboard = nil;
     // rightBarButtonItems set above
 
     [self.tableView registerClass:[RCActionCell class] forCellReuseIdentifier:@"ActionCell"];
-    self.tableView.rowHeight = 70; // Fixed height as in V2.1.2
+    // Long names wrap and the row grows with them, never below the usual 70
+    self.tableView.rowHeight = [[NSUserDefaults standardUserDefaults] boolForKey:@"RCWrapLongNamesEnabled"] ? UITableViewAutomaticDimension : 70.0;
+    self.tableView.estimatedRowHeight = 70;
+}
+
+- (void)wrapLongNamesSettingChanged:(NSNotification *)note {
+    self.tableView.rowHeight = [[NSUserDefaults standardUserDefaults] boolForKey:@"RCWrapLongNamesEnabled"] ? UITableViewAutomaticDimension : 70.0;
+    [self.tableView reloadData];
 }
 
 - (void)handleTweaksChanged:(NSNotification *)note {
@@ -1121,6 +1143,16 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
             @"placeholder": @"Device name"
         },
         @{
+            @"key": @"carplay",
+            @"title": @"CarPlay",
+            @"icon": @"car.fill",
+            @"section": @"Connectivity",
+            @"values": @[
+                @{ @"value": @"CONNECTED", @"title": @"Connected" },
+                @{ @"value": @"NOT_CONNECTED", @"title": @"Not Connected" }
+            ]
+        },
+        @{
             @"key": @"cellular",
             @"title": @"Cellular Data",
             @"icon": @"antenna.radiowaves.left.and.right",
@@ -1159,6 +1191,13 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
                 @{ @"value": @"ON", @"title": @"On" },
                 @{ @"value": @"OFF", @"title": @"Off" }
             ]
+        },
+        @{
+            // Values: Off, Any Focus, the Focus modes (the condition picker lists them)
+            @"key": @"focus",
+            @"title": @"Focus",
+            @"icon": @"moon.circle",
+            @"section": @"Sound"
         },
         @{
             @"key": @"lpm",
@@ -1558,7 +1597,11 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     if (existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)self.actions.count && [self.actions[existingIndex] isKindOfClass:[NSDictionary class]]) {
         existing = self.actions[existingIndex];
     }
-    RCConditionPickerViewController *picker = [[RCConditionPickerViewController alloc] initWithConditions:[self ifConditionDefinitions] title:title existing:existing];
+    NSArray *conditions = [self ifConditionDefinitions];
+    if (![RCConfigManager supportsFocus]) {
+        conditions = [conditions filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"key != 'focus'"]];
+    }
+    RCConditionPickerViewController *picker = [[RCConditionPickerViewController alloc] initWithConditions:conditions title:title existing:existing];
     __weak typeof(self) weakSelf = self;
     NSString *actionType = type ?: @"if";
     picker.onValueSelected = ^(NSDictionary *condition, NSDictionary *value) {
@@ -2104,6 +2147,8 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         [self editBluetoothConnectAtIndex:indexPath.row isDisconnect:NO];
     } else if ([currentAction hasPrefix:@"bt disconnect "] || [currentAction hasPrefix:@"bluetooth disconnect "] || [currentAction hasPrefix:@"bt-disconnect "]) {
         [self editBluetoothConnectAtIndex:indexPath.row isDisconnect:YES];
+    } else if ([currentAction hasPrefix:@"focus on "] || [currentAction hasPrefix:@"focus toggle "] || [currentAction isEqualToString:@"focus off"]) {
+        [self editFocusAtIndex:indexPath.row];
     } else if ([currentAction hasPrefix:@"km "] || [currentAction isEqualToString:@"km"]) {
         NSString *macroName = @"";
         NSString *paramVal = @"";
@@ -2233,6 +2278,31 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
 
 - (void)dismissModalPicker {
     [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+// Opens the Focus modes over the editor with the action's Focus ticked; choosing one asks Turn
+// On or Toggle again, choosing Off makes it "focus off"
+- (void)editFocusAtIndex:(NSInteger)index {
+    if (index < 0 || index >= (NSInteger)self.actions.count || ![self.actions[index] isKindOfClass:[NSString class]]) return;
+    NSString *action = self.actions[index];
+    BOOL toggle = [action hasPrefix:@"focus toggle "];
+    NSString *current = [action hasPrefix:@"focus on "] ? [action substringFromIndex:9] : toggle ? [action substringFromIndex:13] : @"";
+
+    RCFocusPickerViewController *picker = [[RCFocusPickerViewController alloc] initWithTitle:@"Set Focus"
+                                                                                  fixedRows:@[ @{ @"name": @"Off", @"value": @"", @"icon": @"moon.zzz" } ]];
+    picker.currentValue = current;
+    picker.buildsCommand = YES;
+    __weak typeof(self) weakSelf = self;
+    picker.onSelected = ^(NSDictionary *row) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf || index >= (NSInteger)strongSelf.actions.count) return;
+        strongSelf.actions[index] = row[@"command"];
+        [strongSelf saveActions];
+        [strongSelf.tableView reloadData];
+        [strongSelf dismissViewControllerAnimated:YES completion:nil];
+    };
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:picker];
+    [self presentViewController:nav animated:YES completion:nil];
 }
 
 - (void)editAirPlayConnectAtIndex:(NSInteger)index {
@@ -2445,6 +2515,10 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     cell.indentationWidth = 14.0f;
     cell.indentationLevel = indentationLevel;
 
+    BOOL wrapLongNames = [[NSUserDefaults standardUserDefaults] boolForKey:@"RCWrapLongNamesEnabled"];
+    cell.textLabel.numberOfLines = wrapLongNames ? 0 : 1;
+    cell.detailTextLabel.numberOfLines = wrapLongNames ? 0 : 1;
+
     cell.textLabel.adjustsFontSizeToFitWidth = YES;
     cell.textLabel.minimumScaleFactor = 0.80f;
     cell.detailTextLabel.adjustsFontSizeToFitWidth = YES;
@@ -2454,7 +2528,7 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         cell.textLabel.text = cleanName;
         cell.textLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
         // If / Else If rows can be long ("If Bluetooth Device Connected is …"): wrap to a second line
-        cell.textLabel.numberOfLines = 2;
+        cell.textLabel.numberOfLines = wrapLongNames ? 0 : 1;
         cell.textLabel.lineBreakMode = NSLineBreakByTruncatingTail;
         BOOL isControl = [self isEndIfActionItem:actionItem] || [self isElseActionItem:actionItem];
         cell.textLabel.textColor = isControl ? [UIColor secondaryLabelColor] : [UIColor labelColor];
@@ -2475,7 +2549,7 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     }
 
     NSString *action = [actionItem isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)actionItem)[@"command"] : (NSString *)actionItem;
-    cell.textLabel.numberOfLines = 1; // a reused If row may have set 2
+    cell.textLabel.numberOfLines = wrapLongNames ? 0 : 1;
     NSDictionary *toggleInfo = [[RCConfigManager sharedManager] toggleInfoForCommand:action];
 
     // Logic to separate "Type" from "Value"
@@ -2560,7 +2634,7 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         // Use monospace for code-like things
         if ([action hasPrefix:@"exec "] || [action hasPrefix:@"root "] || [action hasPrefix:@"Lua "] || [action hasPrefix:@"lua "]) {
             cell.textLabel.font = [UIFont monospacedSystemFontOfSize:15 weight:UIFontWeightRegular];
-            cell.textLabel.numberOfLines = 1;
+            cell.textLabel.numberOfLines = wrapLongNames ? 0 : 1;
             cell.textLabel.lineBreakMode = NSLineBreakByTruncatingTail;
             
             cell.detailTextLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
@@ -2568,13 +2642,13 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         } else {
              cell.detailTextLabel.font = [UIFont systemFontOfSize:15];
              cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
-             cell.textLabel.numberOfLines = 1; // the subtitle takes the second line
+             cell.textLabel.numberOfLines = wrapLongNames ? 0 : 1;
         }
     } else {
         cell.detailTextLabel.text = nil;
         // No subtitle: long names (shortcuts, apps, entities, toast text) wrap to a
         // second line rather than being cut off
-        cell.textLabel.numberOfLines = 2;
+        cell.textLabel.numberOfLines = wrapLongNames ? 0 : 1;
         cell.textLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     }
 
