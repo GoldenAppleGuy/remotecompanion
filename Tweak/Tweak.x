@@ -11,10 +11,13 @@
 #include <netdb.h>
 #import <spawn.h>
 #import <notify.h>
+#import <xpc/xpc.h>
+#import "RCShortcutsHelper.h"
 #import <sys/wait.h>
 #import <sys/utsname.h>
 #import <objc/runtime.h>
 #import <dlfcn.h>
+#import <os/lock.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <AVFoundation/AVFoundation.h>
 #import <mach/mach_time.h>
@@ -457,7 +460,13 @@ extern void BKSTerminateApplicationForReasonAndReportWithDescription(NSString *b
 - (void)volumeDecreasePressUp;
 @end
 
+// SpringBoard's own routine for putting the phone to sleep (iOS 14 and later)
+@interface SBSleepWakeHardwareButtonInteraction : NSObject
+- (void)_performSleep;
+@end
+
 @interface SBLockHardwareButtonActions : NSObject
+- (id)sleepWakeButtonInteraction;
 - (void)performInitialButtonDownActions;
 - (void)performButtonUpPreActions;
 - (void)performButtonUpPostActions;
@@ -825,7 +834,17 @@ static void toggle_location_services(BOOL state) {
     });
 }
 
+static BOOL rc_focus_supported(void);
+static NSString *rc_focus_active_identifier(BOOL *known);
+
 static BOOL get_dnd_state() {
+    // iOS 15+: Do Not Disturb is one Focus among others - on only while it's the active one
+    // (another Focus turned on from Control Center read as Do Not Disturb)
+    if (rc_focus_supported()) {
+        BOOL known = NO;
+        NSString *active = rc_focus_active_identifier(&known);
+        if (known) return [active isEqualToString:@"com.apple.donotdisturb.mode.default"];
+    }
     Class ServiceClass = objc_getClass("DNDModeAssertionService");
     if (ServiceClass) {
         id service = [ServiceClass serviceForClientIdentifier:@"com.apple.donotdisturb.control-center.module"];
@@ -834,6 +853,171 @@ static BOOL get_dnd_state() {
         return (assertion != nil);
     }
     return NO;
+}
+
+#pragma mark - Focus (iOS 15+)
+
+// A Focus is a Do Not Disturb mode with its own identifier. One is turned on the way Control
+// Center does it (a mode assertion for that mode), and DNDStateService says which one is
+// active, whatever turned it on (Control Center, a schedule, an automation).
+static NSString *rc_normalized_name(NSString *name);
+static NSString *const kRCFocusClient = @"com.apple.donotdisturb.control-center.module";
+
+static BOOL rc_focus_supported(void) {
+    return objc_getClass("DNDModeConfigurationService") && objc_getClass("DNDStateService") && objc_getClass("DNDModeAssertionService");
+}
+
+// Calls a method whose only argument is an NSError ** (e.g. availableModesReturningError:)
+static id rc_focus_call(id target, NSString *selectorName, NSError **error) {
+    SEL sel = NSSelectorFromString(selectorName);
+    if (![target respondsToSelector:sel]) return nil;
+    return ((id (*)(id, SEL, NSError **))objc_msgSend)(target, sel, error);
+}
+
+static id rc_focus_value(id object, NSString *selectorName) {
+    SEL sel = NSSelectorFromString(selectorName);
+    return [object respondsToSelector:sel] ? ((id (*)(id, SEL))objc_msgSend)(object, sel) : nil;
+}
+
+// The Focus modes set up on the phone: @{ name, identifier, symbol }, in Settings' order
+static NSArray<NSDictionary *> *rc_focus_modes(NSError **error) {
+    if (!rc_focus_supported()) return @[];
+    id service = [objc_getClass("DNDModeConfigurationService") serviceForClientIdentifier:kRCFocusClient];
+    id modes = rc_focus_call(service, @"availableModesReturningError:", error);
+    if (!modes) {
+        // Older releases: the configurations, keyed by mode identifier
+        id configurations = rc_focus_call(service, @"modeConfigurationsReturningError:", error);
+        if ([configurations isKindOfClass:[NSDictionary class]]) {
+            NSMutableArray *list = [NSMutableArray array];
+            for (id configuration in [configurations allValues]) {
+                id mode = rc_focus_value(configuration, @"mode");
+                if (mode) [list addObject:mode];
+            }
+            modes = list;
+        }
+    }
+    if ([modes isKindOfClass:[NSSet class]]) modes = [modes allObjects];
+    if ([modes isKindOfClass:[NSDictionary class]]) modes = [modes allValues];
+    if (![modes isKindOfClass:[NSArray class]]) return @[];
+
+    NSMutableArray *result = [NSMutableArray array];
+    for (id mode in modes) {
+        NSString *name = rc_focus_value(mode, @"name");
+        NSString *identifier = rc_focus_value(mode, @"modeIdentifier");
+        if (![name isKindOfClass:[NSString class]] || ![identifier isKindOfClass:[NSString class]] || name.length == 0) continue;
+        NSString *symbol = rc_focus_value(mode, @"symbolImageName");
+        [result addObject:@{ @"name": name, @"identifier": identifier, @"symbol": [symbol isKindOfClass:[NSString class]] ? symbol : @"" }];
+    }
+    return result;
+}
+
+static NSDictionary *rc_focus_mode_named(NSString *name, NSError **error) {
+    NSString *wanted = rc_normalized_name([name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]);
+    for (NSDictionary *mode in rc_focus_modes(error)) {
+        if ([rc_normalized_name(mode[@"name"]) isEqualToString:wanted]) return mode;
+    }
+    return nil;
+}
+
+// The state while a Focus is on, or nil when none is. *known is NO when it can't be read.
+static id rc_focus_active_state(BOOL *known) {
+    if (known) *known = NO;
+    if (!rc_focus_supported()) return nil;
+    id service = [objc_getClass("DNDStateService") serviceForClientIdentifier:kRCFocusClient];
+    NSError *error = nil;
+    id state = rc_focus_call(service, @"queryCurrentStateWithError:", &error);
+    if (!state) return nil;
+    if (known) *known = YES;
+    SEL isActive = NSSelectorFromString(@"isActive");
+    if ([state respondsToSelector:isActive] && !((BOOL (*)(id, SEL))objc_msgSend)(state, isActive)) return nil;
+    return state;
+}
+
+static NSString *rc_focus_state_identifier(id state) {
+    NSString *identifier = rc_focus_value(state, @"activeModeIdentifier");
+    if (![identifier isKindOfClass:[NSString class]]) {
+        NSArray *identifiers = rc_focus_value(state, @"activeModeIdentifiers");
+        identifier = [identifiers isKindOfClass:[NSArray class]] ? identifiers.firstObject : nil;
+    }
+    return [identifier isKindOfClass:[NSString class]] ? identifier : nil;
+}
+
+// The active Focus's mode identifier, or nil when none is on
+static NSString *rc_focus_active_identifier(BOOL *known) {
+    return rc_focus_state_identifier(rc_focus_active_state(known));
+}
+
+// The active Focus's name, or nil when none is on. *known is NO when the state can't be read.
+static NSString *rc_focus_active_name(BOOL *known) {
+    id state = rc_focus_active_state(known);
+    if (!state) return nil;
+    NSString *identifier = rc_focus_state_identifier(state);
+    NSString *name = rc_focus_value(rc_focus_value(rc_focus_value(state, @"activeModeConfiguration"), @"mode"), @"name");
+    if ([name isKindOfClass:[NSString class]] && name.length) return name;
+    for (NSDictionary *mode in rc_focus_modes(nil)) {
+        if ([mode[@"identifier"] isEqualToString:identifier]) return mode[@"name"];
+    }
+    return identifier.length ? identifier : @"Focus";
+}
+
+// Turns a Focus on (replacing the one RemoteCompanion or Control Center turned on), or turns
+// those off with mode nil. One turned on by a schedule or an automation stays on.
+static BOOL rc_focus_set(NSDictionary *mode, NSError **error) {
+    id service = [objc_getClass("DNDModeAssertionService") serviceForClientIdentifier:kRCFocusClient];
+    NSError *invalidateError = nil;
+    [service invalidateAllActiveModeAssertionsWithError:&invalidateError];
+    if (!mode) {
+        if (invalidateError && error) *error = invalidateError;
+        return invalidateError == nil;
+    }
+    id details = [objc_getClass("DNDModeAssertionDetails") detailsWithIdentifier:@"com.apple.control-center.manual-toggle"
+                                                                 modeIdentifier:mode[@"identifier"]
+                                                                       lifetime:nil];
+    return [service takeModeAssertionWithDetails:details error:error] != nil;
+}
+
+static NSString *rc_focus_command(NSString *args) {
+    if (!rc_focus_supported()) return @"Focus requires iOS 15 or later\n";
+    NSString *trimmed = [args stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSRange space = [trimmed rangeOfString:@" "];
+    NSString *verb = (space.location == NSNotFound ? trimmed : [trimmed substringToIndex:space.location]).lowercaseString;
+    NSString *name = space.location == NSNotFound ? @"" : [[trimmed substringFromIndex:space.location + 1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    NSError *error = nil;
+
+    if ([verb isEqualToString:@"list"]) {
+        // One per line: the name, then its SF Symbol after a tab
+        NSMutableString *out = [NSMutableString string];
+        for (NSDictionary *mode in rc_focus_modes(&error)) [out appendFormat:@"%@\t%@\n", mode[@"name"], mode[@"symbol"]];
+        if (out.length == 0) return error ? [NSString stringWithFormat:@"Error: %@\n", error.localizedDescription] : @"No Focus modes found\n";
+        return out;
+    }
+    if ([verb isEqualToString:@"status"]) {
+        BOOL known = NO;
+        NSString *active = rc_focus_active_name(&known);
+        if (!known) return @"Error: Focus state unavailable\n";
+        return [NSString stringWithFormat:@"%@\n", active ?: @"Off"];
+    }
+    if ([verb isEqualToString:@"off"]) {
+        if (!rc_focus_set(nil, &error)) return [NSString stringWithFormat:@"Error: %@\n", error.localizedDescription ?: @"Focus not turned off"];
+        BOOL known = NO;
+        NSString *still = rc_focus_active_name(&known);
+        if (still) return [NSString stringWithFormat:@"%@ is still on: a schedule or an automation turned it on\n", still];
+        return @"Focus Off\n";
+    }
+    if ([verb isEqualToString:@"on"] || [verb isEqualToString:@"toggle"]) {
+        if (name.length == 0) return @"Usage: focus on|toggle <name>\n";
+        NSDictionary *mode = rc_focus_mode_named(name, &error);
+        if (!mode) return [NSString stringWithFormat:@"Error: No Focus named '%@'\n", name];
+        if ([verb isEqualToString:@"toggle"]) {
+            NSString *active = rc_focus_active_name(NULL);
+            if (active && [rc_normalized_name(active) isEqualToString:rc_normalized_name(mode[@"name"])]) {
+                return rc_focus_command(@"off");
+            }
+        }
+        if (!rc_focus_set(mode, &error)) return [NSString stringWithFormat:@"Error: %@\n", error.localizedDescription ?: @"Focus not turned on"];
+        return [NSString stringWithFormat:@"%@ On\n", mode[@"name"]];
+    }
+    return @"Usage: focus list|status|off|on <name>|toggle <name>\n";
 }
 
 typedef struct __CTServerConnection *CTServerConnectionRef;
@@ -1537,6 +1721,18 @@ static void send_notification(NSString *title, NSString *message, BOOL urgent) {
 static NSDictionary *g_triggerConfig = nil;
 static NSString *g_resolvedConfigPath = nil;
 
+// Button timings, from the config (Settings > Button Timing), in seconds. Read each time, so a
+// change applies at once.
+static NSTimeInterval RC_ConfigTiming(NSString *key, double fallback, double min, double max) {
+    id value = g_triggerConfig[key];
+    double seconds = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : fallback;
+    return MIN(MAX(seconds, min), max);
+}
+static NSTimeInterval RC_PowerClickWindow(void) { return RC_ConfigTiming(@"powerClickWindow", 0.4, 0.10, 0.8); }
+static NSTimeInterval RC_HomeClickWindow(void)  { return RC_ConfigTiming(@"homeClickWindow", 0.35, 0.25, 0.8); }
+static NSTimeInterval RC_VolumeHoldTime(void)   { return RC_ConfigTiming(@"volumeHoldTime", 0.35, 0.2, 0.8); }
+static NSTimeInterval RC_PowerHoldTime(void)    { return RC_ConfigTiming(@"powerHoldTime", 0.5, 0.3, 0.75); }
+
 // Find config file - check shared path first, then search app containers
 static NSString *find_config_path() {
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -1546,20 +1742,38 @@ static NSString *find_config_path() {
         return kTriggerConfigPath;
     }
     
-    // Search for RemoteCompanion app container
+    // Search for RemoteCompanion app container. That lists every app's data folder, and this
+    // runs many times per touch: before a config is first saved (a new install) it made
+    // SpringBoard sluggish on phones with many apps. So search at most every 30 s.
+    static os_unfair_lock searchLock = OS_UNFAIR_LOCK_INIT;
+    static CFAbsoluteTime lastSearch;
+    static NSString *lastFound;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    os_unfair_lock_lock(&searchLock);
+    NSString *found = lastFound;
+    BOOL searchDue = lastSearch == 0 || now - lastSearch >= 30.0;
+    os_unfair_lock_unlock(&searchLock);
+    if (!searchDue && (!found || [fm fileExistsAtPath:found])) return found;
+
+    found = nil;
     NSString *containersPath = @"/var/mobile/Containers/Data/Application";
     NSArray *uuids = [fm contentsOfDirectoryAtPath:containersPath error:nil];
-    
+
     for (NSString *uuid in uuids) {
-        NSString *configPath = [NSString stringWithFormat:@"%@/%@/Documents/%@", 
+        NSString *configPath = [NSString stringWithFormat:@"%@/%@/Documents/%@",
                                 containersPath, uuid, kTriggerConfigFilename];
         if ([fm fileExistsAtPath:configPath]) {
             SRLog(@"Found config in container: %@", configPath);
-            return configPath;
+            found = configPath;
+            break;
         }
     }
-    
-    return nil;
+    os_unfair_lock_lock(&searchLock);
+    lastFound = found;
+    lastSearch = now;
+    os_unfair_lock_unlock(&searchLock);
+
+    return found;
 }
 // ============ BLACKLIST SYSTEM ============
 
@@ -1608,8 +1822,23 @@ static BOOL RC_IsForegroundAppExcluded() {
             }
         };
 
-        if ([NSThread isMainThread]) getBlock();
-        else dispatch_sync(dispatch_get_main_queue(), getBlock);
+        if ([NSThread isMainThread]) {
+            getBlock();
+        } else {
+            // Callers off the main thread include the HID listener, which must not stall
+            // behind a busy SpringBoard (right after a wake or a lock it can be 500 ms): its
+            // button events would arrive late and run together. Ask, wait briefly, and
+            // otherwise go with the last answer.
+            dispatch_semaphore_t answered = dispatch_semaphore_create(0);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                getBlock();
+                dispatch_semaphore_signal(answered);
+            });
+            if (dispatch_semaphore_wait(answered, dispatch_time(DISPATCH_TIME_NOW, 25 * NSEC_PER_MSEC)) != 0) {
+                lastCheck = now - 0.4; // ask again soon
+                return cachedResult;
+            }
+        }
 
         BOOL result = NO;
         if (frontBundleID) {
@@ -1705,6 +1934,9 @@ static NSString *get_human_name_for_trigger(NSString *key, NSDictionary *trigger
     return key;
 }
 
+static void RC_RefreshAXTriplePress(void);
+static BOOL RC_RunAccessibilityShortcut(void);
+
 static void load_trigger_config() {
     @autoreleasepool {
         // Find the config file
@@ -1739,11 +1971,16 @@ static void load_trigger_config() {
                 SRLogMin(@"Loaded trigger config from %@: triggers=%lu",
                       path,
                       (unsigned long)[g_triggerConfig[@"triggers"] count]);
+                // A triple press binding may have changed: tell iOS whether its own shortcut is on
+                dispatch_async(dispatch_get_main_queue(), ^{ RC_RefreshAXTriplePress(); });
             } else {
                 SRLogMin(@"Failed to parse config at %@", path);
             }
         } else {
-            SRLog(@"No trigger config found at shared path or in app containers");
+            // Once, not on every call until a config is saved
+            static BOOL loggedMissing;
+            if (!loggedMissing) SRLog(@"No trigger config found at shared path or in app containers");
+            loggedMissing = YES;
         }
     }
 }
@@ -1757,7 +1994,6 @@ static float get_flash_brightness() {
 // Forward declarations for gesture management functions
 static BOOL should_register_edge_gestures();
 static void register_edge_gestures();
-static void unregister_edge_gestures();
 static void update_edge_gestures();
 static void start_schedule_timer();
 static void start_mqtt_subscriber();
@@ -2057,6 +2293,8 @@ static NSString *rc_normalized_name(NSString *name) {
     return n;
 }
 
+static BOOL rc_carplay_connected(void);
+
 // If conditions answered by reading the state directly rather than through a status
 // command. Sets *handled for the keys it knows. expected is already uppercased.
 static BOOL rc_condition_direct_match(NSString *key, NSString *expected, BOOL *handled) {
@@ -2068,6 +2306,8 @@ static BOOL rc_condition_direct_match(NSString *key, NSString *expected, BOOL *h
     } else if ([key isEqualToString:@"flashlight"]) {
         AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
         actual = (device.torchMode == AVCaptureTorchModeOn) ? @"ON" : @"OFF";
+    } else if ([key isEqualToString:@"carplay"]) {
+        actual = rc_carplay_connected() ? @"CONNECTED" : @"NOT_CONNECTED";
     } else if ([key isEqualToString:@"charging"]) {
         UIDevice *device = [UIDevice currentDevice];
         device.batteryMonitoringEnabled = YES;
@@ -2095,6 +2335,14 @@ static BOOL rc_condition_direct_match(NSString *key, NSString *expected, BOOL *h
             if ([d isEqualToString:today]) return YES;
         }
         return NO;
+    } else if ([key isEqualToString:@"focus"]) {
+        // OFF: none on; ON: any; otherwise that Focus by name (case-insensitive)
+        BOOL known = NO;
+        NSString *active = rc_focus_active_name(&known);
+        if (!known) return NO;
+        if ([expected isEqualToString:@"OFF"]) return active == nil;
+        if ([expected isEqualToString:@"ON"]) return active != nil;
+        return active && [rc_normalized_name(active) isEqualToString:rc_normalized_name(expected)];
     } else if ([key isEqualToString:@"bt_device"]) {
         // A connected device with this name (case-insensitive)
         dlopen("/System/Library/PrivateFrameworks/BluetoothManager.framework/BluetoothManager", RTLD_NOW);
@@ -2414,6 +2662,20 @@ static void rc_maybe_show_action_banner(NSString *action) {
 
     NSString *title = [entry[@"title"] isKindOfClass:[NSString class]] ? entry[@"title"] : action;
     NSString *icon = [entry[@"icon"] isKindOfClass:[NSString class]] ? entry[@"icon"] : nil;
+
+    BOOL audioHandoffSwitch = [cmd hasPrefix:@"audiohandoff enabled "] || [cmd hasPrefix:@"audiohandoff auto "];
+    if (audioHandoffSwitch) {
+        icon = @"headphones";
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            NSString *rootfulPath = @"/var/mobile/Library/Preferences/com.saihgupr.audiohandoff.plist";
+            NSString *rootlessPath = @"/var/jb/var/mobile/Library/Preferences/com.saihgupr.audiohandoff.plist";
+            NSString *prefsPath = [[NSFileManager defaultManager] fileExistsAtPath:rootfulPath] ? rootfulPath : rootlessPath;
+            NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:prefsPath];
+            BOOL enabled = prefs[@"enabled"] ? [prefs[@"enabled"] boolValue] : YES;
+            rc_show_hud_toast([NSString stringWithFormat:@"Automatic Switching %@", enabled ? @"On" : @"Off"], nil, @"headphones");
+        });
+        return;
+    }
 
     if ([entry[@"toggle"] boolValue]) {
         rc_banner_show_toggle_state(cmd, title, icon);
@@ -3151,8 +3413,19 @@ BOOL RCIsNFCEnabled() {
     return [g_triggerConfig[@"nfcEnabled"] boolValue];
 }
 
+// Seconds the NFC scan keeps going after the screen turns off (Settings > NFC With Screen Off)
+NSTimeInterval RCNFCScreenOffWindow() {
+    if (!g_triggerConfig) {
+        load_trigger_config();
+    }
+    id value = g_triggerConfig[@"nfcScreenOffSeconds"];
+    double seconds = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : 120.0;
+    return MIN(MAX(seconds, 0.0), 3600.0);
+}
+
 // ============ SYSTEM EVENT HANDLERS (WiFi/BT Triggers) ============
 #import <notify.h>
+#import <os/lock.h>
 
 static NSString *g_lastKnownSSID = nil;
 
@@ -3297,6 +3570,20 @@ static BOOL is_snapper_installed() {
     return NO;
 }
 
+static BOOL is_audiohandoff_installed() {
+    NSArray *paths = @[
+        @"/Library/MobileSubstrate/DynamicLibraries/AudioHandoff.dylib",
+        @"/Library/MobileSubstrate/DynamicLibraries/AudioHandoff.plist",
+        @"/usr/lib/TweakInject/AudioHandoff.dylib",
+        @"/var/jb/Library/MobileSubstrate/DynamicLibraries/AudioHandoff.dylib",
+        @"/var/jb/Library/MobileSubstrate/DynamicLibraries/AudioHandoff.plist",
+        @"/var/jb/usr/lib/TweakInject/AudioHandoff.dylib"
+    ];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *path in paths) if ([fm fileExistsAtPath:path]) return YES;
+    return NO;
+}
+
 static BOOL is_audiostream_installed() {
     NSArray *paths = @[
         @"/Applications/AudioReceiver.app",
@@ -3383,6 +3670,74 @@ static void handle_power_state_notification(CFNotificationCenterRef center, void
     });
 }
 
+// CarPlay: CarKit's session status (private, not loaded in SpringBoard by default) tells
+// its observers when a CarPlay session connects or disconnects, and has a currentSession
+// while one is connected. Same calls on iOS 14 and 17.
+@interface RCCarPlayObserver : NSObject
+@end
+
+static id g_carPlayStatus = nil;
+static RCCarPlayObserver *g_carPlayObserver = nil;
+static BOOL g_carPlayConnected = NO;
+static BOOL g_carPlayReady = NO;
+
+static BOOL rc_carplay_connected(void) {
+    return [g_carPlayStatus respondsToSelector:@selector(currentSession)] && [g_carPlayStatus performSelector:@selector(currentSession)] != nil;
+}
+
+static void rc_carplay_state_changed(BOOL connected, NSString *source) {
+    if (connected == g_carPlayConnected) return;
+    g_carPlayConnected = connected;
+    // Until the first session update has landed, a session that was already connected
+    // (e.g. after a respring) isn't a new connection
+    if (!g_carPlayReady) return;
+    SRLog(@"🚗 [RCSystem] Transition detected (%@): CARPLAY %@.", source, connected ? @"CONNECTED" : @"DISCONNECTED");
+    RCExecuteTrigger(connected ? @"trigger_carplay_connect" : @"trigger_carplay_disconnect");
+}
+
+@implementation RCCarPlayObserver
+- (void)sessionDidConnect:(id)session {
+    dispatch_async(dispatch_get_main_queue(), ^{ rc_carplay_state_changed(YES, @"sessionDidConnect"); });
+}
+- (void)sessionDidDisconnect:(id)session {
+    dispatch_async(dispatch_get_main_queue(), ^{ rc_carplay_state_changed(NO, @"sessionDidDisconnect"); });
+}
+@end
+
+static void rc_carplay_start_observing(void) {
+    dlopen("/System/Library/PrivateFrameworks/CarKit.framework/CarKit", RTLD_NOW);
+    Class statusClass = objc_getClass("CARSessionStatus");
+    if (!statusClass) {
+        SRLog(@"🚗 [RCSystem] CarKit's CARSessionStatus not found - no CarPlay triggers");
+        return;
+    }
+    g_carPlayStatus = [[statusClass alloc] init];
+    g_carPlayObserver = [RCCarPlayObserver new];
+    if ([g_carPlayStatus respondsToSelector:@selector(addSessionObserver:)]) {
+        [g_carPlayStatus performSelector:@selector(addSessionObserver:) withObject:g_carPlayObserver];
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        g_carPlayConnected = rc_carplay_connected();
+        g_carPlayReady = YES;
+        SRLog(@"🚗 [RCSystem] CarPlay state initialized to: %@", g_carPlayConnected ? @"CONNECTED" : @"DISCONNECTED");
+    });
+}
+
+// Whether this phone has a Home button: SpringBoard's lock button knows the Home button
+// type (2 = none, on Face ID phones)
+static BOOL rc_has_home_button(void) {
+    static long type = -1;
+    if (type == -1) {
+        rc_dispatch_sync_main_safe(^{
+            id app = [UIApplication sharedApplication];
+            SEL lockSel = NSSelectorFromString(@"lockHardwareButton"), typeSel = NSSelectorFromString(@"homeButtonType");
+            id lockButton = [app respondsToSelector:lockSel] ? ((id (*)(id, SEL))objc_msgSend)(app, lockSel) : nil;
+            if ([lockButton respondsToSelector:typeSel]) type = ((long (*)(id, SEL))objc_msgSend)(lockButton, typeSel);
+        });
+    }
+    return type != 2;
+}
+
 // Biometric / Touch ID / Lock State Globals
 static NSTimeInterval g_bioFingerDownTime = 0;
 static BOOL g_bioHoldTriggered = NO;
@@ -3392,14 +3747,36 @@ static BOOL g_bioWasLocked = NO;
 static BOOL g_lastLockedState = NO;
 static BOOL g_lockStateInitialized = NO;
 
+// Whether the phone is locked. iOS 17 also locks the UI while Notification Center is pulled down
+// over an unlocked phone, and unlocks it when it's put away - that isn't a lock. A real lock
+// turns the screen off or locks the passcode (SBLockStateAggregator lockState bit 2); once
+// locked, the phone stays locked until the UI unlocks (after Face ID, the lock screen still
+// shows until the swipe up). Main thread.
+static BOOL rc_device_locked(SBLockScreenManager *lsm) {
+    if (![lsm isUILocked]) return NO;
+    if (g_lastLockedState) return YES;
+    BOOL known = NO;
+    id aggregator = [objc_getClass("SBLockStateAggregator") respondsToSelector:@selector(sharedInstance)] ? [objc_getClass("SBLockStateAggregator") performSelector:@selector(sharedInstance)] : nil;
+    if ([aggregator respondsToSelector:@selector(lockState)]) {
+        known = YES;
+        if (((unsigned long long (*)(id, SEL))objc_msgSend)(aggregator, @selector(lockState)) & 2) return YES;
+    }
+    SBBacklightController *backlight = [objc_getClass("SBBacklightController") sharedInstance];
+    if ([backlight respondsToSelector:@selector(screenIsOn)]) {
+        known = YES;
+        if (![backlight screenIsOn]) return YES;
+    }
+    return !known;
+}
+
 static void initialize_lock_state() {
     if (g_lockStateInitialized) return;
-    
+
     Class LSMClass = objc_getClass("SBLockScreenManager");
     if (LSMClass) {
         SBLockScreenManager *lsm = [LSMClass sharedInstance];
         if (lsm) {
-            g_lastLockedState = [lsm isUILocked];
+            g_lastLockedState = rc_device_locked(lsm);
             g_lockStateInitialized = YES;
             SRLog(@"🔒 [RCSystem] Lock state successfully initialized to: %@", g_lastLockedState ? @"LOCKED" : @"UNLOCKED");
         }
@@ -3458,8 +3835,8 @@ static void handle_lock_state_notification(CFNotificationCenterRef center, void 
             return;
         }
         
-        BOOL currentLocked = [lsm isUILocked];
-        SRLog(@"🔒 [RCSystem] SBLockScreenManager.isUILocked = %@", currentLocked ? @"YES" : @"NO");
+        BOOL currentLocked = rc_device_locked(lsm);
+        SRLog(@"🔒 [RCSystem] SBLockScreenManager.isUILocked = %@, device %@", [lsm isUILocked] ? @"YES" : @"NO", currentLocked ? @"locked" : @"not locked");
         handle_lock_state_transition(currentLocked, @"Darwin Notification");
     });
 }
@@ -3547,6 +3924,7 @@ static void register_system_event_observers() {
     // Initialize initial lock state & power state
     initialize_lock_state();
     initialize_power_state();
+    rc_carplay_start_observing();
 
     // Power State: Cocoa Touch observers
     [nc addObserverForName:UIDeviceBatteryStateDidChangeNotification 
@@ -3603,8 +3981,17 @@ static void register_system_event_observers() {
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), 
                                     NULL, 
                                     handle_lock_state_notification, 
-                                    CFSTR("com.apple.springboard.lockstate"), 
-                                    NULL, 
+                                    CFSTR("com.apple.springboard.lockstate"),
+                                    NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+
+    // Locking with Notification Center pulled down (iOS 17) posts no lockstate - the UI was
+    // already locked - so the screen going off is when that lock shows
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                    NULL,
+                                    handle_lock_state_notification,
+                                    CFSTR("com.apple.springboard.hasBlankedScreen"),
+                                    NULL,
                                     CFNotificationSuspensionBehaviorDeliverImmediately);
 
     // Media State changes (Darwin Notifications)
@@ -5356,6 +5743,44 @@ static NSString *evaluate_lua_code(NSString *code) {
     return output;
 }
 
+// The installed apps as @{name, bundleId}, sorted by name (the web UI's app picker)
+static NSArray<NSDictionary *> *RCInstalledAppList(void) {
+    void *lsHandle = dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices", RTLD_NOW);
+    if (!lsHandle) {
+        lsHandle = dlopen("/System/Library/PrivateFrameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
+    }
+
+    NSMutableArray *appList = [NSMutableArray array];
+    Class LSApplicationWorkspaceClass = objc_getClass("LSApplicationWorkspace");
+    if (LSApplicationWorkspaceClass) {
+        NSArray *apps = [[LSApplicationWorkspaceClass defaultWorkspace] allInstalledApplications];
+        SRLog(@"API: Found %lu installed applications", (unsigned long)apps.count);
+        for (LSApplicationProxy *proxy in apps) {
+            NSString *name = nil;
+            if ([proxy respondsToSelector:@selector(localizedName)]) {
+                name = [proxy localizedName];
+            }
+            NSString *bid = nil;
+            if ([proxy respondsToSelector:@selector(applicationIdentifier)]) {
+                bid = [proxy applicationIdentifier];
+            }
+        
+            if (name && bid) {
+                [appList addObject:@{@"name": name, @"bundleId": bid}];
+            }
+        }
+    } else {
+        SRLog(@"API: LSApplicationWorkspace class NOT FOUND after dlopen");
+    }
+
+    // Sort by name
+    [appList sortUsingComparator:^NSComparisonResult(id obj1, id obj2) {
+        return [obj1[@"name"] localizedCaseInsensitiveCompare:obj2[@"name"]];
+    }];
+    SRLog(@"API: returning %lu apps in device list", (unsigned long)appList.count);
+    return appList;
+}
+
 static NSArray* RCFetchAirPlayDeviceNames() {
     __block NSArray *deviceNames = nil;
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
@@ -6206,6 +6631,85 @@ static NSString *rc_execute_mqtt_command(NSString *cmdArgs) {
     }
 }
 
+// SpringCuts hands a shortcut to its runner in siriactionsd with notifications, which can't start
+// a process: while iOS has siriactionsd stopped (idle, or short on memory), every request is lost,
+// and one sent while it's starting is lost too. So start it first (one message to its XPC service
+// does that) and wait until RCShortcutsHelper, loaded there, says it's ready.
+
+extern int proc_listallpids(void *buffer, int buffersize);
+extern int proc_pidpath(int pid, void *buffer, uint32_t buffersize);
+
+static pid_t rc_siriactionsd_pid(void) {
+    int count = proc_listallpids(NULL, 0);
+    if (count <= 0) return 0;
+    pid_t *pids = calloc((size_t)count + 32, sizeof(pid_t));
+    if (!pids) return 0;
+    count = proc_listallpids(pids, (int)(((size_t)count + 32) * sizeof(pid_t)));
+    pid_t found = 0;
+    char path[PATH_MAX];
+    for (int i = 0; i < count && !found; i++) {
+        if (pids[i] <= 0 || proc_pidpath(pids[i], path, sizeof(path)) <= 0) continue;
+        const char *name = strrchr(path, '/');
+        if (name && strcmp(name + 1, "siriactionsd") == 0) found = pids[i];
+    }
+    free(pids);
+    return found;
+}
+
+// The siriactionsd the helper last said was ready
+static pid_t rc_shortcuts_helper_ready_pid(void) {
+    static int token = NOTIFY_TOKEN_INVALID;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        if (notify_register_check(kRCShortcutsHelperNotification, &token) != NOTIFY_STATUS_OK) token = NOTIFY_TOKEN_INVALID;
+    });
+    uint64_t state = 0;
+    if (token == NOTIFY_TOKEN_INVALID || notify_get_state(token, &state) != NOTIFY_STATUS_OK) return 0;
+    return (pid_t)state;
+}
+
+static void rc_wake_siriactionsd(void) {
+    // Marked unavailable in the iOS SDK, but there at runtime
+    typedef xpc_connection_t (*create_mach_service_t)(const char *, dispatch_queue_t, uint64_t);
+    static create_mach_service_t create;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ create = (create_mach_service_t)dlsym(RTLD_DEFAULT, "xpc_connection_create_mach_service"); });
+    if (!create) return;
+    xpc_connection_t conn = create("com.apple.siri.VoiceShortcuts.xpc", NULL, 0);
+    xpc_connection_set_event_handler(conn, ^(xpc_object_t event) {});
+    xpc_connection_resume(conn);
+    xpc_connection_send_message(conn, xpc_dictionary_create(NULL, NULL, 0));
+    xpc_connection_send_barrier(conn, ^{ xpc_connection_cancel(conn); });
+}
+
+// Not on the main thread: it can wait a few seconds
+static void rc_ensure_shortcuts_runner(void) {
+    pid_t running = rc_siriactionsd_pid();
+    if (running && running == rc_shortcuts_helper_ready_pid()) return;
+
+    dispatch_semaphore_t ready = dispatch_semaphore_create(0);
+    int token;
+    if (notify_register_dispatch(kRCShortcutsHelperNotification, &token, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(int t) {
+        dispatch_semaphore_signal(ready);
+    }) != NOTIFY_STATUS_OK) return;
+
+    if (!running) {
+        SRLog(@"[Shortcut] siriactionsd isn't running - starting it");
+        rc_wake_siriactionsd();
+    }
+    // Running without the helper saying so: it's starting, or it started before RemoteCompanion
+    // was installed (no helper in it) - don't wait long for that one
+    NSTimeInterval wait = running ? 1.0 : 5.0;
+    NSDate *start = [NSDate date];
+    BOOL signalled = dispatch_semaphore_wait(ready, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(wait * NSEC_PER_SEC))) == 0;
+    notify_cancel(token);
+    if (signalled) {
+        SRLog(@"[Shortcut] siriactionsd ready after %.2f s", -[start timeIntervalSinceNow]);
+    } else if (!running) {
+        SRLogMin(@"[Shortcut] siriactionsd didn't report ready within %.0f s (running: %@)", wait, rc_siriactionsd_pid() ? @"yes" : @"no");
+    }
+}
+
 static void rc_execute_shortcut(NSString *shortcutName, NSString *inputArg) {
     if (!shortcutName || shortcutName.length == 0) return;
     
@@ -6295,7 +6799,10 @@ static void rc_execute_shortcut(NSString *shortcutName, NSString *inputArg) {
             if (![[NSFileManager defaultManager] fileExistsAtPath:springcutsPath]) {
                 springcutsPath = @"/usr/bin/springcuts";
             }
-            
+            if ([[NSFileManager defaultManager] fileExistsAtPath:springcutsPath]) {
+                rc_ensure_shortcuts_runner();
+            }
+
             if ([[NSFileManager defaultManager] fileExistsAtPath:springcutsPath]) {
                 NSMutableArray *args = [NSMutableArray array];
                 [args addObject:springcutsPath];
@@ -6329,7 +6836,7 @@ static void rc_execute_shortcut(NSString *shortcutName, NSString *inputArg) {
                             }
                             usleep(500000);
                         }
-                        SRLog(@"[Shortcut] springcuts pid=%d timed out (15s limit) - terminating", pid);
+                        SRLogMin(@"[Shortcut] springcuts pid=%d timed out (15s limit) - terminating", pid);
                         kill(pid, SIGKILL);
                         waitpid(pid, &status, 0);
                     });
@@ -7312,6 +7819,11 @@ static NSString *handle_command(NSString *cmd) {
         }
     } else if ([cleanCmd isEqualToString:@"siri"]) {
         return handle_command(@"button siri");
+    } else if ([cleanCmd isEqualToString:@"accessibility shortcut"]) {
+        __block BOOL ran = NO;
+        if ([NSThread isMainThread]) ran = RC_RunAccessibilityShortcut();
+        else dispatch_sync(dispatch_get_main_queue(), ^{ ran = RC_RunAccessibilityShortcut(); });
+        return ran ? @"Accessibility Shortcut triggered\n" : @"No Accessibility Shortcut set\n";
     } else if ([cleanCmd isEqualToString:@"open control center"] ||
                [cleanCmd isEqualToString:@"control center"] ||
                [cleanCmd isEqualToString:@"open-control-center"] ||
@@ -7551,7 +8063,7 @@ static NSString *handle_command(NSString *cmd) {
             Class SBLockScreenManagerClass = objc_getClass("SBLockScreenManager");
             SBLockScreenManager *manager = SBLockScreenManagerClass ? [SBLockScreenManagerClass sharedInstance] : nil;
             if (manager && [manager respondsToSelector:@selector(isUILocked)]) {
-                status = [manager isUILocked] ? @"locked\n" : @"unlocked\n";
+                status = rc_device_locked(manager) ? @"locked\n" : @"unlocked\n";
             } else {
                 status = @"unlocked\n";
             }
@@ -7838,6 +8350,21 @@ static NSString *handle_command(NSString *cmd) {
             dispatch_async(dispatch_get_main_queue(), launchSpotify);
             return @"playing_spotify\n";
         }
+    } else if ([cleanCmd hasPrefix:@"audiohandoff "]) {
+        NSString *request = [[cleanCmd substringFromIndex:13] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (!is_audiohandoff_installed()) return @"AudioHandoff is not installed\n";
+        NSDictionary *notificationNames = @{
+            @"enabled on": @"com.saihgupr.audiohandoff.remotecommand.switch-on",
+            @"enabled off": @"com.saihgupr.audiohandoff.remotecommand.switch-off",
+            @"enabled toggle": @"com.saihgupr.audiohandoff.remotecommand.switch-toggle",
+            @"auto on": @"com.saihgupr.audiohandoff.remotecommand.switch-on",
+            @"auto off": @"com.saihgupr.audiohandoff.remotecommand.switch-off",
+            @"auto toggle": @"com.saihgupr.audiohandoff.remotecommand.switch-toggle",
+        };
+        NSString *notificationName = notificationNames[request];
+        if (!notificationName) return @"Unknown AudioHandoff command\n";
+        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), (__bridge CFStringRef)notificationName, NULL, NULL, true);
+        return [NSString stringWithFormat:@"AudioHandoff %@ command sent\n", request];
     } else if ([cleanCmd isEqualToString:@"audiomix"]) {
         BOOL current = get_audiomix_state();
         toggle_audiomix(!current);
@@ -7953,13 +8480,16 @@ static NSString *handle_command(NSString *cmd) {
             rc_show_hud_toast(@"Playlist Queued", [NSString stringWithFormat:@"Shuffling '%@'", playlistName], @"music.note.list");
             return [NSString stringWithFormat:@"Play playlist '%@' command sent to AudioReceiver\n", playlistName];
         }
+    } else if ([cleanCmd hasPrefix:@"focus "] || [cleanCmd isEqualToString:@"focus"]) {
+        return rc_focus_command([cleanCmd substringFromIndex:MIN((NSUInteger)6, cleanCmd.length)]);
     } else if ([cleanCmd hasPrefix:@"dnd "]) {
         NSString *subCmd = [[cleanCmd substringFromIndex:4] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         if ([subCmd isEqualToString:@"on"]) {
             toggle_dnd(YES);
             return @"DND Enabled\n";
         } else if ([subCmd isEqualToString:@"off"]) {
-            toggle_dnd(NO);
+            // Only Do Not Disturb: another Focus stays on ("focus off" turns that off)
+            if (!rc_focus_supported() || get_dnd_state()) toggle_dnd(NO);
             return @"DND Disabled\n";
         } else if ([subCmd isEqualToString:@"status"]) {
             BOOL current = get_dnd_state();
@@ -8703,6 +9233,8 @@ static NSString *handle_command(NSString *cmd) {
         }
         BOOL ring = get_system_vibration(NO), silent = get_system_vibration(YES);
         return [NSString stringWithFormat:@"Haptics: %@\n", ring ? (silent ? @"ALWAYS" : @"RING_ONLY") : (silent ? @"SILENT_ONLY" : @"NEVER")];
+    } else if ([cleanCmd isEqualToString:@"carplay"] || [cleanCmd isEqualToString:@"carplay status"]) {
+        return rc_carplay_connected() ? @"CarPlay: CONNECTED\n" : @"CarPlay: NOT_CONNECTED\n";
     } else if ([cleanCmd isEqualToString:@"ringer"] || [cleanCmd hasPrefix:@"ringer "]) {
         NSString *sub = cleanCmd.length > 7 ? [cleanCmd substringFromIndex:7] : @"status";
         // Ringtone & alerts volume, separate from the media volume (set-vol)
@@ -9833,8 +10365,10 @@ static void start_web_server() {
                                     NSDictionary *caps = @{
                                         @"sneakycam": @(is_sneakycam_installed()),
                                         @"snapper": @(is_snapper_installed()),
+                                        @"audiohandoff": @(is_audiohandoff_installed()),
                                         @"audiostream": @(is_audiostream_installed()),
-                                        @"audiostream_running": @(is_audiostreamerd_running())
+                                        @"audiostream_running": @(is_audiostreamerd_running()),
+                                        @"home_button": @(rc_has_home_button())
                                     };
                                     NSData *jsonData = [NSJSONSerialization dataWithJSONObject:caps options:0 error:nil];
                                     NSString *jsonStr = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
@@ -10303,39 +10837,7 @@ static void start_web_server() {
                                         }
                                     }
 
-                                    void *lsHandle = dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices", RTLD_NOW);
-                                    if (!lsHandle) {
-                                        lsHandle = dlopen("/System/Library/PrivateFrameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_NOW);
-                                    }
-
-                                    NSMutableArray *appList = [NSMutableArray array];
-                                    Class LSApplicationWorkspaceClass = objc_getClass("LSApplicationWorkspace");
-                                    if (LSApplicationWorkspaceClass) {
-                                        NSArray *apps = [[LSApplicationWorkspaceClass defaultWorkspace] allInstalledApplications];
-                                        SRLog(@"API: Found %lu installed applications", (unsigned long)apps.count);
-                                        for (LSApplicationProxy *proxy in apps) {
-                                            NSString *name = nil;
-                                            if ([proxy respondsToSelector:@selector(localizedName)]) {
-                                                name = [proxy localizedName];
-                                            }
-                                            NSString *bid = nil;
-                                            if ([proxy respondsToSelector:@selector(applicationIdentifier)]) {
-                                                bid = [proxy applicationIdentifier];
-                                            }
-                                            
-                                            if (name && bid) {
-                                                [appList addObject:@{@"name": name, @"bundleId": bid}];
-                                            }
-                                        }
-                                    } else {
-                                        SRLog(@"API: LSApplicationWorkspace class NOT FOUND after dlopen");
-                                    }
-
-                                    // Sort by name
-                                    [appList sortUsingComparator:^NSComparisonResult(id obj1, id obj2) {
-                                        return [obj1[@"name"] localizedCaseInsensitiveCompare:obj2[@"name"]];
-                                    }];
-                                    SRLog(@"API: returning %lu apps in device list", (unsigned long)appList.count);
+                                    NSArray *appList = RCInstalledAppList();
                                     
                                     NSArray *airplayNames = RCFetchAirPlayDeviceNames();
 
@@ -10350,6 +10852,16 @@ static void start_web_server() {
                                     NSString *jsonStr = [[NSString alloc] initWithData:respData encoding:NSUTF8StringEncoding];
                                     responseString = [NSString stringWithFormat:@"HTTP/1.1 200 OK\r\n%@Content-Type: application/json\r\nContent-Length: %lu\r\n\r\n%@", cors, (unsigned long)[jsonStr lengthOfBytesUsingEncoding:NSUTF8StringEncoding], jsonStr];
                                 }
+                            } else if ([path isEqualToString:@"/api/apps"] && [method isEqualToString:@"GET"]) {
+                                // What the web UI's app pickers fetch (the same list as "apps" in /api/devices)
+                                load_trigger_config();
+                                if (![g_triggerConfig[@"webUIEnabled"] boolValue]) {
+                                    responseString = [NSString stringWithFormat:@"HTTP/1.1 403 Forbidden\r\n%@Content-Length: 17\r\n\r\nWeb UI is disabled", cors];
+                                } else {
+                                    NSData *appsData = [NSJSONSerialization dataWithJSONObject:RCInstalledAppList() options:0 error:nil];
+                                    NSString *appsJson = [[NSString alloc] initWithData:appsData encoding:NSUTF8StringEncoding];
+                                    responseString = [NSString stringWithFormat:@"HTTP/1.1 200 OK\r\n%@Content-Type: application/json\r\nContent-Length: %lu\r\n\r\n%@", cors, (unsigned long)appsData.length, appsJson];
+                                }
                             } else if ([path isEqualToString:@"/api/commands"] && [method isEqualToString:@"GET"]) {
                                 NSArray *commandList = @[
                                     // System Controls
@@ -10362,6 +10874,7 @@ static void start_web_server() {
                                     @{@"command": @"camera video [zoom] [flash]", @"desc": @"Camera: Open Camera in Video mode (e.g. 2x, 2x flash)"},
                                     @{@"command": @"open control center", @"desc": @"System: Open Control Center"},
                                     @{@"command": @"app switcher", @"desc": @"System: Open App Switcher"},
+                                    @{@"command": @"accessibility shortcut", @"desc": @"System: Run the Accessibility Shortcut"},
                                     @{@"command": @"open <bundleId>", @"desc": @"System: Launch an application by bundle identifier"},
                                     @{@"command": @"kill <bundleId>", @"desc": @"System: Force-close an application"},
                                     @{@"command": @"respring", @"desc": @"System: Restart SpringBoard"},
@@ -10385,6 +10898,8 @@ static void start_web_server() {
                                     @{@"command": @"location on/off/toggle/status", @"desc": @"Toggles: Location Services (GPS)"},
                                     @{@"command": @"airplane on/off", @"desc": @"Toggles: Airplane Mode power"},
                                     @{@"command": @"dnd on/off", @"desc": @"Toggles: Do Not Disturb Mode"},
+                                    @{@"command": @"focus on/toggle <name>, focus off", @"desc": @"Focus: turns a Focus on or off (iOS 15+)"},
+                                    @{@"command": @"focus status/list", @"desc": @"Focus: the active Focus, or the Focus modes"},
                                     @{@"command": @"audiomix on/off", @"desc": @"Toggles: AudioMix simultaneous playback"},
                                     @{@"command": @"low power on/off", @"desc": @"Toggles: Low Power Mode"},
                                     @{@"command": @"mute", @"desc": @"Toggles: System mute/silent mode"},
@@ -10649,8 +11164,9 @@ static volatile BOOL g_volPressedDuringPower = NO;
 static NSTimeInterval RC_VolHoldDelay(BOOL up) {
     BOOL held = up ? g_volUpHeldOnHIDBus : g_volDownHeldOnHIDBus;
     NSTimeInterval downAt = up ? g_volUpDownOnHIDTime : g_volDownDownOnHIDTime;
-    if (!held || downAt <= 0) return 0.35;
-    return MAX(0.0, 0.35 - ([[NSDate date] timeIntervalSince1970] - downAt));
+    NSTimeInterval hold = RC_VolumeHoldTime();
+    if (!held || downAt <= 0) return hold;
+    return MAX(0.0, hold - ([[NSDate date] timeIntervalSince1970] - downAt));
 }
 
 // The buttons overlapped just now - a Both Press, not an Up-then-Down / Down-then-Up sequence.
@@ -10668,7 +11184,25 @@ static NSTimer *g_pendingVolUpSeqTimer = nil;
 static NSTimer *g_pendingVolDownSeqTimer = nil;
 static BOOL g_volSeqJustFired = NO;
 
+// Volume Up then Down (and Down then Up) without holding the first press back. A tap that no hold
+// trigger needs goes to native at once; for the sequence window after its release, the other
+// button completes the sequence. That press then goes to native too, so the two cancel and the
+// volume ends where it began. (At the top or bottom of the volume, where the first press changed
+// nothing, the second still steps it once.)
+static NSTimeInterval g_volUpSeqArmedUntil = 0, g_volDownSeqArmedUntil = 0;
+static BOOL g_volUpSkipArm = NO, g_volDownSkipArm = NO;   // the press completed a sequence: it doesn't start another
+
+// How long after a tap the other button still completes a sequence: the "volumeSequenceWindow"
+// setting, in seconds (default 0.38)
+static NSTimeInterval RC_VolSequenceWindow(void) {
+    id value = g_triggerConfig[@"volumeSequenceWindow"];
+    double window = [value isKindOfClass:[NSNumber class]] ? [value doubleValue] : 0.38;
+    return MIN(MAX(window, 0.15), 0.8);
+}
+
 static void cancel_pending_volume_sequences() {
+    g_volUpSeqArmedUntil = 0;
+    g_volDownSeqArmedUntil = 0;
     if (g_pendingVolUpSeqTimer) {
         [g_pendingVolUpSeqTimer invalidate];
         g_pendingVolUpSeqTimer = nil;
@@ -10684,6 +11218,11 @@ static BOOL g_lockButtonTriggered = NO;
 static NSTimer *g_systemPowerOffTimer = nil; // New for dual-stage
 static BOOL g_forceSystemLongPress = NO;     // New for dual-stage
 static BOOL g_powerIsDown = NO;
+// When the user last pressed Power or touched the screen: after a direct sleep, either one means
+// the phone was woken on purpose, so the "screen is still on" check must not put it back to sleep
+static CFAbsoluteTime g_lastPowerDownAt = 0;
+static CFAbsoluteTime g_lastTouchAt = 0;
+static CFAbsoluteTime g_lastHomeDownAt = 0;
 static BOOL g_powerVolComboTriggered = NO;
 // Set alongside g_powerVolComboTriggered at every site that fires a power+
 // volume combo. SBLockHardwareButton's own singlePress: gesture recognizer
@@ -10840,7 +11379,8 @@ static BOOL g_volHookAlive = NO;              // set once the Volume Down-With-M
                                                // thread hook and the background HID thread can't both
                                                // fire the same combo trigger for one physical press
 static BOOL g_powerSuppressPostUp = NO;       // carry suppression from Pre into Post
-static BOOL g_powerDownAwaitingUp = NO;       // armed by a real power press-down, consumed by the
+static int g_powerDownsAwaitingUp = 0;        // press-downs armed by a real power press-down (a count: SpringBoard can
+                                               // run its button hooks for several quick presses at once), each consumed by the
                                                // first performButtonUpPreActions after it. The system
                                                // also re-invokes that UP method on its own with no
                                                // matching press; with no press left to pair with, that
@@ -10858,6 +11398,12 @@ static BOOL g_powerDownAwaitingUp = NO;       // armed by a real power press-dow
 static BOOL g_powerDeferActive = NO;          // latched at DOWN, honoured at UP
 static __weak id g_powerActionsInstance = nil; // cached SBLockHardwareButtonActions
 static BOOL g_walletDoublePressDeferred = NO; // latched when native Wallet double-press is held back
+static BOOL g_powerWakeHeld = NO;             // a press made on a sleeping screen is held back (Power Long Press is bound),
+                                               // so a hold fires the trigger without waking the phone; a tap wakes it on release
+static BOOL g_powerWakePass = NO;             // press 1 made on a sleeping screen with a multi-click trigger bound: it wakes
+                                               // the phone as usual and counts as the first click, so a double press from sleep works
+static BOOL g_powerSequenceWoke = NO;         // the running click sequence began with such a wake: its first press is not replayed
+static CFAbsoluteTime g_powerSequenceWokeAt = 0; // when that wake happened: an old one is stale
 
 // Mirrors RCExecuteTrigger's own "will this actually do anything" check -
 // a trigger toggled on with zero actions assigned fires as a silent no-op
@@ -11006,6 +11552,38 @@ static void RC_ReplayPowerTimeline(NSArray<NSNumber *> *downs, NSArray<NSNumber 
 // One press, for an action (Lock Device, "button power") or a deferred single press
 static void RC_ReplayPowerPress(void) {
     RC_ReplayPowerTimeline(@[@0], @[@0.05]);
+}
+
+static void RC_ReplayPowerPresses(NSUInteger count);
+
+// Gives back the presses of a click sequence that no trigger claimed. One press puts the phone
+// to sleep through SpringBoard's own sleep routine: replaying it as a press sent it through
+// iOS's double-press wait a second time (over a second in all on an iPhone 15). If the screen
+// is still on shortly after, or the routine isn't there, the press is replayed instead - the
+// phone must not be left lit.
+static void RC_GivePressesBack(NSUInteger presses) {
+    id actions = g_powerActionsInstance;
+    id interaction = [actions respondsToSelector:@selector(sleepWakeButtonInteraction)] ? [actions sleepWakeButtonInteraction] : nil;
+    if (presses == 1 && [interaction respondsToSelector:@selector(_performSleep)] && RC_ScreenIsOn()) {
+        g_replayChainGeneration++;
+        NSUInteger generation = g_replayChainGeneration;
+        SRLog(@"[Power] Putting the phone to sleep directly");
+        CFAbsoluteTime sleptAt = CFAbsoluteTimeGetCurrent();
+        [(SBSleepWakeHardwareButtonInteraction *)interaction _performSleep];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            // A newer press, or a sleep that did happen, needs nothing
+            if (generation != g_replayChainGeneration || g_powerIsDown || !RC_ScreenIsOn()) return;
+            // Woken again since (a tap, Power or Home): the screen is on because the user turned it on
+            if (g_lastTouchAt > sleptAt || g_lastPowerDownAt > sleptAt || g_lastHomeDownAt > sleptAt) {
+                SRLog(@"[Power] The phone was woken again right after the sleep - leaving it on");
+                return;
+            }
+            SRLog(@"[Power] The direct sleep did not turn the screen off - replaying the press");
+            RC_ReplayPowerPresses(1);
+        });
+        return;
+    }
+    RC_ReplayPowerPresses(presses);
 }
 
 // Hands `count` deferred presses back to the system with the timing the hardware gave them -
@@ -11288,6 +11866,22 @@ static BOOL g_isSwappingVolume = NO;
         }
     }
 
+    // Down then Up, the Down tap having gone to native already (see g_volDownSeqArmedUntil)
+    if (g_volDownSeqArmedUntil > now) {
+        g_volDownSeqArmedUntil = 0;
+        if (RC_TriggerIsActionable(@"volume_down_then_up") && !g_volDownIsDown && !RC_VolPressesOverlapped()) {
+            SRLog(@"Volume Down then Up sequence triggered! (Down had gone to native; this Up cancels it)");
+            g_volUpSeqArmedUntil = 0;
+            g_volUpSkipArm = YES;
+            trigger_haptic();
+            RCExecuteTrigger(@"volume_down_then_up");
+            g_volUpLastPassedThrough = YES;
+            g_volUpNativeSessionActive = YES;
+            %orig;
+            return;
+        }
+    }
+
     // 3. If user is rapidly tapping Vol Up again, cancel pending Vol Up replay timer and replay immediately
     if (g_pendingVolUpSeqTimer) {
         [g_pendingVolUpSeqTimer invalidate];
@@ -11298,11 +11892,11 @@ static BOOL g_isSwappingVolume = NO;
         g_volIsReplaying = NO;
     }
 
-    // Only a hold or sequence trigger needs this press held back (to tell a tap
-    // from a hold). Otherwise hand it to native straight away, so taps and holds
-    // behave exactly like stock - replaying it after a 0.35s wait delayed the ramp
+    // Only a hold trigger needs this press held back (to tell a tap from a hold); a sequence
+    // is watched for after the tap instead (see g_volUpSeqArmedUntil). Otherwise hand it to
+    // native straight away, so taps and holds behave exactly like stock - replaying it after a 0.35s wait delayed the ramp
     // and made the volume jerk. Volume Both Press is still detected below.
-    BOOL passthrough = !RC_TriggerIsActionable(@"volume_up_hold") && !RC_TriggerIsActionable(@"volume_up_then_down");
+    BOOL passthrough = !RC_TriggerIsActionable(@"volume_up_hold");
 
     // 4. Check for simultaneous Volume Up + Volume Down dual press
     BOOL isDualPress = g_volDownIsDown || (g_lastVolDownPressTime > 0 && (now - g_lastVolDownPressTime) < 0.20);
@@ -11418,6 +12012,12 @@ static BOOL g_isSwappingVolume = NO;
         g_volUpNativeSessionActive = NO;
         SRLog(@"[Vol] Up release of a native press - forwarding to native");
         g_volUpIsDown = NO;
+        // A tap that went to native: Down within the window completes Up then Down
+        NSTimeInterval releasedAt = [[NSDate date] timeIntervalSince1970];
+        if (!g_volUpSkipArm && !g_volComboTriggered && !g_volDownIsDown && releasedAt - g_lastVolUpPressTime < RC_VolumeHoldTime() && RC_TriggerIsActionable(@"volume_up_then_down")) {
+            g_volUpSeqArmedUntil = releasedAt + RC_VolSequenceWindow();
+        }
+        g_volUpSkipArm = NO;
         if (g_volComboTriggered && !g_volDownIsDown) g_volComboTriggered = NO;
         g_volIsReplaying = YES;
         %orig;
@@ -11464,7 +12064,7 @@ static BOOL g_isSwappingVolume = NO;
 
             if (seqUpDownEnabled) {
                 if (g_pendingVolUpSeqTimer) [g_pendingVolUpSeqTimer invalidate];
-                g_pendingVolUpSeqTimer = [NSTimer scheduledTimerWithTimeInterval:0.38 repeats:NO block:^(NSTimer *timer) {
+                g_pendingVolUpSeqTimer = [NSTimer scheduledTimerWithTimeInterval:RC_VolSequenceWindow() repeats:NO block:^(NSTimer *timer) {
                     g_pendingVolUpSeqTimer = nil;
                     g_volIsReplaying = YES;
                     [self volumeIncreasePressDownWithModifiers:0];
@@ -11522,6 +12122,12 @@ static BOOL g_isSwappingVolume = NO;
             RCExecuteTrigger(@"power_volume_down");
             return;
         }
+        if (enabled) {
+            // Already fired for this press (the HID listener usually sees it first): swallow
+            // it, and backdate its press time so the release recognizes it too
+            g_lastVolDownPressTime = g_lastPowerVolComboFireTime;
+            return;
+        }
 
         // No custom combo is configured: hand the press to iOS instead of consuming
         // it (it still steps the volume). Whether the power press then sleeps the
@@ -11557,6 +12163,22 @@ static BOOL g_isSwappingVolume = NO;
         }
     }
 
+    // Up then Down, the Up tap having gone to native already (see g_volUpSeqArmedUntil)
+    if (g_volUpSeqArmedUntil > now) {
+        g_volUpSeqArmedUntil = 0;
+        if (RC_TriggerIsActionable(@"volume_up_then_down") && !g_volUpIsDown && !RC_VolPressesOverlapped()) {
+            SRLog(@"Volume Up then Down sequence triggered! (Up had gone to native; this Down cancels it)");
+            g_volDownSeqArmedUntil = 0;
+            g_volDownSkipArm = YES;
+            trigger_haptic();
+            RCExecuteTrigger(@"volume_up_then_down");
+            g_volDownLastPassedThrough = YES;
+            g_volDownNativeSessionActive = YES;
+            %orig;
+            return;
+        }
+    }
+
     // 3. If user is rapidly tapping Vol Down again, cancel pending Vol Down replay timer and replay immediately
     if (g_pendingVolDownSeqTimer) {
         [g_pendingVolDownSeqTimer invalidate];
@@ -11568,7 +12190,7 @@ static BOOL g_isSwappingVolume = NO;
     }
 
     // See the symmetric comment in volumeIncreasePressDownWithModifiers:.
-    BOOL passthrough = !RC_TriggerIsActionable(@"volume_down_hold") && !RC_TriggerIsActionable(@"volume_down_then_up");
+    BOOL passthrough = !RC_TriggerIsActionable(@"volume_down_hold");
 
     // 4. Check for simultaneous Volume Up + Volume Down dual press
     BOOL isDualPress = g_volUpIsDown || (g_lastVolUpPressTime > 0 && (now - g_lastVolUpPressTime) < 0.20);
@@ -11669,6 +12291,12 @@ static BOOL g_isSwappingVolume = NO;
         g_volDownNativeSessionActive = NO;
         SRLog(@"[Vol] Down release of a native press - forwarding to native");
         g_volDownIsDown = NO;
+        // A tap that went to native: Up within the window completes Down then Up
+        NSTimeInterval releasedAt = [[NSDate date] timeIntervalSince1970];
+        if (!g_volDownSkipArm && !g_volComboTriggered && !g_volUpIsDown && releasedAt - g_lastVolDownPressTime < RC_VolumeHoldTime() && RC_TriggerIsActionable(@"volume_down_then_up")) {
+            g_volDownSeqArmedUntil = releasedAt + RC_VolSequenceWindow();
+        }
+        g_volDownSkipArm = NO;
         if (g_volComboTriggered && !g_volUpIsDown) g_volComboTriggered = NO;
         g_volIsReplaying = YES;
         %orig;
@@ -11715,7 +12343,7 @@ static BOOL g_isSwappingVolume = NO;
 
             if (seqDownUpEnabled) {
                 if (g_pendingVolDownSeqTimer) [g_pendingVolDownSeqTimer invalidate];
-                g_pendingVolDownSeqTimer = [NSTimer scheduledTimerWithTimeInterval:0.38 repeats:NO block:^(NSTimer *timer) {
+                g_pendingVolDownSeqTimer = [NSTimer scheduledTimerWithTimeInterval:RC_VolSequenceWindow() repeats:NO block:^(NSTimer *timer) {
                     g_pendingVolDownSeqTimer = nil;
                     g_volIsReplaying = YES;
                     [self volumeDecreasePressDownWithModifiers:0];
@@ -11774,10 +12402,122 @@ typedef void (*IOHIDEventSystemClientEventCallback)(void* target, void* refcon, 
 static int g_homeClickCount = 0;
 static NSTimer *g_homeClickTimer = nil;
 
+@interface SBHomeHardwareButtonActions : NSObject
+- (void)performDoublePressDownActions;
+- (void)performSinglePressUpActions;
+- (void)performSinglePressUpActionsWithSourceType:(unsigned long)sourceType;
+@end
+
+// iOS's own Home double press action (the App Switcher), held back until the click count is
+// known (see RC_HoldHomeSwitcher): if a trigger takes the clicks it replaces the App Switcher,
+// otherwise the App Switcher opens late. (The triple press action, the Accessibility Shortcut, is
+// taken over by Home Triple Click: see RC_AXTriplePressTakenOver.)
+static BOOL g_homeDoubleActionHeld = NO, g_homeActionReplaying = NO;
+static __weak id g_homeActionsTarget = nil;
+
+// Whether an Accessibility Shortcut is set (Settings > Accessibility > Accessibility Shortcut):
+// while one is, iOS itself waits to rule out a triple press before opening the App Switcher
+static BOOL RC_AccessibilityShortcutSet(void) {
+    CFPreferencesAppSynchronize(CFSTR("com.apple.Accessibility"));
+    CFPropertyListRef choice = CFPreferencesCopyAppValue(CFSTR("TripleClickChoice"), CFSTR("com.apple.Accessibility"));
+    BOOL set = choice && CFGetTypeID(choice) == CFArrayGetTypeID() && CFArrayGetCount((CFArrayRef)choice) > 0;
+    if (choice) CFRelease(choice);
+    return set;
+}
+
+// Whether the side button's triple press is iOS's own (an Accessibility Shortcut on a phone with no
+// Home button; on one with a Home button the shortcut is a Home triple press instead)
+static BOOL RC_SideButtonHasAccessibilityShortcut(void) {
+    static long type = -1;
+    if (type == -1) {
+        id app = [UIApplication sharedApplication];
+        SEL lockButtonSel = NSSelectorFromString(@"lockHardwareButton"), typeSel = NSSelectorFromString(@"homeButtonType");
+        id lockButton = [app respondsToSelector:lockButtonSel] ? ((id (*)(id, SEL))objc_msgSend)(app, lockButtonSel) : nil;
+        if ([lockButton respondsToSelector:typeSel]) type = ((long (*)(id, SEL))objc_msgSend)(lockButton, typeSel);
+    }
+    return type == 2 && RC_AccessibilityShortcutSet(); // 2: no Home button
+}
+
+// The Accessibility Shortcut runs on a triple press of the side button, or of the Home button on
+// a phone with one. Binding that triple press in RC (Power Triple Click / Home Triple Click) takes
+// it over: iOS then treats the shortcut as off for that button, so it no longer waits for a third
+// press or runs the shortcut, and the "accessibility shortcut" action runs it on any trigger.
+static NSHashTable *g_axInteractions = nil; // iOS's SBAccessibilityHardwareButtonInteraction objects; main thread
+static BOOL g_axShortcutBypass = NO;        // set while the action runs iOS's shortcut
+
+static id RC_AXGet(id obj, NSString *name) {
+    SEL sel = NSSelectorFromString(name);
+    return [obj respondsToSelector:sel] ? ((id (*)(id, SEL))objc_msgSend)(obj, sel) : nil;
+}
+
+// Whether a triple press binding takes over the button this interaction belongs to
+static BOOL RC_AXTriplePressTakenOver(id interaction) {
+    id sideButton = RC_AXGet(RC_AXGet([UIApplication sharedApplication], @"lockHardwareButton"), @"buttonActions");
+    BOOL side = sideButton && RC_AXGet(sideButton, @"accessibilityButtonInteraction") == interaction;
+    return RC_TriggerIsActionable(side ? @"power_triple_click" : @"trigger_home_triple_click");
+}
+
+// Has iOS read the press settings again (as it does when the shortcut is changed in Settings)
+// once either triple press binding changes. Main thread.
+static void RC_RefreshAXTriplePress(void) {
+    static int last = -1;
+    int state = (RC_TriggerIsActionable(@"power_triple_click") ? 1 : 0) | (RC_TriggerIsActionable(@"trigger_home_triple_click") ? 2 : 0);
+    if (state == last) return;
+    last = state;
+    SEL publish = NSSelectorFromString(@"publishUpdatedParameters:");
+    for (id interaction in g_axInteractions.allObjects) {
+        id params = RC_AXGet(interaction, @"hardwareButtonGestureParameters");
+        if (!params || ![interaction respondsToSelector:publish]) continue;
+        ((void (*)(id, SEL, id))objc_msgSend)(interaction, publish, params);
+        SRLog(@"[AXShortcut] Press settings updated: %@", params);
+    }
+}
+
+// Runs iOS's Accessibility Shortcut, as a triple press would. Main thread.
+static BOOL RC_RunAccessibilityShortcut(void) {
+    SEL supports = NSSelectorFromString(@"_supportsTripleClick"), consume = NSSelectorFromString(@"consumeTriplePressUp");
+    BOOL ran = NO;
+    g_axShortcutBypass = YES;
+    for (id interaction in g_axInteractions.allObjects) {
+        if (![interaction respondsToSelector:supports] || ![interaction respondsToSelector:consume]) continue;
+        if (!((BOOL (*)(id, SEL))objc_msgSend)(interaction, supports)) continue;
+        ran = ((BOOL (*)(id, SEL))objc_msgSend)(interaction, consume);
+        break;
+    }
+    g_axShortcutBypass = NO;
+    return ran;
+}
+
+// Whether to hold the App Switcher: for Home Double Click always (it replaces the App Switcher);
+// for Triple or Quadruple Click only when iOS doesn't wait itself, so the App Switcher doesn't open
+// partway through those clicks. With a shortcut set iOS already waits, and holding as well doubled
+// the delay of every double click.
+static BOOL RC_HoldHomeSwitcher(void) {
+    if (RC_IsForegroundAppExcluded()) return NO;
+    if (RC_TriggerIsActionable(@"trigger_home_double_click")) return YES;
+    if (!RC_TriggerIsActionable(@"trigger_home_triple_click") && !RC_TriggerIsActionable(@"trigger_home_quadruple_click")) return NO;
+    // Home Triple Click takes the shortcut over, so iOS no longer waits
+    return !RC_AccessibilityShortcutSet() || RC_TriggerIsActionable(@"trigger_home_triple_click");
+}
+
+// The end of a click sequence: drops the held App Switcher if a trigger fired or the clicks went
+// on to three or more (iOS doesn't open it for those either), otherwise opens it late. A count of
+// 1 counts too: iOS can take a slower second click as a double after this sequence has ended.
+// Main thread.
+static void RC_FinishHomeActions(int count, BOOL fired) {
+    id target = g_homeActionsTarget;
+    BOOL replay = !fired && count <= 2 && g_homeDoubleActionHeld;
+    g_homeDoubleActionHeld = NO;
+    if (!target || !replay) return;
+    SRLog(@"[Home] No trigger for %d clicks - opening iOS's App Switcher", count);
+    g_homeActionReplaying = YES;
+    [target performDoublePressDownActions];
+    g_homeActionReplaying = NO;
+}
+
 // Power Button Multi-Click Globals
 static int g_powerClickCount = 0;
 static NSTimer *g_powerClickTimer = nil;
-static NSTimeInterval g_lastHIDTime = 0;
 static BOOL g_hidButtonDown = NO;
 static IOHIDEventSystemClientRef g_hidClient = NULL;
 
@@ -11811,13 +12551,15 @@ static void RC_CheckAndFire() {
         SRLog(@"🚀 QUAD CLICK (4+) REACHED! Firing immediately.");
         trigger_haptic();
         RCExecuteTrigger(@"trigger_home_quadruple_click");
+        RC_FinishHomeActions(g_homeClickCount, YES);
         g_homeClickCount = 0; // Reset Sequence
         return;
     }
     
     // 4. Determines Timeout
-    NSTimeInterval timeout = 0.35; 
-    if (quadEnabled) timeout = 0.55; 
+    // The window is Settings > Home Clicks (0.35 s by default); a bound Quadruple Click adds 0.2 s
+    NSTimeInterval timeout = RC_HomeClickWindow();
+    if (quadEnabled) timeout += 0.2;
     
     // 5. Schedule Timer
     g_homeClickTimer = [NSTimer scheduledTimerWithTimeInterval:timeout repeats:NO block:^(NSTimer *timer) {
@@ -11830,14 +12572,17 @@ static void RC_CheckAndFire() {
         else if (g_homeClickCount == 3) triggerKey = @"trigger_home_triple_click";
         else if (g_homeClickCount == 2) triggerKey = @"trigger_home_double_click";
         
+        BOOL fired = NO;
         if (triggerKey && masterEnabled) {
             BOOL enabled = [g_triggerConfig[@"triggers"][triggerKey][@"enabled"] boolValue];
             if (enabled) {
                 SRLog(@"✅ FIRING TRIGGER: %@", triggerKey);
                 trigger_haptic();
                 RCExecuteTrigger(triggerKey);
+                fired = YES;
             }
         }
+        RC_FinishHomeActions(g_homeClickCount, fired);
         g_homeClickCount = 0;
     }];
 }
@@ -11859,6 +12604,7 @@ static void RC_ProcessPowerClick() {
         RC_CheckAndFirePower();
     });
 }
+
 
 // Power Button Multi-Click Logic
 static void RC_CheckAndFirePower() {
@@ -11885,8 +12631,18 @@ static void RC_CheckAndFirePower() {
         return;
     }
     
-    // 4. Timeout
-    NSTimeInterval timeout = 0.4; 
+    // 4. Timeout. The window only has to outlast the gap to the next click, and nothing
+    // waits on a third click unless a Triple or Quad is bound: with just Double-Tap bound the
+    // first press waits 0.3 s, and the second one ends the sequence at once.
+    // The window is Settings > Power Clicks (0.4 s by default); with only Double-Tap bound the
+    // first press waits three quarters of it (0.3 s by default)
+    // An Accessibility Shortcut on the side button is a triple press too: with one set, the third
+    // click is waited for as if a Triple Click were bound, or every Accessibility Shortcut also fired
+    // Double-Tap on its second click
+    NSTimeInterval timeout = RC_PowerClickWindow();
+    if (!RC_HigherPowerMultiClickArmed() && !RC_SideButtonHasAccessibilityShortcut()) {
+        timeout = (g_powerClickCount >= 2) ? 0.02 : timeout * 0.75;
+    }
     
     // 5. Schedule Timer
     g_powerClickTimer = [NSTimer scheduledTimerWithTimeInterval:timeout repeats:NO block:^(NSTimer *timer) {
@@ -11905,6 +12661,8 @@ static void RC_CheckAndFirePower() {
         // below starts a clean sequence.
         int count = g_powerClickCount;
         g_powerClickCount = 0;
+        BOOL sequenceWoke = g_powerSequenceWoke;
+        g_powerSequenceWoke = NO;
         SRLog(@"POWER SEQUENCE ENDED. Final count: %d", count);
 
         NSString *triggerKey = nil;
@@ -11946,7 +12704,11 @@ static void RC_CheckAndFirePower() {
         // was just replayed instead - that already gave the system a native
         // outcome for these clicks, and replaying a click on top would spuriously
         // lock/wake the screen right after Wallet opens.
-        if (!claimed && !walletReplayed && count >= 1 && g_powerHookAlive) {
+        // The press that woke a sleeping phone (see g_powerWakePass) has done its work; only the
+        // presses after it were held back
+        int replayCount = count - (sequenceWoke ? 1 : 0);
+        if (!claimed && !walletReplayed && replayCount >= 1 && g_powerHookAlive) {
+            int count = replayCount;
             // Replay only as many presses as iOS treated as presses of their own
             // (see g_nativeSinglePressCount). Its gestures normally fire before this
             // timer; if some haven't yet, wait a moment for them - the singlePress:
@@ -11965,16 +12727,18 @@ static void RC_CheckAndFirePower() {
                         return;
                     }
                     SRLog(@"[Power] iOS treated %lu of %d presses as presses of their own - replaying those", (unsigned long)presses, count);
-                    RC_ReplayPowerPresses(presses);
+                    RC_GivePressesBack(presses);
                 });
                 return;
             }
-            RC_ReplayPowerPresses(count);
+            RC_GivePressesBack(count);
         }
     }];
 }
 
 static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientRef service, IOHIDEventRef event) {
+    // Before the exclusion check: a touch is a touch whatever app is in front
+    if (IOHIDEventGetType(event) == 11) g_lastTouchAt = CFAbsoluteTimeGetCurrent(); // kIOHIDEventTypeDigitizer
     if (RC_IsForegroundAppExcluded()) return;
     int type = IOHIDEventGetType(event);
     
@@ -12129,13 +12893,13 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
         if (usagePage == kHIDPage_Consumer && usage == kHIDUsage_Csmr_Menu) {
             NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
             g_homeHeldOnHID = !!down;
+            if (down) g_lastHomeDownAt = CFAbsoluteTimeGetCurrent();
             if (down && g_powerHeldOnHID) RC_NoteHomePowerChord();
             if (!down) RC_FinishHomePowerChord();
             
             if (down) {
                 if (!g_hidButtonDown) {
                     g_hidButtonDown = YES;
-                    g_lastHIDTime = now;
 
                     
                     // SUPPRESS TOUCH ID HOLD:
@@ -12154,13 +12918,13 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
                     });
                 }
             } else { // UP
+                // Every press counts, however short: a quick click can be 25-50 ms. A 50 ms
+                // minimum here dropped those presses and left the button marked down, so the
+                // next press was lost too (four quick clicks read as three).
                 if (g_hidButtonDown) {
-                    if (now - g_lastHIDTime > 0.05) { // 50ms Debounce
-                        g_hidButtonDown = NO;
-                        g_lastHIDTime = now;
+                    g_hidButtonDown = NO;
 
-                        RC_ProcessHomeClick();
-                    }
+                    RC_ProcessHomeClick();
                 }
             }
         }
@@ -12203,7 +12967,8 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
             if (down) {
                 // Outside the !g_powerIsDown guard: the main thread can set
                 // g_powerIsDown first, which would skip this whole block.
-                g_powerDownAwaitingUp = YES;
+                if (g_hidPowerPresses <= 1) g_powerDownsAwaitingUp = 0; // first press of a sequence
+                if (g_powerDownsAwaitingUp < 4) g_powerDownsAwaitingUp++;
                 // Backup for presses where iOS skips performInitialButtonDownActions
                 // (e.g. the 2nd of two quick presses) - see g_screenshotGestureRecognizer.
                 dispatch_async(dispatch_get_main_queue(), ^{
@@ -12213,6 +12978,7 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
                 });
                 if (!g_powerIsDown) {
                     g_powerIsDown = YES;
+                    g_lastPowerDownAt = CFAbsoluteTimeGetCurrent();
                     lastPowerDownTime = now;
                     SRLog(@"[HID] ⚡️ Power DOWN");
                     
@@ -12330,32 +13096,33 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
             if (mappedUsage == kHIDUsage_Csmr_VolumeDecrement) g_volDownHeldOnHID = !!down;
             if (mappedUsage == kHIDUsage_Csmr_VolumeIncrement) g_volUpHeldOnHID = !!down;
             
-            // Check for Power + Volume combination.
-            // FALLBACK ONLY. volumeIncreasePressDownWithModifiers:/volumeDecreasePress-
-            // DownWithModifiers: already detect this same combo on the main thread, and
-            // unlike the block above this one had no !g_powerVolComboTriggered guard at
-            // all - it fired unconditionally alongside the ObjC hook every single time.
-            if (!g_volHookAlive && down && g_powerIsDown) {
-                NSString *triggerKey = (mappedUsage == kHIDUsage_Csmr_VolumeIncrement) ? @"power_volume_up" : @"power_volume_down";
-                BOOL enabled = RC_TriggerIsActionable(triggerKey);
-
-                if (enabled && !g_powerVolComboTriggered) {
+            // Check for Power + Volume combination. The volume hooks
+            // (volumeIncreasePressDownWithModifiers: / volumeDecreasePressDownWithModifiers:)
+            // detect it too, but on the lock screen iOS doesn't call them while Power is held,
+            // so it's detected here as well. Decided on the main thread, like the hooks, so only
+            // the first to see the combo fires it (this listener usually sees the press first,
+            // and the hook then swallows the press); and before Power's release, which is
+            // handled there too.
+            if (down && g_powerIsDown) {
+                BOOL volumeUp = (mappedUsage == kHIDUsage_Csmr_VolumeIncrement);
+                NSString *triggerKey = volumeUp ? @"power_volume_up" : @"power_volume_down";
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (!g_powerIsDown || g_powerVolComboTriggered || !RC_TriggerIsActionable(triggerKey)) return;
                     SRLog(@"[HID] ⚡️+🔊 POWER + VOLUME COMBINATION DETECTED: %@", triggerKey);
                     g_powerVolComboTriggered = YES;
                     RC_MarkPowerVolComboFired();
-
-                    // Invalidate standard timers in Main Thread
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                         cancel_pending_volume_sequences();
-                         if (g_volUpTimer) { [g_volUpTimer invalidate]; g_volUpTimer = nil; }
-                         if (g_volDownTimer) { [g_volDownTimer invalidate]; g_volDownTimer = nil; }
-                         trigger_haptic();
-                         RCExecuteTrigger(triggerKey);
-                    });
-                    
-                    // We might want to swallow the volume event here, but HID listener is just a listener.
-                    // The Volume hooks will also fire, we handle suppression there too.
-                }
+                    cancel_pending_volume_sequences();
+                    if (volumeUp) {
+                        RC_SetScreenshotRecognizerSuppressed(YES);
+                    } else {
+                        if (g_lockButtonTimer) { [g_lockButtonTimer invalidate]; g_lockButtonTimer = nil; }
+                        if (g_systemPowerOffTimer) { [g_systemPowerOffTimer invalidate]; g_systemPowerOffTimer = nil; }
+                    }
+                    if (g_volUpTimer) { [g_volUpTimer invalidate]; g_volUpTimer = nil; }
+                    if (g_volDownTimer) { [g_volDownTimer invalidate]; g_volDownTimer = nil; }
+                    trigger_haptic();
+                    RCExecuteTrigger(triggerKey);
+                });
             }
             
             // Volume Both Press. The volume hooks detect it on the main thread, but iOS 14
@@ -12459,6 +13226,27 @@ static void setup_background_hid_listener() {
 }
 %end
 
+// Accessibility Shortcut: see RC_AXTriplePressTakenOver
+%hook SBAccessibilityHardwareButtonInteraction
+- (id)initWithButtonType:(unsigned long)type {
+    id interaction = %orig;
+    if (interaction) {
+        if (!g_axInteractions) g_axInteractions = [NSHashTable weakObjectsHashTable];
+        [g_axInteractions addObject:interaction];
+    }
+    return interaction;
+}
+- (BOOL)_supportsTripleClick {
+    BOOL supports = %orig;
+    if (supports && !g_axShortcutBypass && RC_AXTriplePressTakenOver(self)) return NO;
+    return supports;
+}
+- (BOOL)consumeTriplePressUp {
+    if (!g_axShortcutBypass && RC_AXTriplePressTakenOver(self)) return NO;
+    return %orig;
+}
+%end
+
 %hook SBLockHardwareButtonActions
 
 - (void)performInitialButtonDownActions {
@@ -12481,7 +13269,7 @@ static void setup_background_hid_listener() {
 
     g_powerSuppressPostUp = NO; // fresh press
     g_powerIsDown = YES;
-    g_powerDownAwaitingUp = YES;
+    if (g_powerDownsAwaitingUp < 1) g_powerDownsAwaitingUp = 1; // the HID listener normally armed it already
     g_replaySinglePressesAllowed = 0; // a new real press; any unclaimed replay slot is stale
     g_powerPressIsCombo = NO;
     g_powerReleasedWithVolumeHeld = NO;
@@ -12535,7 +13323,7 @@ static void setup_background_hid_listener() {
 
     if (longPressEnabled) {
         if (g_lockButtonTimer == nil && !g_lockButtonTriggered) {
-            g_lockButtonTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:NO block:^(NSTimer *timer) {
+            g_lockButtonTimer = [NSTimer scheduledTimerWithTimeInterval:RC_PowerHoldTime() repeats:NO block:^(NSTimer *timer) {
                 g_lockButtonTimer = nil;
                 if (!g_powerIsDown) {
                     SRLog(@"Power Long Press ignored because button is not down");
@@ -12546,16 +13334,19 @@ static void setup_background_hid_listener() {
                 RCExecuteTrigger(@"power_long_press");
                 SRLog(@"Power Long Press Fired (Stage 1)!");
                 
-                // Start Stage 2 Timer (System Power Off) - 2.0s later (2.5s total hold)
-                g_systemPowerOffTimer = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:NO block:^(NSTimer *t) {
-                     g_systemPowerOffTimer = nil;
-                     if (!g_powerIsDown) return;
-                     SRLog(@"Power Long Press (Stage 2) - Forcing System Power Off Screen");
-                     g_forceSystemLongPress = YES;
-                     
-                     // Manually invoke the action again, but this time g_forceSystemLongPress is YES
-                     [self performLongPressActions];
-                }];
+                // Start Stage 2 Timer (System Power Off) - 2.0s later (2.5s total hold). Not for a
+                // press made on a sleeping screen: the power-off slider would wake it.
+                if (!g_powerWakeHeld) {
+                    g_systemPowerOffTimer = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:NO block:^(NSTimer *t) {
+                         g_systemPowerOffTimer = nil;
+                         if (!g_powerIsDown) return;
+                         SRLog(@"Power Long Press (Stage 2) - Forcing System Power Off Screen");
+                         g_forceSystemLongPress = YES;
+                         
+                         // Manually invoke the action again, but this time g_forceSystemLongPress is YES
+                         [self performLongPressActions];
+                    }];
+                }
             }];
         }
     }
@@ -12568,6 +13359,35 @@ static void setup_background_hid_listener() {
     // replays it, so a plain single press still locks/wakes as normal.
     // Latch the decision at DOWN so a config reload mid-press can't leave the
     // UP half disagreeing with the DOWN half.
+    // A press on a sleeping screen with Power Long Press bound is held back, so that holding
+    // it fires the trigger without waking the phone. A tap wakes it on release.
+    g_powerWakeHeld = NO;
+    if (!(g_powerClickTimer != nil && g_powerClickCount > 0) && !RC_ScreenIsOn() && RC_TriggerIsActionable(@"power_long_press")) {
+        g_powerWakeHeld = YES;
+        g_powerDeferActive = YES;
+        SRLog(@"Holding system power DOWN on a sleeping screen (Power Long Press bound)");
+        return;
+    }
+
+    // A wake with no press right after it leaves the flag set; a press made later (to put the phone
+    // to sleep) would be taken for the waking one and never replayed
+    if (g_powerSequenceWoke && !(g_powerClickTimer != nil && g_powerClickCount > 0) &&
+        CFAbsoluteTimeGetCurrent() - g_powerSequenceWokeAt > RC_PowerClickWindow() + 0.1) {
+        g_powerSequenceWoke = NO;
+    }
+
+    g_powerWakePass = NO;
+    if (!(g_powerClickTimer != nil && g_powerClickCount > 0) && !RC_ScreenIsOn() && RC_PowerMultiClickEnabled()) {
+        // Wakes the phone as usual, and counts as the first click
+        g_powerWakePass = YES;
+        g_powerSequenceWoke = YES;
+        g_powerSequenceWokeAt = CFAbsoluteTimeGetCurrent();
+        g_powerDeferActive = NO;
+        SRLog(@"Power DOWN on a sleeping screen - it wakes the phone and counts as click 1");
+        %orig;
+        return;
+    }
+
     g_powerDeferActive = RC_ShouldDeferPowerPress();
     if (g_powerDeferActive) {
         SRLog(@"Deferring system power DOWN (multi-click armed)");
@@ -12626,7 +13446,7 @@ static void setup_background_hid_listener() {
     // The system re-invokes this method a second time on its own, with no
     // matching press - confirmed in the field: a real triple-click produced a
     // 4th, phantom call here. Only the first UP after a real DOWN is real (see
-    // g_powerDownAwaitingUp). This must run before ANY suppression-reason
+    // g_powerDownsAwaitingUp). This must run before ANY suppression-reason
     // branch below, not just the deferred-click one: each of those returns
     // early once it decides why to suppress the REAL call, and if any of them
     // left this flag unconsumed, the phantom call - which hits none of those
@@ -12635,8 +13455,8 @@ static void setup_background_hid_listener() {
     // (confirmed in the field via the combo branch). Suppress the paired
     // postActions call too via the same one-shot flag it already checks, so
     // neither half of the phantom event reaches the system.
-    BOOL isRealPress = g_powerDownAwaitingUp;
-    g_powerDownAwaitingUp = NO;
+    BOOL isRealPress = g_powerDownsAwaitingUp > 0;
+    if (g_powerDownsAwaitingUp > 0) g_powerDownsAwaitingUp--;
     if (!isRealPress) {
         SRLog(@"Ignoring synthetic performButtonUpPreActions call (no matching press)");
         g_powerSuppressPostUp = YES;
@@ -12661,6 +13481,28 @@ static void setup_background_hid_listener() {
         // lock/sleep on top of the combo action that had already fired.
         g_powerVolComboTriggered = NO;
         g_powerSuppressPostUp = YES;
+        return;
+    }
+
+    // A press held back on a sleeping screen (see g_powerWakeHeld), released before the long press
+    // fired, was a tap: it wakes the phone now. Replaying it would not - synthetic presses don't
+    // wake - and it has no clicks to wait for: a sleeping screen doesn't count clicks.
+    if (g_powerWakeHeld) {
+        g_powerWakeHeld = NO;
+        // iOS's own wake sequence, run late: the press-down it was denied, then this release.
+        // Waking through the backlight controller alone left the lock screen without its
+        // wallpaper and clock (iPhone 15, iOS 17) - only the notifications and toggles came up.
+        SRLog(@"[Power] Tap on a sleeping screen - running iOS's wake for it now");
+        g_powerIsReplaying = YES;
+        [self performInitialButtonDownActions];
+        g_powerIsReplaying = NO;
+        if (RC_PowerMultiClickEnabled()) {
+            g_powerSequenceWoke = YES;
+            g_powerSequenceWokeAt = CFAbsoluteTimeGetCurrent();
+            g_powerClickCount++;
+            RC_CheckAndFirePower();
+        }
+        %orig;
         return;
     }
 
@@ -12803,6 +13645,37 @@ static void setup_background_hid_listener() {
 
 // iOS recognizing its own screenshot gesture (the chord differs by device) - so a Home + Power
 // chord doesn't get a second screenshot from the tweak (RC_FinishHomePowerChord)
+// With its double press held, iOS takes the next press of the same clicks as a new single press
+// - go home - and performs it before the click count is known: it belongs to the held clicks
+static BOOL RC_HomeSinglePressIsPartOfHeldClicks(void) {
+    if (!g_homeDoubleActionHeld) return NO;
+    SRLog(@"[Home] Single press during held clicks - not going home");
+    return YES;
+}
+
+// See g_homeDoubleActionHeld
+%hook SBHomeHardwareButtonActions
+- (void)performSinglePressUpActions {
+    if (RC_HomeSinglePressIsPartOfHeldClicks()) return;
+    %orig;
+}
+
+- (void)performSinglePressUpActionsWithSourceType:(unsigned long)sourceType {
+    if (RC_HomeSinglePressIsPartOfHeldClicks()) return;
+    %orig;
+}
+
+- (void)performDoublePressDownActions {
+    if (!g_homeActionReplaying && RC_HoldHomeSwitcher()) {
+        SRLog(@"[Home] iOS's App Switcher held until the click count is known");
+        g_homeDoubleActionHeld = YES;
+        g_homeActionsTarget = self;
+        return;
+    }
+    %orig;
+}
+%end
+
 %hook SBHomeHardwareButton
 - (void)screenshotRecognizerDidRecognize:(id)recognizer {
     g_lastIOSScreenshotTime = [[NSDate date] timeIntervalSince1970];
@@ -12880,7 +13753,7 @@ static void setup_background_hid_listener() {
             NSUInteger presses = g_replayAwaitingSequenceCount;
             g_replayAwaitingSequenceCount = 0;
             SRLog(@"Suppressing native singlePress: for a deferred press - replaying the sequence's %lu press(es) now", (unsigned long)presses);
-            RC_ReplayPowerPresses(presses);
+            RC_GivePressesBack(presses);
             return;
         }
         SRLog(@"Suppressing native singlePress: for a deferred press - its replay supplies its own");
@@ -13021,7 +13894,20 @@ static NSString *get_bottom_swipe_trigger_for_touch(CGPoint loc, UIInterfaceOrie
     }
 }
 
+// The lock screen, or the cover sheet pulled down over the home screen or an app, keeps iOS's
+// own swipe up from the bottom edge: it's how you unlock (or open Control Center on a phone with
+// a Home button) and how you put the cover sheet away. The Bottom Swipe Up zones don't take it
+// there. Main thread.
+static BOOL rc_cover_sheet_showing(void) {
+    Class coverSheetClass = objc_getClass("SBCoverSheetPresentationManager");
+    id coverSheet = [coverSheetClass respondsToSelector:@selector(sharedInstance)] ? [coverSheetClass performSelector:@selector(sharedInstance)] : nil;
+    if ([coverSheet respondsToSelector:@selector(isVisible)] && ((BOOL (*)(id, SEL))objc_msgSend)(coverSheet, @selector(isVisible))) return YES;
+    SBLockScreenManager *lockScreen = [objc_getClass("SBLockScreenManager") sharedInstance];
+    return [lockScreen respondsToSelector:@selector(isUILocked)] && [lockScreen isUILocked];
+}
+
 static BOOL should_suppress_bottom_edge_gesture(CGPoint loc, UIInterfaceOrientation orientation) {
+    if (rc_cover_sheet_showing()) return NO;
     if (!g_triggerConfig) {
         load_trigger_config();
     }
@@ -13041,6 +13927,7 @@ static BOOL should_suppress_bottom_edge_gesture(CGPoint loc, UIInterfaceOrientat
 }
 
 static BOOL has_any_bottom_swipe_trigger_enabled() {
+    if (rc_cover_sheet_showing()) return NO;
     if (!g_triggerConfig) {
         load_trigger_config();
     }
@@ -13215,7 +14102,9 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                     progress = loc.y / lh;
                 }
                 
-                if (progress < 0.33) {
+                if (rc_cover_sheet_showing()) {
+                    g_pendingBottomBarSwipeUpTrigger = nil; // iOS keeps this swipe (see rc_cover_sheet_showing)
+                } else if (progress < 0.33) {
                     g_pendingBottomBarSwipeUpTrigger = @"trigger_bottom_swipe_up_left";
                 } else if (progress > 0.67) {
                     g_pendingBottomBarSwipeUpTrigger = @"trigger_bottom_swipe_up_right";
@@ -13584,42 +14473,22 @@ static void register_edge_gestures() {
     }
 }
 
-// Unregister gesture recognizers
-static void unregister_edge_gestures() {
-    if (leftEdgeRecognizer) {
-        if (leftEdgeRecognizer.view) {
-            [leftEdgeRecognizer.view removeGestureRecognizer:leftEdgeRecognizer];
-        }
-        leftEdgeRecognizer = nil;
-        SRLog(@"Unregistered LEFT edge gesture recognizer");
-    }
-    
-    if (rightEdgeRecognizer) {
-        if (rightEdgeRecognizer.view) {
-            [rightEdgeRecognizer.view removeGestureRecognizer:rightEdgeRecognizer];
-        }
-        rightEdgeRecognizer = nil;
-        SRLog(@"Unregistered RIGHT edge gesture recognizer");
-    }
-}
-
-// Update gesture registration based on config
+// Turn the edge recognizers on or off to match the config. They're registered with
+// SpringBoard's system gesture manager the first time they're needed and only turned off
+// after that: removing them from their view and registering new ones left edge swipes dead
+// once the edge triggers had been turned off and on again, until a respring.
 static void update_edge_gestures() {
     @try {
-        BOOL shouldRegister = should_register_edge_gestures();
-        BOOL currentlyRegistered = (leftEdgeRecognizer != nil || rightEdgeRecognizer != nil);
-        
-        if (shouldRegister && !currentlyRegistered) {
+        BOOL wanted = should_register_edge_gestures();
+        if (wanted && !leftEdgeRecognizer && !rightEdgeRecognizer) {
             SRLog(@"Edge gestures enabled - registering...");
             register_edge_gestures();
-        } else if (!shouldRegister && currentlyRegistered) {
-            SRLog(@"Edge gestures disabled - unregistering...");
-            unregister_edge_gestures();
-        } else if (shouldRegister && currentlyRegistered) {
-            // SRLog(@"Edge gestures already registered and should be");
-        } else {
-            // SRLog(@"Edge gestures not needed and not registered");
         }
+        if (leftEdgeRecognizer.enabled != wanted || rightEdgeRecognizer.enabled != wanted) {
+            SRLog(@"Edge gestures %@", wanted ? @"on" : @"off");
+        }
+        leftEdgeRecognizer.enabled = wanted;
+        rightEdgeRecognizer.enabled = wanted;
     } @catch (NSException *e) {
         SRLogMin(@"ERROR in update_edge_gestures: %@", e);
     }

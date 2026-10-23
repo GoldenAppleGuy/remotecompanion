@@ -14,6 +14,7 @@ TODO.md
 *.log
 Shortcuts.sqlite*
 .git-backup-*/
+pr_helper.py
 deploy_log.txt
 deploy_output.log
 
