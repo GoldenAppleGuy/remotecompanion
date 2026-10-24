@@ -3,6 +3,7 @@
 #import "RCUITweaker.h"
 #import "RCIntegrationsViewController.h"
 #import "RCBannersViewController.h"
+#import "RCTestKitViewController.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 @interface RCSettingsViewController () <UIDocumentPickerDelegate>
@@ -21,6 +22,7 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
     RCSettingsSectionTiming,
     RCSettingsSectionIntegrations,
     RCSettingsSectionBackup,
+    RCSettingsSectionDiagnostics,
 };
 
 @implementation RCSettingsViewController
@@ -183,7 +185,7 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 4;
+    return 5;
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
@@ -191,6 +193,7 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
     if (section == RCSettingsSectionGeneral) title = @"General";
     else if (section == RCSettingsSectionTiming) title = @"Button Timing";
     else if (section == RCSettingsSectionIntegrations) title = @"Integrations";
+    else if (section == RCSettingsSectionDiagnostics) title = @"Diagnostics";
     else title = @"Backup";
     
     UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 40)];
@@ -215,6 +218,8 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
         return @"Configure connections to external services and automations.";
     } else if (section == RCSettingsSectionBackup) {
         return @"Export your configuration to share or backup. Import to restore.";
+    } else if (section == RCSettingsSectionDiagnostics) {
+        return @"Tests RemoteCompanion on this device and shares the results.";
     }
     return nil;
 }
@@ -223,6 +228,7 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
     if (section == RCSettingsSectionGeneral) return 7; // Master + NFC + NFC screen off + WebUI + wrapping + Banners + Logging
     if (section == RCSettingsSectionTiming) return (NSInteger)[self timingRows].count;
     if (section == RCSettingsSectionIntegrations) return 1; // Integrations Submenu Row
+    if (section == RCSettingsSectionDiagnostics) return 1;  // Test Kit
     return 2; // Export, Import
 }
 
@@ -304,6 +310,11 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
         cell.imageView.image = puzzleImg;
         cell.imageView.tintColor = [UIColor systemIndigoColor];
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    } else if (indexPath.section == RCSettingsSectionDiagnostics) {
+        cell.textLabel.text = @"Test Kit";
+        cell.imageView.image = [UIImage systemImageNamed:@"checklist"] ?: [UIImage systemImageNamed:@"list.bullet.rectangle"]; // checklist: iOS 15+
+        cell.imageView.tintColor = [UIColor systemTealColor];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     } else {
         if (indexPath.row == 0) {
             cell.textLabel.text = @"Export Configuration";
@@ -339,6 +350,8 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
     } else if (indexPath.section == RCSettingsSectionIntegrations) {
         RCIntegrationsViewController *integrationsVC = [[RCIntegrationsViewController alloc] init];
         [self.navigationController pushViewController:integrationsVC animated:YES];
+    } else if (indexPath.section == RCSettingsSectionDiagnostics) {
+        [self.navigationController pushViewController:[[RCTestKitViewController alloc] init] animated:YES];
     } else if (indexPath.section == RCSettingsSectionBackup) {
         if (indexPath.row == 0) {
             [self exportConfig];
