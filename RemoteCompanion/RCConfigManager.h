@@ -92,6 +92,10 @@
 + (BOOL)hasHomeButton;
 + (BOOL)usesHapticsMenu;
 + (NSString *)vibrationNameForSilentMode:(BOOL)silent;
+// A "shortcut:" action: its shortcut name, whether it runs silently (-i) and its text input (-p);
+// and an action from those (input nil for none)
++ (NSString *)shortcutNameForAction:(NSString *)action silent:(BOOL *)silent input:(NSString **)input;
++ (NSString *)shortcutActionWithName:(NSString *)name silent:(BOOL)silent input:(NSString *)input;
 // Focus modes (the Set Focus action, the Focus condition) came with iOS 15
 + (BOOL)supportsFocus;
 - (BOOL)isActionDisabled:(id)actionItem;

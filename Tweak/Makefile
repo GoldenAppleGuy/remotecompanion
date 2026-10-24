@@ -31,7 +31,7 @@ RemoteCommand_FRAMEWORKS = UIKit CoreNFC IOKit QuartzCore CoreLocation
 RemoteCommand_PRIVATE_FRAMEWORKS = AppSupport MediaRemote MobileCoreServices FrontBoardServices BackBoardServices MediaPlayer DoNotDisturb BiometricKit AccessibilityUtilities
 RemoteCommand_LDFLAGS += -F/opt/theos/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks
 
-# Loaded into siriactionsd, where SpringCuts runs shortcuts (see RCShortcutsHelper.m)
+# Loaded into siriactionsd, where it runs shortcuts (see RCShortcutsHelper.m)
 RCShortcutsHelper_FILES = RCShortcutsHelper.m
 RCShortcutsHelper_CFLAGS = -fno-objc-arc
 

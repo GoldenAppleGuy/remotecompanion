@@ -2656,6 +2656,40 @@ const CMD_NAMES = {
   'trigger_bottom_swipe_up_right':'Bottom Swipe Up (Right)',
 };
 
+
+// A "shortcut:" action: the name (quoted when it needs to be), then -i (run silently, without the
+// Shortcuts progress on screen), then -p and text input. The same format the tweak reads.
+function parseShortcutAction(cmd) {
+  let args = cmd.replace(/^shortcut:/i, '').trim();
+  if (args.startsWith('-r ')) args = args.slice(3).trim();
+  let name = args, rest = '';
+  if (args.startsWith('"')) {
+    const end = args.indexOf('"', 1);
+    if (end > 0) { name = args.slice(1, end); rest = args.slice(end + 1).trim(); }
+  } else {
+    const p = args.indexOf(' -p ');
+    if (p >= 0) { name = args.slice(0, p); rest = args.slice(p + 1); }
+    if (name.endsWith(' -i')) { name = name.slice(0, -3); rest = ('-i ' + rest).trim(); }
+    name = name.trim();
+  }
+  const silent = rest === '-i' || rest.startsWith('-i ');
+  if (silent) rest = rest.slice(2).trim();
+  let input = null;
+  if (rest.startsWith('-p ')) {
+    input = rest.slice(3).trim();
+    if (input.length >= 2 && input.startsWith('"') && input.endsWith('"')) input = input.slice(1, -1);
+  }
+  return { name, silent, input };
+}
+
+function buildShortcutAction(name, silent, input) {
+  const quote = name.startsWith('"') || name.startsWith('-r ') || name.endsWith(' -i') || name.includes(' -p ');
+  let action = quote ? `shortcut:"${name}"` : `shortcut:${name}`;
+  if (silent) action += ' -i';
+  if (input) action += ` -p ${input}`;
+  return action;
+}
+
 function nameForCmd(cmd) {
   if (!cmd) return 'Unknown';
   if (typeof cmd === 'object') {
@@ -2715,7 +2749,10 @@ function nameForCmd(cmd) {
   if (lowCmd.startsWith('set-vol '))      return `Set Volume ${cmd.slice(8)}%`;
   if (lowCmd.startsWith('ringer volume ')) return `Set Ringer Volume ${cmd.slice(14)}%`;
   if (lowCmd.startsWith('brightness '))   return `Set Brightness ${cmd.slice(11)}%`;
-  if (lowCmd.startsWith('shortcut:'))     return `Shortcut: ${cmd.slice(9)}`;
+  if (lowCmd.startsWith('shortcut:')) {
+    const sc = parseShortcutAction(cmd);
+    return `Shortcut: ${sc.name}${sc.silent ? ' (Silent)' : ''}`;
+  }
   if (lowCmd.startsWith('uiopen ')) {
     const bundleId = cmd.slice(7).trim().toLowerCase();
     const app = cachedApps.find(a => (a.bundleId || '').toLowerCase() === bundleId);
@@ -4608,9 +4645,10 @@ function editAction(idx) {
     } else if (low.startsWith('exec ') || low.startsWith('root ')) {
       promptTerminalModal(act, idx);
     } else if (low.startsWith('shortcut:')) {
-      showDialog('Edit Shortcut', 'Name:', act.slice(9), 'Save', val => {
+      const sc = parseShortcutAction(act);
+      showDialog('Edit Shortcut', 'Name:', sc.name, 'Save', val => {
         if (!val) return;
-        actions[idx] = `shortcut:${val}`;
+        actions[idx] = buildShortcutAction(val, sc.silent, sc.input); // keeps -i and -p
         saveConfig(); renderActionList();
       });
     } else if (low.startsWith('uiopen ')) {

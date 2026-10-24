@@ -2155,6 +2155,47 @@ static void save_trigger_config() {
 #define kSimulateNotificationPrefix "com.pizzaman.rc.simulate."
 
 // Forward declaration
+// A shortcut action's arguments (after "shortcut:"): the name, quoted when it needs to be, then
+// -i to run it silently (no Shortcuts progress on screen, as SpringCuts' -i) and -p and the input
+// (the rest). Returns the name.
+static NSString *rc_parse_shortcut_args(NSString *args, NSString **input, BOOL *silent) {
+    NSCharacterSet *spaces = [NSCharacterSet whitespaceCharacterSet];
+    args = [args stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([args hasPrefix:@"-r "]) args = [[args substringFromIndex:3] stringByTrimmingCharactersInSet:spaces]; // springcuts' "run"
+    NSString *name = args, *rest = @"";
+    if ([args hasPrefix:@"\""]) {
+        NSRange endQuote = args.length > 1 ? [args rangeOfString:@"\"" options:0 range:NSMakeRange(1, args.length - 1)] : NSMakeRange(NSNotFound, 0);
+        if (endQuote.location != NSNotFound) {
+            name = [args substringWithRange:NSMakeRange(1, endQuote.location - 1)];
+            rest = [[args substringFromIndex:endQuote.location + 1] stringByTrimmingCharactersInSet:spaces];
+        }
+    } else {
+        NSRange p = [args rangeOfString:@" -p "];
+        if (p.location != NSNotFound) {
+            name = [args substringToIndex:p.location];
+            rest = [args substringFromIndex:p.location + 1];
+        }
+        if ([name hasSuffix:@" -i"]) {
+            name = [name substringToIndex:name.length - 3];
+            rest = [@"-i " stringByAppendingString:rest];
+        }
+        name = [name stringByTrimmingCharactersInSet:spaces];
+    }
+    BOOL isSilent = NO;
+    if ([rest isEqualToString:@"-i"] || [rest hasPrefix:@"-i "]) {
+        isSilent = YES;
+        rest = [[rest substringFromIndex:2] stringByTrimmingCharactersInSet:spaces];
+    }
+    NSString *text = nil;
+    if ([rest hasPrefix:@"-p "]) {
+        text = [[rest substringFromIndex:3] stringByTrimmingCharactersInSet:spaces];
+        if ([text hasPrefix:@"\""] && [text hasSuffix:@"\""] && text.length >= 2) text = [text substringWithRange:NSMakeRange(1, text.length - 2)];
+    }
+    if (input) *input = text;
+    if (silent) *silent = isSilent;
+    return name;
+}
+
 static NSString *handle_command(NSString *cmd);
 static void RC_PressPowerAfterRelease(void);
 
@@ -2781,7 +2822,7 @@ static void rc_maybe_show_action_banner(NSString *action) {
     NSString *original = [action stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if ([cmd hasPrefix:@"uiopen "]) subtitle = rc_banner_app_name([original substringFromIndex:7]);
     else if ([cmd hasPrefix:@"kill "]) subtitle = rc_banner_app_name([original substringFromIndex:5]);
-    else if ([cmd hasPrefix:@"shortcut:"]) subtitle = [[original substringFromIndex:9] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    else if ([cmd hasPrefix:@"shortcut:"]) subtitle = rc_parse_shortcut_args([original substringFromIndex:9], NULL, NULL);
     else if ([cmd hasPrefix:@"set-vol "] || [cmd hasPrefix:@"ringer volume "] || [cmd hasPrefix:@"brightness "]) {
         // All take 0-100
         float level = [[cmd substringFromIndex:[cmd rangeOfString:@" " options:NSBackwardsSearch].location + 1] floatValue];
@@ -6881,7 +6922,103 @@ static void rc_ensure_shortcuts_runner(void) {
     }
 }
 
-static void rc_execute_shortcut(NSString *shortcutName, NSString *inputArg) {
+// Running a shortcut through RCShortcutsHelper in siriactionsd (see RCShortcutsHelper.m): it
+// answers each request once it has started the shortcut, or found none by that name, and again
+// when the shortcut ends. Replies arrive on the main thread.
+static NSMutableDictionary<NSString *, NSMutableDictionary *> *g_shortcutRequests; // id -> name, semaphore, state
+
+static void rc_observe_shortcut_replies(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        g_shortcutRequests = [NSMutableDictionary dictionary];
+        // Delivered through the run loop of the thread that registers
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            NSNotificationCenter *center = [objc_getClass("NSDistributedNotificationCenter") defaultCenter];
+            [center addObserverForName:kRCShortcutsRunReply object:nil queue:nil usingBlock:^(NSNotification *note) {
+                NSDictionary *info = note.userInfo;
+                NSString *requestID = info[@"id"], *state = info[@"state"], *error = info[@"error"];
+                if (![requestID isKindOfClass:[NSString class]] || ![state isKindOfClass:[NSString class]]) return;
+                NSMutableDictionary *request;
+                @synchronized (g_shortcutRequests) { request = g_shortcutRequests[requestID]; }
+                if (!request) return; // another RemoteCompanion's, or answered after the wait
+                NSString *name = request[@"name"];
+                if ([state isEqualToString:@"list"]) {
+                    // A list request: nothing to log
+                } else if ([state isEqualToString:@"started"]) SRLog(@"[Shortcut] '%@' started", name);
+                else if ([state isEqualToString:@"finished"]) SRLog(@"[Shortcut] '%@' finished", name);
+                else if ([state isEqualToString:@"missing"]) SRLogMin(@"[Shortcut] No shortcut named '%@'", name);
+                else if ([state isEqualToString:@"unsupported"]) SRLog(@"[Shortcut] The helper can't run '%@' on this iOS version (%@)", name, error ?: @"");
+                else SRLogMin(@"[Shortcut] '%@' %@%@%@", name, state, error ? @": " : @"", error ?: @"");
+                if (!request[@"reply"]) {
+                    request[@"reply"] = info;
+                    dispatch_semaphore_signal(request[@"semaphore"]);
+                }
+                if (![state isEqualToString:@"started"]) {
+                    @synchronized (g_shortcutRequests) { [g_shortcutRequests removeObjectForKey:requestID]; }
+                }
+            }];
+        });
+    });
+}
+
+// Sends a request to the helper and returns its first answer, or nil if none came within 2 s.
+// Not on the main thread.
+static NSDictionary *rc_ask_shortcuts_helper(NSDictionary *info, NSString *name) {
+    id center = [objc_getClass("NSDistributedNotificationCenter") defaultCenter];
+    if (!center) return nil;
+    rc_observe_shortcut_replies();
+    rc_ensure_shortcuts_runner();
+
+    NSString *requestID = [NSUUID UUID].UUIDString;
+    dispatch_semaphore_t answered = dispatch_semaphore_create(0);
+    NSMutableDictionary *request = [@{ @"name": name, @"semaphore": answered } mutableCopy];
+    @synchronized (g_shortcutRequests) { g_shortcutRequests[requestID] = request; }
+
+    NSMutableDictionary *message = [info mutableCopy];
+    message[@"id"] = requestID;
+    ((void (*)(id, SEL, id, id, id, BOOL))objc_msgSend)(center, @selector(postNotificationName:object:userInfo:deliverImmediately:),
+        kRCShortcutsRunRequest, nil, message, YES);
+
+    if (dispatch_semaphore_wait(answered, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC))) == 0) return request[@"reply"];
+    @synchronized (g_shortcutRequests) { [g_shortcutRequests removeObjectForKey:requestID]; }
+    return nil;
+}
+
+// YES once the helper has taken the shortcut (started it, or found none by that name); NO when it
+// didn't answer or can't run it on this iOS version, so it can be run another way. Not on the main thread.
+static BOOL rc_run_shortcut_with_helper(NSString *name, NSString *input, BOOL silent) {
+    NSMutableDictionary *info = [@{ @"name": name } mutableCopy];
+    if (input.length) info[@"input"] = input;
+    if (silent) info[@"silent"] = @YES;
+    NSDictionary *reply = rc_ask_shortcuts_helper(info, name);
+    if (!reply) SRLogMin(@"[Shortcut] The helper in siriactionsd didn't answer for '%@' - trying other ways", name);
+    return reply && ![reply[@"state"] isEqualToString:@"unsupported"];
+}
+
+// The shortcut names, one per line, or nil when the helper can't give them. Not on the main thread.
+static NSString *rc_list_shortcuts_with_helper(void) {
+    NSDictionary *reply = rc_ask_shortcuts_helper(@{ @"action": @"list" }, @"(list)");
+    NSArray *names = reply[@"names"];
+    if (![reply[@"state"] isEqualToString:@"list"] || ![names isKindOfClass:[NSArray class]]) return nil;
+    return [names componentsJoinedByString:@"\n"];
+}
+
+// Whether this springcuts has -i (invisible runs): newer versions do, 1.2 (iOS 14) doesn't, and an
+// option it doesn't know stops it from running the shortcut
+static BOOL rc_springcuts_has_invisible(NSString *path) {
+    static NSString *checkedPath;
+    static BOOL has;
+    @synchronized ([NSFileManager class]) {
+        if (![checkedPath isEqualToString:path]) {
+            NSData *binary = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:NULL];
+            has = binary && [binary rangeOfData:[@"-i: when running a shortcut" dataUsingEncoding:NSUTF8StringEncoding] options:0 range:NSMakeRange(0, binary.length)].location != NSNotFound;
+            checkedPath = path;
+        }
+        return has;
+    }
+}
+
+static void rc_execute_shortcut(NSString *shortcutName, NSString *inputArg, BOOL silent) {
     if (!shortcutName || shortcutName.length == 0) return;
     
     NSString *cleanName = [shortcutName stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -6889,10 +7026,13 @@ static void rc_execute_shortcut(NSString *shortcutName, NSString *inputArg) {
         cleanName = [cleanName substringWithRange:NSMakeRange(1, cleanName.length - 2)];
     }
     
-    SRLog(@"[Shortcut] Attempting execution for: '%@'", cleanName);
+    SRLog(@"[Shortcut] Attempting execution for: '%@'%@", cleanName, silent ? @" (silently)" : @"");
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         @try {
+            // 0. RemoteCompanion's own runner in siriactionsd (no SpringCuts needed)
+            if (rc_run_shortcut_with_helper(cleanName, inputArg, silent)) return;
+
             // 1. Try Native VoiceShortcutClient / WorkflowKit execution (iOS 15 / 16 / 17)
             dlopen("/System/Library/PrivateFrameworks/VoiceShortcutClient.framework/VoiceShortcutClient", RTLD_NOW);
             dlopen("/System/Library/PrivateFrameworks/WorkflowKit.framework/WorkflowKit", RTLD_NOW);
@@ -6983,6 +7123,7 @@ static void rc_execute_shortcut(NSString *shortcutName, NSString *inputArg) {
                     [args addObject:@"-p"];
                     [args addObject:inputArg];
                 }
+                if (silent && rc_springcuts_has_invisible(springcutsPath)) [args addObject:@"-i"];
                 
                 char **argv = (char **)malloc((args.count + 1) * sizeof(char *));
                 for (NSUInteger i = 0; i < args.count; i++) {
@@ -7867,6 +8008,11 @@ static NSString *handle_command(NSString *cmd) {
         
         send_notification(title, body, urgent);
         return @"OK\n";
+    } else if ([cleanCmd isEqualToString:@"shortcuts list"]) {
+        // The app's shortcut picker; an empty answer makes it try SpringCuts. Not answered on the
+        // main thread, where the helper's replies arrive.
+        NSString *names = [NSThread isMainThread] ? nil : rc_list_shortcuts_with_helper();
+        return names ? [names stringByAppendingString:@"\n"] : @""; // "\n" alone: there are none
     } else if ([cleanCmd hasPrefix:@"shortcut:"] || [cleanCmd hasPrefix:@"shortcut "] || [cleanCmd hasPrefix:@"springcut "] || [cleanCmd hasPrefix:@"shortcut-direct "] || [cleanCmd hasPrefix:@"sd "]) {
         NSString *argsString = nil;
         if ([cleanCmd hasPrefix:@"shortcut:"]) {
@@ -7881,34 +8027,11 @@ static NSString *handle_command(NSString *cmd) {
             argsString = [[cleanCmd substringFromIndex:3] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         }
         
-        NSString *shortcutName = argsString;
         NSString *inputParam = nil;
+        BOOL silent = NO;
+        NSString *shortcutName = rc_parse_shortcut_args(argsString, &inputParam, &silent);
         
-        // Parse name and optional -p parameter
-        if ([argsString hasPrefix:@"\""]) {
-            NSRange endQuote = [argsString rangeOfString:@"\"" options:0 range:NSMakeRange(1, argsString.length - 1)];
-            if (endQuote.location != NSNotFound) {
-                shortcutName = [argsString substringWithRange:NSMakeRange(1, endQuote.location - 1)];
-                NSString *remaining = [[argsString substringFromIndex:endQuote.location + 1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-                if ([remaining hasPrefix:@"-p "]) {
-                    inputParam = [[remaining substringFromIndex:3] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-                    if ([inputParam hasPrefix:@"\""] && [inputParam hasSuffix:@"\""] && inputParam.length >= 2) {
-                        inputParam = [inputParam substringWithRange:NSMakeRange(1, inputParam.length - 2)];
-                    }
-                }
-            }
-        } else {
-            NSRange pRange = [argsString rangeOfString:@" -p "];
-            if (pRange.location != NSNotFound) {
-                shortcutName = [[argsString substringToIndex:pRange.location] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-                inputParam = [[argsString substringFromIndex:pRange.location + 4] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-                if ([inputParam hasPrefix:@"\""] && [inputParam hasSuffix:@"\""] && inputParam.length >= 2) {
-                    inputParam = [inputParam substringWithRange:NSMakeRange(1, inputParam.length - 2)];
-                }
-            }
-        }
-        
-        rc_execute_shortcut(shortcutName, inputParam);
+        rc_execute_shortcut(shortcutName, inputParam, silent);
         return [NSString stringWithFormat:@"Triggered shortcut: %@\n", shortcutName];
     } else if ([cleanCmd hasPrefix:@"anc "] || [cleanCmd isEqualToString:@"anc"]) {
         // ANC control - triggers Sonitus hooks
