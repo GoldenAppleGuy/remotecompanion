@@ -122,6 +122,7 @@ static void rc_parse_km_cmd(NSString *cmd, NSString **outMacro, NSString **outPa
 @interface RCActionsViewController () <UITableViewDragDelegate, UITableViewDropDelegate>
 @property (nonatomic, strong) NSString *triggerKey;
 @property (nonatomic, strong) NSMutableArray *actions;
+@property (nonatomic, strong) UIBarButtonItem *moreButton;
 @end
 
 @implementation RCActionsViewController
@@ -158,6 +159,9 @@ static id g_actionClipboard = nil;
             baseText = @"Flashlight ";
             paramText = [NSString stringWithFormat:@"%@%%", val];
         }
+    } else if ([lower hasPrefix:@"stop trigger "]) {
+        baseText = @"Stop: ";
+        paramText = [[RCConfigManager sharedManager] displayNameForTrigger:[cmd substringFromIndex:13]];
     } else if ([lower hasPrefix:@"delay "]) {
         baseText = @"Wait ";
         paramText = [NSString stringWithFormat:@"%@s", [cmd substringFromIndex:6]];
@@ -256,6 +260,69 @@ static id g_actionClipboard = nil;
     return [[RCConfigManager sharedManager] iconForCommand:cmd];
 }
 
+// What happens when the trigger fires again while its actions are still running (in a wait):
+// "parallel" runs them again alongside, "restart" stops the run that's going and starts over,
+// "single" ignores the new firing
+- (NSString *)runMode {
+    NSString *mode = [[RCConfigManager sharedManager] triggerDataForKey:_triggerKey][@"mode"];
+    return [mode isKindOfClass:[NSString class]] ? mode : @"parallel";
+}
+
+- (void)setRunMode:(NSString *)mode {
+    RCConfigManager *config = [RCConfigManager sharedManager];
+    NSMutableDictionary *data = [[config triggerDataForKey:_triggerKey] mutableCopy] ?: [NSMutableDictionary dictionary];
+    if ([mode isEqualToString:@"parallel"]) [data removeObjectForKey:@"mode"]; else data[@"mode"] = mode;
+    [config updateTrigger:_triggerKey withData:data];
+    self.moreButton.menu = [self moreMenu];
+    [self.tableView reloadData];
+}
+
+- (UIMenu *)moreMenu {
+    __weak typeof(self) weakSelf = self;
+    NSMutableArray *modes = [NSMutableArray array];
+    NSString *current = [self runMode];
+    NSArray *choices = @[@[@"parallel", @"Run Alongside", @"square.stack"], @[@"restart", @"Restart", @"arrow.counterclockwise"], @[@"single", @"Ignore", @"nosign"]];
+    for (NSArray *choice in choices) {
+        UIAction *action = [UIAction actionWithTitle:choice[1] image:[UIImage systemImageNamed:choice[2]] identifier:nil handler:^(__kindof UIAction *a) {
+            [weakSelf setRunMode:choice[0]];
+        }];
+        action.state = [current isEqualToString:choice[0]] ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [modes addObject:action];
+    }
+    UIMenu *whenFired = [UIMenu menuWithTitle:@"When Triggered Again" image:[UIImage systemImageNamed:@"repeat"] identifier:nil options:0 children:modes];
+
+    NSMutableArray *menuActions = [NSMutableArray arrayWithObject:whenFired];
+    [menuActions addObject:[UIAction actionWithTitle:@"Import Actions" image:[UIImage systemImageNamed:@"square.and.arrow.down"] identifier:nil handler:^(__kindof UIAction *a) {
+        [weakSelf importActions];
+    }]];
+    [menuActions addObject:[UIAction actionWithTitle:@"Export Actions" image:[UIImage systemImageNamed:@"square.and.arrow.up"] identifier:nil handler:^(__kindof UIAction *a) {
+        [weakSelf exportActions];
+    }]];
+    UIAction *clearAction = [UIAction actionWithTitle:@"Clear All Actions" image:[UIImage systemImageNamed:@"trash"] identifier:nil handler:^(__kindof UIAction *a) {
+        [weakSelf clearAllActions];
+    }];
+    clearAction.attributes = UIMenuElementAttributesDestructive;
+    [menuActions addObject:clearAction];
+    return [UIMenu menuWithTitle:@"" children:menuActions];
+}
+
+// Picks a trigger for a "stop trigger" action; done gets its key
+- (void)pickTriggerToStop:(void (^)(NSString *key))done {
+    RCConfigManager *config = [RCConfigManager sharedManager];
+    NSMutableArray *keys = [NSMutableArray array];
+    for (NSString *key in [config allConfiguredTriggerKeys]) if (![key isEqualToString:_triggerKey]) [keys addObject:key];
+    [keys sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        return [[config displayNameForTrigger:a] localizedCaseInsensitiveCompare:[config displayNameForTrigger:b]];
+    }];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Stop Trigger" message:@"Stops that trigger's actions while they're still running, such as during a delay." preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSString *key in keys) {
+        [sheet addAction:[UIAlertAction actionWithTitle:[config displayNameForTrigger:key] style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) { done(key); }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.lastObject;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
 - (instancetype)initWithTriggerKey:(NSString *)triggerKey {
     self = [super initWithStyle:UITableViewStyleInsetGrouped];
     if (self) {
@@ -279,32 +346,9 @@ static id g_actionClipboard = nil;
         target:self 
         action:@selector(addAction)];
     
-    // More options menu (Import, Export)
-    NSMutableArray *menuActions = [NSMutableArray array];
-    __weak typeof(self) weakSelf = self;
-    [menuActions addObject:[UIAction actionWithTitle:@"Import Actions" 
-                                               image:[UIImage systemImageNamed:@"square.and.arrow.down"] 
-                                          identifier:nil 
-                                             handler:^(__kindof UIAction * _Nonnull action) {
-        [weakSelf importActions];
-    }]];
-    [menuActions addObject:[UIAction actionWithTitle:@"Export Actions" 
-                                               image:[UIImage systemImageNamed:@"square.and.arrow.up"] 
-                                          identifier:nil 
-                                             handler:^(__kindof UIAction * _Nonnull action) {
-        [weakSelf exportActions];
-    }]];
-    UIAction *clearAction = [UIAction actionWithTitle:@"Clear All Actions" 
-                                                image:[UIImage systemImageNamed:@"trash"] 
-                                           identifier:nil 
-                                              handler:^(__kindof UIAction * _Nonnull action) {
-        [weakSelf clearAllActions];
-    }];
-    clearAction.attributes = UIMenuElementAttributesDestructive;
-    [menuActions addObject:clearAction];
-    
-    UIMenu *shareMenu = [UIMenu menuWithTitle:@"" children:menuActions];
-    UIBarButtonItem *moreButton = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"] menu:shareMenu];
+    // More options menu (when fired again, Import, Export, Clear)
+    UIBarButtonItem *moreButton = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"] menu:[self moreMenu]];
+    self.moreButton = moreButton;
     
     NSMutableArray *rightItems = [NSMutableArray arrayWithArray:@[moreButton, plusButton]];
     
@@ -755,6 +799,14 @@ static id g_actionClipboard = nil;
                 [self presentViewController:alert animated:YES completion:nil];
             });
 
+        } else if ([action isEqualToString:@"__STOP_TRIGGER__"]) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [self pickTriggerToStop:^(NSString *key) {
+                    [self.actions addObject:[@"stop trigger " stringByAppendingString:key]];
+                    [self saveActions];
+                    [self.tableView reloadData];
+                }];
+            });
         } else if ([action isEqualToString:@"__DELAY__"]) {
             // Show alert for delay
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Add Delay" 
@@ -2084,6 +2136,12 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:inputVC];
         [self presentViewController:nav animated:YES completion:nil];
 
+    } else if ([currentAction hasPrefix:@"stop trigger "]) {
+        [self pickTriggerToStop:^(NSString *key) {
+            self.actions[indexPath.row] = [@"stop trigger " stringByAppendingString:key];
+            [self saveActions];
+            [self.tableView reloadData];
+        }];
     } else if ([currentAction hasPrefix:@"delay "]) {
         // Edit Delay
         NSString *currentDelay = [currentAction substringFromIndex:6];
@@ -2480,11 +2538,54 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     return _actions.count;
 }
 
+// A banner above the sequence when the trigger restarts or ignores a new trigger while running,
+// so it's seen however long the sequence is
+- (NSString *)runModeBannerText {
+    NSString *mode = [self runMode];
+    if ([mode isEqualToString:@"restart"]) return @"If triggered again while running, this sequence will start over.";
+    if ([mode isEqualToString:@"single"]) return @"If triggered again while running, the new trigger will be ignored.";
+    return nil;
+}
+
+- (CGFloat)runModeBannerHeightForWidth:(CGFloat)width {
+    NSString *text = [self runModeBannerText];
+    if (!text) return 0;
+    CGFloat textWidth = width - self.tableView.layoutMargins.left - self.tableView.layoutMargins.right - 56; // margins, icon, padding
+    CGRect bounds = [text boundingRectWithSize:CGSizeMake(textWidth, CGFLOAT_MAX) options:NSStringDrawingUsesLineFragmentOrigin
+                                    attributes:@{ NSFontAttributeName: [UIFont systemFontOfSize:13] } context:nil];
+    return MAX(40, ceil(bounds.size.height) + 20);
+}
+
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
     if (_actions.count == 0) return nil;
     
-    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 40)];
-    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, 15, tableView.bounds.size.width - 40, 20)];
+    CGFloat width = tableView.bounds.size.width;
+    CGFloat bannerHeight = [self runModeBannerHeightForWidth:width];
+    CGFloat top = bannerHeight > 0 ? bannerHeight + 12 : 0;
+    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 40 + top)];
+    if (bannerHeight > 0) {
+        // Lined up with the action cards (the table's margins), and kept so as the header is resized
+        CGFloat left = tableView.layoutMargins.left, right = tableView.layoutMargins.right;
+        UIView *banner = [[UIView alloc] initWithFrame:CGRectMake(left, 10, width - left - right, bannerHeight)];
+        banner.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        banner.backgroundColor = [UIColor tertiarySystemFillColor];
+        banner.layer.cornerRadius = 10;
+        BOOL restart = [[self runMode] isEqualToString:@"restart"];
+        UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:restart ? @"arrow.counterclockwise" : @"nosign"]];
+        icon.tintColor = [UIColor secondaryLabelColor];
+        icon.contentMode = UIViewContentModeCenter;
+        icon.frame = CGRectMake(12, 0, 22, bannerHeight);
+        [banner addSubview:icon];
+        UILabel *text = [[UILabel alloc] initWithFrame:CGRectMake(44, 0, banner.bounds.size.width - 56, bannerHeight)];
+        text.text = [self runModeBannerText];
+        text.font = [UIFont systemFontOfSize:13];
+        text.textColor = [UIColor secondaryLabelColor];
+        text.numberOfLines = 0;
+        text.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        [banner addSubview:text];
+        [headerView addSubview:banner];
+    }
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, 15 + top, width - 40, 20)];
     label.text = @"ACTION SEQUENCE";
     label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
     label.textColor = [UIColor secondaryLabelColor];
@@ -2493,7 +2594,9 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    return _actions.count > 0 ? 40.0f : 0;
+    if (_actions.count == 0) return 0;
+    CGFloat bannerHeight = [self runModeBannerHeightForWidth:tableView.bounds.size.width];
+    return 40.0f + (bannerHeight > 0 ? bannerHeight + 12 : 0);
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {

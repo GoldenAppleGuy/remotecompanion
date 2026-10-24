@@ -1160,6 +1160,8 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
             result = [cmd substringFromIndex:5];
         } else if ([cmd hasPrefix:@"delay "]) {
             result = [NSString stringWithFormat:@"Delay %@s", [cmd substringFromIndex:6]];
+        } else if ([cmd hasPrefix:@"stop trigger "]) {
+            result = [NSString stringWithFormat:@"Stop %@", [self displayNameForTrigger:[cmd substringFromIndex:13]]];
         } else if ([cmd hasPrefix:@"bt connect "] || [cmd hasPrefix:@"bluetooth connect "]) {
             NSString *val = [cmd hasPrefix:@"bluetooth connect "] ? [cmd substringFromIndex:18] : [cmd substringFromIndex:11];
             result = [NSString stringWithFormat:@"Connect %@", val];
@@ -1424,6 +1426,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     if ([cmd hasPrefix:@"root "] || [cmd hasPrefix:@"exec-root "]) return @"terminal.fill";
     if ([cmd hasPrefix:@"exec "]) return @"terminal.fill";
     if ([cmd hasPrefix:@"delay "]) return @"hourglass";
+    if ([cmd hasPrefix:@"stop trigger "]) return @"stop.circle";
     if ([cmd hasPrefix:@"bt connect "] || [cmd hasPrefix:@"bluetooth connect "]) return @"link";
     if ([cmd hasPrefix:@"bt disconnect "] || [cmd hasPrefix:@"bluetooth disconnect "]) return @"xmark.circle";
     if ([cmd hasPrefix:@"airplay connect "]) return @"airplayaudio";
@@ -1578,6 +1581,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     if (!result) {
         if ([cmd hasPrefix:@"root "]) return @"command.square";
         if ([cmd hasPrefix:@"delay "]) return @"hourglass";
+        if ([cmd hasPrefix:@"stop trigger "]) return @"stop.circle";
         if ([cmd hasPrefix:@"exec "]) return @"chevron.right.square";
         if ([cmd hasPrefix:@"flashlight "] || [cmd hasPrefix:@"flash "]) return @"flashlight.on.fill";
         if ([cmd hasPrefix:@"low power "]) return @"battery.100.bolt";

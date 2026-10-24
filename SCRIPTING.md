@@ -128,6 +128,11 @@ A sequence is a **JSON array** of actions. Each action is either:
 | Command | What it does |
 |---|---|
 | `delay 1.5` | Wait 1.5 seconds before next action |
+| `stop trigger power_long_press` | Stop that trigger's sequence while it's still running (in a delay) |
+
+A trigger fired again while its sequence is still running runs it again alongside, unless the
+trigger's **When Triggered Again** setting (the ⋯ menu on its screen) is **Restart** (the running
+sequence stops and starts over) or **Ignore** (the new trigger is skipped).
 
 ### Terminal / Shell
 | Command | What it does |
