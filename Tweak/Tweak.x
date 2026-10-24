@@ -2848,11 +2848,69 @@ static void rc_maybe_show_action_banner(NSString *action) {
     rc_show_hud_toast(title, subtitle, icon);
 }
 
+// A trigger's runs. Each firing runs the actions on a thread of its own; a run carries its
+// trigger's generation and stops (before its next step, or out of a wait) once that changes - when
+// the trigger is fired again in Restart mode, or stopped by a "stop trigger" action.
+static NSMutableDictionary<NSString *, NSNumber *> *g_runGeneration;
+static NSMutableDictionary<NSString *, NSNumber *> *g_runCount;
+static NSMutableDictionary<NSString *, NSHashTable *> *g_runWaits; // dispatch semaphores of the runs' waits
+
+static NSObject *rc_run_lock(void) {
+    static NSObject *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        lock = [NSObject new];
+        g_runGeneration = [NSMutableDictionary dictionary];
+        g_runCount = [NSMutableDictionary dictionary];
+        g_runWaits = [NSMutableDictionary dictionary];
+    });
+    return lock;
+}
+
+// Whether the run on this thread has been stopped
+static BOOL rc_run_stopped(void) {
+    NSMutableDictionary *thread = [NSThread currentThread].threadDictionary;
+    NSString *key = thread[@"rcRunKey"];
+    if (!key) return NO;
+    @synchronized (rc_run_lock()) {
+        return ![g_runGeneration[key] isEqual:thread[@"rcRunGeneration"]];
+    }
+}
+
+// Stops every run of the trigger that's going; returns how many there were
+static NSUInteger rc_stop_trigger_runs(NSString *key) {
+    @synchronized (rc_run_lock()) {
+        NSUInteger running = g_runCount[key].unsignedIntegerValue;
+        g_runGeneration[key] = @(g_runGeneration[key].unsignedLongLongValue + 1);
+        for (dispatch_semaphore_t wait in g_runWaits[key].allObjects) dispatch_semaphore_signal(wait);
+        return running;
+    }
+}
+
+// Waits on the wall clock (on time even if the phone sleeps), cut short when the run is stopped.
+// Returns NO when it was.
+static BOOL rc_run_wait(double seconds) {
+    NSMutableDictionary *thread = [NSThread currentThread].threadDictionary;
+    dispatch_semaphore_t wait = thread[@"rcRunWait"];
+    if (!wait) {
+        usleep((useconds_t)(seconds * 1000000));
+        return YES;
+    }
+    if (rc_run_stopped()) return NO;
+    dispatch_semaphore_wait(wait, dispatch_walltime(NULL, (int64_t)(seconds * NSEC_PER_SEC)));
+    return !rc_run_stopped();
+}
+
 static void rc_execute_action_sequence(NSArray *actions, NSString *triggerKey, BOOL simulationMode) {
     if (![actions isKindOfClass:[NSArray class]] || actions.count == 0) return;
     
     for (NSInteger idx = 0; idx < (NSInteger)actions.count; idx++) {
         id actionItem = actions[idx];
+
+        if (rc_run_stopped()) {
+            SRLogMin(@"[%@] Stopped - the rest of its actions were skipped", triggerKey);
+            break;
+        }
 
         if (rc_is_action_item_disabled(actionItem)) {
             SRLog(@"[%@] Skipping disabled action: %@", triggerKey, actionItem);
@@ -3114,8 +3172,41 @@ void RCExecuteTrigger(NSString *triggerKey) {
     RCTKEvent(@"trigger.fired", @{ @"key": triggerKey, @"actions": @(actions.count) });
     
     // Execute on background queue to allow for delays and blocking operations
+    // Fired again while a run is going: "parallel" (the default) runs alongside, "restart" stops the
+    // run that's going and starts over, "single" skips this firing
+    NSString *mode = [trigger[@"mode"] isKindOfClass:[NSString class]] ? trigger[@"mode"] : @"parallel";
+    NSNumber *generation;
+    @synchronized (rc_run_lock()) {
+        NSUInteger running = g_runCount[triggerKey].unsignedIntegerValue;
+        if (running && [mode isEqualToString:@"single"]) {
+            SRLogMin(@"[%@] Still running - this firing is skipped", triggerKey);
+            return;
+        }
+        if (running && [mode isEqualToString:@"restart"]) {
+            rc_stop_trigger_runs(triggerKey);
+            SRLogMin(@"[%@] Restarting: the run that was going stops", triggerKey);
+        }
+        generation = g_runGeneration[triggerKey] ?: @0;
+        g_runGeneration[triggerKey] = generation;
+        g_runCount[triggerKey] = @(running + 1);
+    }
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSMutableDictionary *thread = [NSThread currentThread].threadDictionary;
+        dispatch_semaphore_t wait = dispatch_semaphore_create(0);
+        @synchronized (rc_run_lock()) {
+            if (!g_runWaits[triggerKey]) g_runWaits[triggerKey] = [NSHashTable weakObjectsHashTable];
+            [g_runWaits[triggerKey] addObject:wait];
+        }
+        thread[@"rcRunKey"] = triggerKey;
+        thread[@"rcRunGeneration"] = generation;
+        thread[@"rcRunWait"] = wait;
         rc_execute_action_sequence(actions, triggerKey, NO);
+        [thread removeObjectsForKeys:@[@"rcRunKey", @"rcRunGeneration", @"rcRunWait"]];
+        @synchronized (rc_run_lock()) {
+            [g_runWaits[triggerKey] removeObject:wait];
+            NSUInteger left = g_runCount[triggerKey].unsignedIntegerValue;
+            g_runCount[triggerKey] = @(left ? left - 1 : 0);
+        }
     });
 }
 
@@ -9754,12 +9845,17 @@ static NSString *handle_command(NSString *cmd) {
             arg = [[cleanCmd substringFromIndex:8] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         }
         return rc_handle_snapper(arg);
+    } else if ([cleanCmd hasPrefix:@"stop trigger "]) {
+        NSString *key = [[cleanCmd substringFromIndex:13] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        NSUInteger running = rc_stop_trigger_runs(key);
+        SRLogMin(@"[Stop] '%@': %lu run(s) stopped", key, (unsigned long)running);
+        return [NSString stringWithFormat:@"Stopped %lu run(s) of %@\n", (unsigned long)running, key];
     } else if ([cleanCmd hasPrefix:@"delay "]) {
         NSString *delayStr = [cleanCmd substringFromIndex:6];
         float seconds = [delayStr floatValue];
         if (seconds > 0) {
             SRLog(@"Delaying for %.2f seconds...", seconds);
-            usleep((useconds_t)(seconds * 1000000));
+            if (!rc_run_wait(seconds)) return @"Delay cut short: the run was stopped\n";
         }
         return [NSString stringWithFormat:@"Delayed for %.2f seconds\n", seconds];
     } else if ([cleanCmd hasPrefix:@"root "] || [cleanCmd hasPrefix:@"sudo "]) {
@@ -11177,6 +11273,7 @@ static void start_web_server() {
                                     @{@"command": @"unlock <passcode>", @"desc": @"Security: Unlock device screen (INSECURE: Passcode sent in plain text!)"},
                                     @{@"command": @"home", @"desc": @"System: Simulate a Home Button press"},
                                     @{@"command": @"screenshot", @"desc": @"System: Take a screenshot"},
+                                    @{@"command": @"stop trigger <key>", @"desc": @"Automation: Stop a trigger's actions that are still running (in a wait)"},
                                     @{@"command": @"screenrecord [toggle|start|stop]", @"desc": @"System: Control system screen recording"},
                                     @{@"command": @"snapper [open|freeze|instant|close]", @"desc": @"Integrations: Control Snapper 2 / Snapper 3"},
                                     @{@"command": @"camera video [zoom] [flash]", @"desc": @"Camera: Open Camera in Video mode (e.g. 2x, 2x flash)"},
