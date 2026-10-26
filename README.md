@@ -104,6 +104,7 @@ Access the desktop-class automation hub at `http://[DEVICE_IP]:8080` from any co
 ### Apps, URLs & Shortcuts
 - `rc open <alias|bundleID>` (e.g., `youtube`, `spotify`, `settings`, `messages`, `home`, `photos`, `camera`, `clock`, `maps`, `calendar`, `weather`, `notes`, `reminders`, `appstore`, `mail`, `music`, `phone`, `stocks`, `calculator`, `tv`, `wallet`, `facetime`, `files`).
 - `rc kill <alias|bundleID>` - Force close an app.
+- `rc kill current` - Force close the currently focused app.
 - `rc shortcut -r "Name" [-i] [-p "Input"]` - Run any Shortcut (`-i`: silently, without the Shortcuts progress on screen).
 - `rc url "https://google.com"` - Open any link (with smart unlock).
 - `rc spotify <playlist|album|artist> <id>` - Play specific Spotify content.

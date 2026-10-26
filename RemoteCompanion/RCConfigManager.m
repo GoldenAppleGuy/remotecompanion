@@ -1062,6 +1062,11 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"switcher": @"App Switcher",
         @"previous app": @"Previous App",
         @"last app": @"Previous App",
+        @"kill current": @"Kill Current App",
+        @"kill front": @"Kill Current App",
+        @"kill foreground": @"Kill Current App",
+        @"kill current app": @"Kill Current App",
+        @"kill front app": @"Kill Current App",
         // Touch gestures
         @"swipeU": @"Swipe Up",
         @"swipeUp": @"Swipe Up",
@@ -1346,6 +1351,10 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
             } else {
                 result = [NSString stringWithFormat:@"Open %@", bundleId];
             }
+        } else if ([cmd isEqualToString:@"kill current"] || [cmd isEqualToString:@"kill front"] ||
+                   [cmd isEqualToString:@"kill foreground"] || [cmd isEqualToString:@"kill current app"] ||
+                   [cmd isEqualToString:@"kill front app"]) {
+            result = @"Kill Current App";
         } else if ([cmd hasPrefix:@"kill "]) {
             NSString *bundleId = [cmd substringFromIndex:5];
             Class LSProxy = NSClassFromString(@"LSApplicationProxy");
@@ -1448,6 +1457,9 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
     if ([cmd hasPrefix:@"spotify "]) return @"music.note";
     if ([cmd isEqualToString:@"home"]) return @"house.fill";
     if ([cmd hasPrefix:@"uiopen "]) return [NSString stringWithFormat:@"USER_APP:%@", [cmd substringFromIndex:7]];
+    if ([cmd isEqualToString:@"kill current"] || [cmd isEqualToString:@"kill front"] ||
+        [cmd isEqualToString:@"kill foreground"] || [cmd isEqualToString:@"kill current app"] ||
+        [cmd isEqualToString:@"kill front app"]) return @"xmark.square.fill";
     if ([cmd hasPrefix:@"kill "]) return [NSString stringWithFormat:@"USER_APP:%@", [cmd substringFromIndex:5]];
     // Touch gesture prefix icons
     if ([cmd hasPrefix:@"tap "]) return @"hand.tap.fill";
@@ -1562,6 +1574,11 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"switcher": @"square.stack.3d.up.fill",
         @"previous app": @"arrow.uturn.backward",
         @"last app": @"arrow.uturn.backward",
+        @"kill current": @"xmark.square.fill",
+        @"kill front": @"xmark.square.fill",
+        @"kill foreground": @"xmark.square.fill",
+        @"kill current app": @"xmark.square.fill",
+        @"kill front app": @"xmark.square.fill",
         @"queuealbum": @"music.note.list",
         @"queue album": @"music.note.list",
         @"queueartist": @"music.mic",

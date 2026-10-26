@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Kill Current App action**: new `kill current` command (aliases `kill front`, `kill foreground`, `kill current app`, `kill front app`) force-closes the currently focused app, available in the iOS action picker, Web UI, and `rc` shell commands (#93).
+
 ### Fixed
 - **Settings footer**: RemoteCompanion version label now scrolls with Settings content (table footer) instead of floating over it.
 - **Settings Web UI URL**: Open Web UI row now shows the device IP address instead of localhost.

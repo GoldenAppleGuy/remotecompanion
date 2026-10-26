@@ -2640,6 +2640,8 @@ const CMD_NAMES = {
   'audiohandoff enabled on':'AudioHandoff: Automatic Switching','audiohandoff enabled off':'AudioHandoff: Automatic Switching','audiohandoff enabled toggle':'AudioHandoff: Automatic Switching','audiohandoff auto on':'AudioHandoff: Automatic Switching','audiohandoff auto off':'AudioHandoff: Automatic Switching','audiohandoff auto toggle':'AudioHandoff: Automatic Switching',
   'respring':'Respring','safemode':'Safe Mode','safe-mode':'Safe Mode','siri':'Activate Siri','accessibility shortcut':'Accessibility Shortcut','home':'Home Button','switcher':'App Switcher',
   'previous app':'Previous App',
+  'kill current':'Kill Current App', 'kill front':'Kill Current App', 'kill foreground':'Kill Current App',
+  'kill current app':'Kill Current App', 'kill front app':'Kill Current App',
   'open control center':'Control Center',
   'ldrestart':'Soft Reboot','userspace-reboot':'Userspace Reboot','uicache':'Refresh Icon Cache',
   'low power on':'Low Power On','low power off':'Low Power Off','low power toggle':'Low Power Toggle',
@@ -2758,6 +2760,10 @@ function nameForCmd(cmd) {
     const bundleId = cmd.slice(7).trim().toLowerCase();
     const app = cachedApps.find(a => (a.bundleId || '').toLowerCase() === bundleId);
     return `Open ${app ? app.name : cmd.slice(7).trim()}`;
+  }
+  if (lowCmd === 'kill current' || lowCmd === 'kill front' || lowCmd === 'kill foreground' ||
+      lowCmd === 'kill current app' || lowCmd === 'kill front app') {
+    return 'Kill Current App';
   }
   if (lowCmd.startsWith('kill ')) {
     const bundleId = cmd.slice(5).trim().toLowerCase();
@@ -2982,6 +2988,7 @@ const ACTION_SECTIONS = [
   { title:'Apps & Navigation', actions:[
     { name:'Open App…',         cmd:'__OPEN_APP__',  icon:'square_grid_2x2_fill', needs_input:true },
     { name:'Kill App…',         cmd:'__KILL_APP__',  icon:'xmark_circle_fill', needs_input:true },
+    { name:'Kill Current App',  cmd:'kill current',  icon:'xmark_circle_fill' },
     { name:'Home Button',       cmd:'home',          icon:'house_fill' },
     { name:'App Switcher',      cmd:'switcher',      icon:'square_stack_3d_up_fill' },
     { name:'Previous App',      cmd:'previous app',  icon:'arrow_uturn_backward' },
@@ -4659,6 +4666,9 @@ function editAction(idx) {
         actions[idx] = `uiopen ${val}`;
         saveConfig(); renderActionList();
       });
+    } else if (low === 'kill current' || low === 'kill front' || low === 'kill foreground' ||
+               low === 'kill current app' || low === 'kill front app') {
+      return; // Kill Current App targets the focused app at run time: nothing to edit
     } else if (low.startsWith('kill ')) {
       showDialog('Edit Kill App', 'Bundle ID:', act.slice(5), 'Save', val => {
         if (!val) return;

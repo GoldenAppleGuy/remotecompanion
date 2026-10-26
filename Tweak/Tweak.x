@@ -2821,6 +2821,17 @@ static void rc_maybe_show_action_banner(NSString *action) {
     NSString *subtitle = nil;
     NSString *original = [action stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if ([cmd hasPrefix:@"uiopen "]) subtitle = rc_banner_app_name([original substringFromIndex:7]);
+    else if ([cmd isEqualToString:@"kill current"] || [cmd isEqualToString:@"kill front"] ||
+             [cmd isEqualToString:@"kill foreground"] || [cmd isEqualToString:@"kill current app"] ||
+             [cmd isEqualToString:@"kill front app"]) {
+        __block NSString *frontBid = nil;
+        void (^frontBlk)(void) = ^{
+            frontBid = [[(SpringBoard *)[UIApplication sharedApplication] _accessibilityFrontMostApplication] bundleIdentifier];
+        };
+        if ([NSThread isMainThread]) frontBlk();
+        else dispatch_sync(dispatch_get_main_queue(), frontBlk);
+        if (frontBid.length) subtitle = rc_banner_app_name(frontBid);
+    }
     else if ([cmd hasPrefix:@"kill "]) subtitle = rc_banner_app_name([original substringFromIndex:5]);
     else if ([cmd hasPrefix:@"shortcut:"]) subtitle = rc_parse_shortcut_args([original substringFromIndex:9], NULL, NULL);
     else if ([cmd hasPrefix:@"set-vol "] || [cmd hasPrefix:@"ringer volume "] || [cmd hasPrefix:@"brightness "]) {
@@ -9743,6 +9754,23 @@ static NSString *handle_command(NSString *cmd) {
             return [NSString stringWithFormat:@"Flashlight %@\n", [device torchMode] == AVCaptureTorchModeOn ? @"ON" : @"OFF"];
         }
         return @"Error: Flashlight not found\n";
+    } else if ([cleanCmd isEqualToString:@"kill current"] || [cleanCmd isEqualToString:@"kill front"] ||
+               [cleanCmd isEqualToString:@"kill foreground"] || [cleanCmd isEqualToString:@"kill current app"] ||
+               [cleanCmd isEqualToString:@"kill front app"]) {
+        __block NSString *frontBundleID = nil;
+        void (^frontBlock)(void) = ^{
+            SBApplication *frontApp = [(SpringBoard *)[UIApplication sharedApplication] _accessibilityFrontMostApplication];
+            frontBundleID = [frontApp bundleIdentifier];
+        };
+        if ([NSThread isMainThread]) frontBlock();
+        else dispatch_sync(dispatch_get_main_queue(), frontBlock);
+        if (!frontBundleID.length || [frontBundleID isEqualToString:@"com.apple.springboard"]) {
+            return @"No app to kill (Home Screen)\n";
+        }
+        SRLog(@"Killing front app: %@", frontBundleID);
+        // Reason 5 = Quit via App Switcher (clean kill)
+        BKSTerminateApplicationForReasonAndReportWithDescription(frontBundleID, 5, false, nil);
+        return [NSString stringWithFormat:@"Killed %@\n", frontBundleID];
     } else if ([cleanCmd hasPrefix:@"kill "]) {
         NSString *arg = [[cleanCmd substringFromIndex:5] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         NSString *bundleID = resolve_bundle_id(arg);
@@ -11294,6 +11322,7 @@ static void start_web_server() {
                                     @{@"command": @"accessibility shortcut", @"desc": @"System: Run the Accessibility Shortcut"},
                                     @{@"command": @"open <bundleId>", @"desc": @"System: Launch an application by bundle identifier"},
                                     @{@"command": @"kill <bundleId>", @"desc": @"System: Force-close an application"},
+                                    @{@"command": @"kill current", @"desc": @"System: Force-close the currently focused app"},
                                     @{@"command": @"respring", @"desc": @"System: Restart SpringBoard"},
                                     @{@"command": @"safemode", @"desc": @"System: Enter Safe Mode (restart SpringBoard with tweaks disabled)"},
                                     @{@"command": @"ldrestart", @"desc": @"System: Soft-reboot the device"},

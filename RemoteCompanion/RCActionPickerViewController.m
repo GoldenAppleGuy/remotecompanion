@@ -159,6 +159,7 @@
         @[
             @{ @"name": @"Open App...", @"command": @"__OPEN_APP__", @"icon": @"square.grid.2x2.fill" },
             @{ @"name": @"Kill App...", @"command": @"__KILL_APP__", @"icon": @"xmark.square.fill" },
+            @{ @"name": @"Kill Current App", @"command": @"kill current", @"icon": @"xmark.square.fill" },
             @{ @"name": @"Home Button", @"command": @"home", @"icon": @"house.fill" },
             @{ @"name": @"App Switcher", @"command": @"switcher", @"icon": @"square.stack.3d.up.fill" },
             @{ @"name": @"Previous App", @"command": @"previous app", @"icon": @"arrow.uturn.backward" },

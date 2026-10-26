@@ -188,6 +188,11 @@ static id g_actionClipboard = nil;
 #pragma clang diagnostic pop
         }
         paramText = appName;
+    } else if ([lower isEqualToString:@"kill current"] || [lower isEqualToString:@"kill front"] ||
+               [lower isEqualToString:@"kill foreground"] || [lower isEqualToString:@"kill current app"] ||
+               [lower isEqualToString:@"kill front app"]) {
+        baseText = @"Kill ";
+        paramText = @"Current App";
     } else if ([lower hasPrefix:@"kill "]) {
         baseText = @"Kill ";
         NSString *bundleId = [cmd substringFromIndex:5];
@@ -2257,6 +2262,13 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         
         UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:appPicker];
         [self presentViewController:nav animated:YES completion:nil];
+    } else if ([[currentAction lowercaseString] isEqualToString:@"kill current"] ||
+               [[currentAction lowercaseString] isEqualToString:@"kill front"] ||
+               [[currentAction lowercaseString] isEqualToString:@"kill foreground"] ||
+               [[currentAction lowercaseString] isEqualToString:@"kill current app"] ||
+               [[currentAction lowercaseString] isEqualToString:@"kill front app"]) {
+        // Kill Current App targets the focused app at run time: nothing to edit
+        return;
     } else if ([currentAction hasPrefix:@"kill "]) {
         // Edit Kill App
         RCAppPickerViewController *appPicker = [[RCAppPickerViewController alloc] init];
@@ -2845,6 +2857,11 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
             } else if ([action hasPrefix:@"uiopen "]) {
                 cell.textLabel.text = cleanName;
                 subtitle = @"Application";
+            } else if ([[action lowercaseString] isEqualToString:@"kill current"] || [[action lowercaseString] isEqualToString:@"kill front"] ||
+                       [[action lowercaseString] isEqualToString:@"kill foreground"] || [[action lowercaseString] isEqualToString:@"kill current app"] ||
+                       [[action lowercaseString] isEqualToString:@"kill front app"]) {
+                cell.textLabel.text = cleanName;
+                subtitle = @"Kill Current App";
             } else if ([action hasPrefix:@"kill "]) {
                 cell.textLabel.text = cleanName;
                 subtitle = @"Kill Application";
