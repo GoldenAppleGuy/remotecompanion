@@ -7719,7 +7719,11 @@ static NSString *handle_command(NSString *cmd) {
         SRLog(@"Received command: testkit passcode/set (redacted)");
         return RCTKHandleCommand([cleanCmd substringFromIndex:7]);
     }
-    SRLog(@"Received command: %@", cleanCmd);
+    if ([cleanCmd hasPrefix:@"unlock "]) {
+        SRLog(@"Received command: unlock ****");
+    } else {
+        SRLog(@"Received command: %@", cleanCmd);
+    }
     
     if ([cleanCmd isEqualToString:@"ha"] || [cleanCmd hasPrefix:@"ha "]) {
         NSString *subArgs = [cleanCmd isEqualToString:@"ha"] ? @"" : [cleanCmd substringFromIndex:3];
@@ -7737,12 +7741,16 @@ static NSString *handle_command(NSString *cmd) {
     }
     
     // Debug hex dump of command
-    NSMutableString *hex = [NSMutableString string];
-    const char *utf = [cleanCmd UTF8String];
-    for (size_t i = 0; i < strlen(utf); i++) {
-        [hex appendFormat:@"%02X ", (unsigned char)utf[i]];
+    if ([cleanCmd hasPrefix:@"unlock "]) {
+        SRLog(@"Command HEX: (redacted)");
+    } else {
+        NSMutableString *hex = [NSMutableString string];
+        const char *utf = [cleanCmd UTF8String];
+        for (size_t i = 0; i < strlen(utf); i++) {
+            [hex appendFormat:@"%02X ", (unsigned char)utf[i]];
+        }
+        SRLog(@"Command HEX: %@", hex);
     }
-    SRLog(@"Command HEX: %@", hex);
     
     // Log file retrieval command
     if ([cleanCmd isEqualToString:@"log"]) {
@@ -8345,18 +8353,6 @@ static NSString *handle_command(NSString *cmd) {
         }
         SRLog(@"App Switcher toggle final success: %d", success);
         return success ? @"Switcher toggled\n" : @"Failed to toggle switcher\n";
-    } else if ([cleanCmd hasPrefix:@"unlock "]) {
-        NSString *passcode = [[cleanCmd substringFromIndex:7] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            SBLockScreenManager *manager = [objc_getClass("SBLockScreenManager") sharedInstance];
-            if (manager && [manager isUILocked]) {
-                simulate_home_press(); // Wake device
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    [manager attemptUnlockWithPasscode:passcode];
-                });
-            }
-        });
-        return [NSString stringWithFormat:@"Attempting unlock with passcode: %@\n", passcode];
     } else if ([cleanCmd hasPrefix:@"debug-class "]) {
         NSString *className = [[cleanCmd substringFromIndex:12] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         SRLog(@"Debugging class: %@", className);
@@ -8473,12 +8469,17 @@ static NSString *handle_command(NSString *cmd) {
     } else if ([cleanCmd isEqualToString:@"unlock"] || [cleanCmd hasPrefix:@"unlock "]) {
         // Unlock phone: Only if currently locked!
         
-        NSString *pin = @"2569";
+        NSString *pin = nil;
         if ([cleanCmd hasPrefix:@"unlock "]) {
             pin = [[cleanCmd substringFromIndex:7] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if (pin.length == 0) pin = nil;
         }
         
-        SRLog(@"[SmartUnlock] Unlock command received for PIN: %@", pin);
+        if (pin) {
+            SRLog(@"[SmartUnlock] Unlock command received (with passcode)");
+        } else {
+            SRLog(@"[SmartUnlock] Unlock command received (wake / UI unlock)");
+        }
         
         dispatch_async(dispatch_get_main_queue(), ^{
             Class SBLockScreenManagerClass = objc_getClass("SBLockScreenManager");
@@ -8527,17 +8528,28 @@ static NSString *handle_command(NSString *cmd) {
                     return;
                 }
                 
-                // Try the direct unlock method
-                if ([manager respondsToSelector:@selector(attemptUnlockWithPasscode:)]) {
-                    SRLog(@"[SmartUnlock] Calling attemptUnlockWithPasscode...");
-                    BOOL success = [manager attemptUnlockWithPasscode:pin];
-                    SRLog(@"[SmartUnlock] attemptUnlockWithPasscode returned: %d", success);
-                } else if ([manager respondsToSelector:@selector(unlockUIFromSource:withOptions:)]) {
-                    SRLog(@"[SmartUnlock] Falling back to unlockUIFromSource...");
-                    [manager unlockUIFromSource:0 withOptions:nil];
-                    SRLog(@"[SmartUnlock] unlockUIFromSource called");
+                if (pin.length > 0) {
+                    BOOL success = NO;
+                    SEL selFinishUI = NSSelectorFromString(@"_attemptUnlockWithPasscode:finishUIUnlock:");
+                    if ([manager respondsToSelector:selFinishUI]) {
+                        SRLog(@"[SmartUnlock] Calling _attemptUnlockWithPasscode:finishUIUnlock:...");
+                        success = ((BOOL (*)(id, SEL, id, BOOL))objc_msgSend)(manager, selFinishUI, pin, YES);
+                    } else if ([manager respondsToSelector:@selector(attemptUnlockWithPasscode:)]) {
+                        SRLog(@"[SmartUnlock] Calling attemptUnlockWithPasscode...");
+                        success = [manager attemptUnlockWithPasscode:pin];
+                    }
+                    SRLog(@"[SmartUnlock] Passcode unlock attempt returned: %d", success);
+                    if (!success && [manager respondsToSelector:@selector(unlockUIFromSource:withOptions:)]) {
+                        [manager unlockUIFromSource:0 withOptions:nil];
+                    }
                 } else {
-                    SRLogMin(@"[SmartUnlock] ERROR: No supported unlock method found on manager!");
+                    if ([manager respondsToSelector:@selector(unlockUIFromSource:withOptions:)]) {
+                        SRLog(@"[SmartUnlock] Calling unlockUIFromSource...");
+                        [manager unlockUIFromSource:0 withOptions:nil];
+                        SRLog(@"[SmartUnlock] unlockUIFromSource called");
+                    } else {
+                        SRLog(@"[SmartUnlock] Screen awakened, waiting for user passcode entry");
+                    }
                 }
             });
         });
@@ -8628,9 +8640,9 @@ static NSString *handle_command(NSString *cmd) {
                  
                  // 2. Wait 0.5s then Unlock AND Open URL
                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                     if (manager && [manager respondsToSelector:@selector(attemptUnlockWithPasscode:)]) {
-                          SRLog(@"[SmartURL] Attempting unlock with default PIN...");
-                          [manager attemptUnlockWithPasscode:@"2569"];
+                     if (manager && [manager respondsToSelector:@selector(unlockUIFromSource:withOptions:)]) {
+                          SRLog(@"[SmartURL] Attempting UI unlock...");
+                          [manager unlockUIFromSource:0 withOptions:nil];
                      }
                      
                      // 3. Wait another short moment for unlock animation/transition to finish
@@ -8737,8 +8749,8 @@ static NSString *handle_command(NSString *cmd) {
                 inject_hid_event(kHIDPage_Consumer, kHIDUsage_Csmr_Power, 0, 0);
                 
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    if ([manager respondsToSelector:@selector(attemptUnlockWithPasscode:)]) {
-                        [manager attemptUnlockWithPasscode:@"2569"];
+                    if (manager && [manager respondsToSelector:@selector(unlockUIFromSource:withOptions:)]) {
+                        [manager unlockUIFromSource:0 withOptions:nil];
                     }
                     
                     launchSpotify();
@@ -11270,7 +11282,7 @@ static void start_web_server() {
                                 NSArray *commandList = @[
                                     // System Controls
                                     @{@"command": @"lock", @"desc": @"System: Lock the device screen"},
-                                    @{@"command": @"unlock <passcode>", @"desc": @"Security: Unlock device screen (INSECURE: Passcode sent in plain text!)"},
+                                    @{@"command": @"unlock [passcode]", @"desc": @"Security: Unlock device with optional passcode, or wake and show lockscreen"},
                                     @{@"command": @"home", @"desc": @"System: Simulate a Home Button press"},
                                     @{@"command": @"screenshot", @"desc": @"System: Take a screenshot"},
                                     @{@"command": @"stop trigger <key>", @"desc": @"Automation: Stop a trigger's actions that are still running (in a wait)"},
@@ -11396,7 +11408,13 @@ static void start_web_server() {
                                         dispatch_async(dispatch_get_main_queue(), ^{
                                             handle_command(command);
                                         });
-                                        NSDictionary *resp = @{@"ok": @YES, @"command": command, @"status": @"Acknowledged"};
+                                        NSString *safeCommand = command;
+                                        if ([command hasPrefix:@"unlock "]) {
+                                            safeCommand = @"unlock ****";
+                                        } else if ([command hasPrefix:@"testkit passcode/set"]) {
+                                            safeCommand = @"testkit passcode/set (redacted)";
+                                        }
+                                        NSDictionary *resp = @{@"ok": @YES, @"command": safeCommand, @"status": @"Acknowledged"};
                                         NSData *respData = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
                                         NSString *jsonStr = [[NSString alloc] initWithData:respData encoding:NSUTF8StringEncoding];
                                         responseString = [NSString stringWithFormat:@"HTTP/1.1 200 OK\r\n%@Content-Type: application/json\r\nContent-Length: %lu\r\n\r\n%@", cors, (unsigned long)respData.length, jsonStr];

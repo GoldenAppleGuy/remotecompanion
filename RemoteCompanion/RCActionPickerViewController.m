@@ -173,7 +173,7 @@
             @{ @"name": @"Flashlight", @"command": @"flashlight toggle", @"icon": @"flashlight.on.fill" },
             @{ @"name": @"Rotation Lock", @"command": @"rotate toggle", @"icon": @"lock.rotation" },
             @{ @"name": @"Lock Device", @"command": @"lock", @"icon": @"lock.fill" },
-            @{ @"name": @"Unlock Device", @"command": @"unlock", @"icon": @"lock.open.fill" },
+            @{ @"name": @"Unlock Device...", @"command": @"__UNLOCK_DEVICE__", @"icon": @"lock.open.fill" },
             @{ @"name": @"Do Not Disturb", @"command": @"dnd toggle", @"icon": @"moon.circle.fill" },
             @{ @"name": @"Set Focus...", @"command": @"__FOCUS__", @"icon": @"moon.circle" },
             @{ @"name": @"Low Power Mode", @"command": @"low power toggle", @"icon": @"battery.25" },
@@ -505,7 +505,8 @@
         [cmd isEqualToString:@"__KM_TRIGGER__"] ||
         [cmd isEqualToString:@"__TAP__"] ||
         [cmd isEqualToString:@"__HOLD__"] ||
-        [cmd isEqualToString:@"__SWIPE__"]) {
+        [cmd isEqualToString:@"__SWIPE__"] ||
+        [cmd isEqualToString:@"__UNLOCK_DEVICE__"]) {
         
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     }
@@ -519,6 +520,11 @@
     NSDictionary *action = [self actionAtIndexPath:indexPath];
     NSString *command = action[@"command"];
     
+
+    if ([command isEqualToString:@"__UNLOCK_DEVICE__"]) {
+        [self handleUnlockDevice];
+        return;
+    }
 
     if ([command isEqualToString:@"__SET_VOLUME__"] || [command isEqualToString:@"__SET_RINGER_VOLUME__"] || [command isEqualToString:@"__SET_BRIGHTNESS__"] || [command isEqualToString:@"__SET_FLASHLIGHT__"]) {
         [self handleValueInputForCommand:command];
@@ -798,6 +804,59 @@
     
     [alert addAction:cancelAction];
     [alert addAction:okAction];
+    
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)handleUnlockDevice {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Unlock Device"
+                                                                   message:@"Enter a passcode to unlock automatically, or choose 'Wake Screen Only' to present the passcode screen.\n\nNote: Configured passcodes are stored in plain text in trigger settings (rc_triggers.plist)."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    
+    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.placeholder = @"Passcode (optional)";
+        textField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+        textField.secureTextEntry = YES;
+    }];
+    
+    __weak typeof(self) weakSelf = self;
+    
+    UIAlertAction *saveWithPasscode = [UIAlertAction actionWithTitle:@"Set Passcode" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        UITextField *tf = alert.textFields.firstObject;
+        NSString *pin = [tf.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        NSString *finalCmd = pin.length > 0 ? [NSString stringWithFormat:@"unlock %@", pin] : @"unlock";
+        if (strongSelf.onActionSelected) strongSelf.onActionSelected(finalCmd);
+        if (strongSelf.searchController.isActive) {
+            [strongSelf.searchController dismissViewControllerAnimated:NO completion:^{
+                [strongSelf dismissViewControllerAnimated:YES completion:nil];
+            }];
+        } else {
+            [strongSelf dismissViewControllerAnimated:YES completion:nil];
+        }
+    }];
+    
+    UIAlertAction *wakeOnly = [UIAlertAction actionWithTitle:@"Wake Screen Only" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (strongSelf.onActionSelected) strongSelf.onActionSelected(@"unlock");
+        if (strongSelf.searchController.isActive) {
+            [strongSelf.searchController dismissViewControllerAnimated:NO completion:^{
+                [strongSelf dismissViewControllerAnimated:YES completion:nil];
+            }];
+        } else {
+            [strongSelf dismissViewControllerAnimated:YES completion:nil];
+        }
+    }];
+    
+    UIAlertAction *cancel = [UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction * _Nonnull action) {
+        [self.tableView deselectRowAtIndexPath:[self.tableView indexPathForSelectedRow] animated:YES];
+    }];
+    
+    [alert addAction:wakeOnly];
+    [alert addAction:saveWithPasscode];
+    [alert addAction:cancel];
     
     [self presentViewController:alert animated:YES completion:nil];
 }

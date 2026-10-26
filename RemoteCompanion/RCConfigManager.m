@@ -1164,6 +1164,8 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
             result = [cmd substringFromIndex:5];
         } else if ([cmd hasPrefix:@"delay "]) {
             result = [NSString stringWithFormat:@"Delay %@s", [cmd substringFromIndex:6]];
+        } else if ([cmd hasPrefix:@"unlock "]) {
+            result = @"Unlock Device (Passcode)";
         } else if ([cmd hasPrefix:@"stop trigger "]) {
             result = [NSString stringWithFormat:@"Stop %@", [self displayNameForTrigger:[cmd substringFromIndex:13]]];
         } else if ([cmd hasPrefix:@"bt connect "] || [cmd hasPrefix:@"bluetooth connect "]) {
@@ -1590,6 +1592,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         if ([cmd hasPrefix:@"flashlight "] || [cmd hasPrefix:@"flash "]) return @"flashlight.on.fill";
         if ([cmd hasPrefix:@"low power "]) return @"battery.100.bolt";
         if ([cmd hasPrefix:@"autolock "] || [cmd hasPrefix:@"auto-lock "]) return @"timer";
+        if ([cmd hasPrefix:@"unlock "]) return @"lock.open.fill";
     }
     
     return result ?: @"circle.fill";

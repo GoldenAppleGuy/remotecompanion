@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - **Settings footer**: RemoteCompanion version label now scrolls with Settings content (table footer) instead of floating over it.
 - **Settings Web UI URL**: Open Web UI row now shows the device IP address instead of localhost.
+- **Unlock Device security**: Removed hardcoded fallback PIN, redacted passcodes from command logs, hex dumps, and HTTP API responses, added secure passcode configuration with wake fallback, and prevented lockout attempts when no passcode is configured (#41).
 
 ### Changed
 - **Settings reorganization**: slim root (General, Buttons, Integrations, Advanced Settings, Backup & Diagnostics) with button timing in Buttons, NFC/Banners/Wrap Long Names/Web UI/Logging in Advanced Settings, and Export/Import/Test Kit in Backup & Diagnostics.
