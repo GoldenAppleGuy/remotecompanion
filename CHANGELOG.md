@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Settings footer**: RemoteCompanion version label now scrolls with Settings content (table footer) instead of floating over it.
+
 ### Changed
 - **Settings reorganization**: slim root (General, Buttons, Integrations, Advanced Settings, Backup & Diagnostics) with button timing in Buttons, NFC/Banners/Wrap Long Names/Web UI/Logging in Advanced Settings, and Export/Import/Test Kit in Backup & Diagnostics.
 

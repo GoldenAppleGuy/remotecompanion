@@ -8,8 +8,6 @@
 
 @interface RCSettingsViewController ()
 @property (nonatomic, strong) UITableView *tableView;
-@property (nonatomic, strong) UILabel *versionLabel;
-@property (nonatomic, strong) UILabel *appTitleLabel;
 @property (nonatomic, strong) UISwitch *masterSwitch;
 @property (nonatomic, strong) UISwitch *webUISwitch;
 @end
@@ -53,54 +51,17 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
     }
     
     [self.view addSubview:self.tableView];
-    
-    // Setup App Title Label (Sticky Bottom)
-    UILabel *appTitleLabel = [[UILabel alloc] init];
-    appTitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    appTitleLabel.textAlignment = NSTextAlignmentCenter;
-    appTitleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
-    appTitleLabel.textColor = [UIColor secondaryLabelColor];
-    appTitleLabel.text = @"RemoteCompanion";
-    [self.view addSubview:appTitleLabel];
 
-    // Setup Version Label (Sticky Bottom)
-    UILabel *versionLabel = [[UILabel alloc] init];
-    versionLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    versionLabel.textAlignment = NSTextAlignmentCenter;
-    versionLabel.font = [UIFont systemFontOfSize:13];
-    versionLabel.textColor = [UIColor secondaryLabelColor];
-    
-    NSDictionary *infoDict = [[NSBundle mainBundle] infoDictionary];
-    NSString *version = [infoDict objectForKey:@"CFBundleShortVersionString"];
-    versionLabel.text = [NSString stringWithFormat:@"v%@", version];
-    [self.view addSubview:versionLabel];
-    
-    // Add Tap Gesture to Footer Labels
-    appTitleLabel.userInteractionEnabled = YES;
-    versionLabel.userInteractionEnabled = YES;
-    
-    UITapGestureRecognizer *titleTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(openGitHub)];
-    [appTitleLabel addGestureRecognizer:titleTap];
-    
-    UITapGestureRecognizer *versionTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(openGitHub)];
-    [versionLabel addGestureRecognizer:versionTap];
-    
-    // Constraints for Sticky Footer
-    [NSLayoutConstraint activateConstraints:@[
-        [versionLabel.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-        [versionLabel.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-10],
-        
-        [appTitleLabel.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-        [appTitleLabel.bottomAnchor constraintEqualToAnchor:versionLabel.topAnchor constant:-2]
-    ]];
-    
-    // Constraints
+    // Footer lives at the bottom of the table content (tableFooterView) so it
+    // only appears once you scroll to the bottom, instead of floating over content.
+    [self setupFooterView];
+
+    // Constraints - table fills the view, footer scrolls with content
     [NSLayoutConstraint activateConstraints:@[
         [self.tableView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
         [self.tableView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.tableView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        // The table view ends above the footer labels
-        [self.tableView.bottomAnchor constraintEqualToAnchor:appTitleLabel.topAnchor constant:-10]
+        [self.tableView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]
     ]];
     
     // Listen for color tweak changes
@@ -109,6 +70,52 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
                                                  name:@"RCConfigTweaksChangedNotification"
                                                object:nil];
     [self applyTweaks];
+}
+
+- (void)setupFooterView {
+    UIView *footerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 60)];
+    footerView.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+
+    UILabel *appTitleLabel = [[UILabel alloc] init];
+    appTitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    appTitleLabel.textAlignment = NSTextAlignmentCenter;
+    appTitleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+    appTitleLabel.textColor = [UIColor secondaryLabelColor];
+    appTitleLabel.text = @"RemoteCompanion";
+
+    UILabel *versionLabel = [[UILabel alloc] init];
+    versionLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    versionLabel.textAlignment = NSTextAlignmentCenter;
+    versionLabel.font = [UIFont systemFontOfSize:13];
+    versionLabel.textColor = [UIColor secondaryLabelColor];
+
+    NSDictionary *infoDict = [[NSBundle mainBundle] infoDictionary];
+    NSString *version = [infoDict objectForKey:@"CFBundleShortVersionString"];
+    versionLabel.text = [NSString stringWithFormat:@"v%@", version];
+
+    [footerView addSubview:appTitleLabel];
+    [footerView addSubview:versionLabel];
+
+    appTitleLabel.userInteractionEnabled = YES;
+    versionLabel.userInteractionEnabled = YES;
+
+    UITapGestureRecognizer *titleTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(openGitHub)];
+    [appTitleLabel addGestureRecognizer:titleTap];
+
+    UITapGestureRecognizer *versionTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(openGitHub)];
+    [versionLabel addGestureRecognizer:versionTap];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [appTitleLabel.centerXAnchor constraintEqualToAnchor:footerView.centerXAnchor],
+        [appTitleLabel.topAnchor constraintEqualToAnchor:footerView.topAnchor constant:10],
+        [appTitleLabel.heightAnchor constraintEqualToConstant:20],
+
+        [versionLabel.centerXAnchor constraintEqualToAnchor:footerView.centerXAnchor],
+        [versionLabel.topAnchor constraintEqualToAnchor:appTitleLabel.bottomAnchor constant:0],
+        [versionLabel.heightAnchor constraintEqualToConstant:16]
+    ]];
+
+    self.tableView.tableFooterView = footerView;
 }
 
 - (void)viewWillAppear:(BOOL)animated {
