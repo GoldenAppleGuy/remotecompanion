@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- **Settings reorganization**: slim root (General, Triggers & Buttons, Integrations, Advanced, Backup & Diagnostics) with NFC/timing moved to Triggers & Buttons, Web UI/Logging to Advanced, and Export/Import/Test Kit to Backup & Diagnostics.
+
 ## [4.0.0]
 
 ### Added
