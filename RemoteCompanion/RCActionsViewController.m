@@ -191,8 +191,11 @@ static id g_actionClipboard = nil;
     } else if ([lower isEqualToString:@"kill current"] || [lower isEqualToString:@"kill front"] ||
                [lower isEqualToString:@"kill foreground"] || [lower isEqualToString:@"kill current app"] ||
                [lower isEqualToString:@"kill front app"]) {
-        baseText = @"Kill ";
-        paramText = @"Current App";
+        // Runtime-resolved target, not a bundle ID: plain label, no accent
+        return [[NSAttributedString alloc] initWithString:@"Kill Current App" attributes:@{
+            NSFontAttributeName: [UIFont systemFontOfSize:17 weight:UIFontWeightMedium],
+            NSForegroundColorAttributeName: [UIColor labelColor]
+        }];
     } else if ([lower hasPrefix:@"kill "]) {
         baseText = @"Kill ";
         NSString *bundleId = [cmd substringFromIndex:5];
@@ -2857,11 +2860,6 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
             } else if ([action hasPrefix:@"uiopen "]) {
                 cell.textLabel.text = cleanName;
                 subtitle = @"Application";
-            } else if ([[action lowercaseString] isEqualToString:@"kill current"] || [[action lowercaseString] isEqualToString:@"kill front"] ||
-                       [[action lowercaseString] isEqualToString:@"kill foreground"] || [[action lowercaseString] isEqualToString:@"kill current app"] ||
-                       [[action lowercaseString] isEqualToString:@"kill front app"]) {
-                cell.textLabel.text = cleanName;
-                subtitle = @"Kill Current App";
             } else if ([action hasPrefix:@"kill "]) {
                 cell.textLabel.text = cleanName;
                 subtitle = @"Kill Application";
