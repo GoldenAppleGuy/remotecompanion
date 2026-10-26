@@ -4,21 +4,14 @@
 
 @interface RCTriggerSettingsViewController ()
 @property (nonatomic, strong) UITableView *tableView;
-@property (nonatomic, strong) UISwitch *nfcSwitch;
 @end
-
-// Sections of the Triggers & Buttons table, in order
-typedef NS_ENUM(NSInteger, RCTriggerSettingsSection) {
-    RCTriggerSettingsSectionNFC,
-    RCTriggerSettingsSectionTiming,
-};
 
 @implementation RCTriggerSettingsViewController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     
-    self.title = @"Triggers & Buttons";
+    self.title = @"Buttons";
     
     // Enable Large Titles
     self.navigationController.navigationBar.prefersLargeTitles = YES;
@@ -127,11 +120,11 @@ typedef NS_ENUM(NSInteger, RCTriggerSettingsSection) {
 #pragma mark - Table View Data Source
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 2;
+    return 1;
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
-    NSString *title = (section == RCTriggerSettingsSectionNFC) ? @"NFC" : @"Button Timing";
+    NSString *title = @"Button Timing";
     
     UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 40)];
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, 15, tableView.bounds.size.width - 40, 20)];
@@ -147,22 +140,17 @@ typedef NS_ENUM(NSInteger, RCTriggerSettingsSection) {
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == RCTriggerSettingsSectionTiming) {
-        return @"How long a press waits for the next one before it counts. A shorter time responds sooner and needs quicker presses.";
-    }
-    return nil;
+    return @"How long a press waits for the next one before it counts. A shorter time responds sooner and needs quicker presses.";
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == RCTriggerSettingsSectionNFC) return 2;
     return (NSInteger)[self timingRows].count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     RCConfigManager *cm = [RCConfigManager sharedManager];
     
-    BOOL isValueRow = (indexPath.section == RCTriggerSettingsSectionNFC && indexPath.row == 1) || indexPath.section == RCTriggerSettingsSectionTiming;
-    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:isValueRow ? UITableViewCellStyleValue1 : UITableViewCellStyleDefault reuseIdentifier:nil];
+    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
     cell.backgroundColor = [cm tweakColorForKey:@"blockBackground" defaultVal:0.12];
     
     UIView *selBg = [[UIView alloc] init];
@@ -178,26 +166,11 @@ typedef NS_ENUM(NSInteger, RCTriggerSettingsSection) {
         cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
     }
     
-    if (indexPath.section == RCTriggerSettingsSectionNFC) {
-        if (indexPath.row == 0) {
-            cell.textLabel.text = @"NFC Scanning";
-            _nfcSwitch = [[UISwitch alloc] init];
-            _nfcSwitch.on = cm.nfcEnabled;
-            [_nfcSwitch addTarget:self action:@selector(nfcToggleChanged:) forControlEvents:UIControlEventValueChanged];
-            cell.accessoryView = _nfcSwitch;
-            cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        } else if (indexPath.row == 1) {
-            cell.textLabel.text = @"NFC With Screen Off";
-            cell.detailTextLabel.text = [self nfcWindowTitleForSeconds:cm.nfcScreenOffSeconds];
-            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        }
-    } else if (indexPath.section == RCTriggerSettingsSectionTiming) {
-        NSDictionary *row = [self timingRows][indexPath.row];
-        double (^get)(void) = row[@"get"];
-        cell.textLabel.text = row[@"title"];
-        cell.detailTextLabel.text = [NSString stringWithFormat:@"%.2f s", get()];
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    }
+    NSDictionary *row = [self timingRows][indexPath.row];
+    double (^get)(void) = row[@"get"];
+    cell.textLabel.text = row[@"title"];
+    cell.detailTextLabel.text = [NSString stringWithFormat:@"%.2f s", get()];
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     
     return cell;
 }
@@ -205,22 +178,14 @@ typedef NS_ENUM(NSInteger, RCTriggerSettingsSection) {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
 
-    if (indexPath.section == RCTriggerSettingsSectionNFC && indexPath.row == 1) {
-        [self chooseNFCWindowFromView:[tableView cellForRowAtIndexPath:indexPath]];
-    } else if (indexPath.section == RCTriggerSettingsSectionTiming) {
-        NSDictionary *row = [self timingRows][indexPath.row];
-        double (^get)(void) = row[@"get"];
-        void (^set)(double) = row[@"set"];
-        [self chooseTimingNamed:row[@"title"] message:row[@"message"] values:row[@"values"] defaultValue:[row[@"default"] doubleValue]
-                        current:get() from:[tableView cellForRowAtIndexPath:indexPath] apply:set];
-    }
+    NSDictionary *row = [self timingRows][indexPath.row];
+    double (^get)(void) = row[@"get"];
+    void (^set)(double) = row[@"set"];
+    [self chooseTimingNamed:row[@"title"] message:row[@"message"] values:row[@"values"] defaultValue:[row[@"default"] doubleValue]
+                    current:get() from:[tableView cellForRowAtIndexPath:indexPath] apply:set];
 }
 
 #pragma mark - Actions
-
-- (void)nfcToggleChanged:(UISwitch *)sender {
-    [RCConfigManager sharedManager].nfcEnabled = sender.on;
-}
 
 // A list of times in seconds, the current one ticked, for one of the Button Timing rows
 - (void)chooseTimingNamed:(NSString *)name message:(NSString *)message values:(NSArray<NSNumber *> *)values defaultValue:(double)defaultValue
@@ -233,51 +198,6 @@ typedef NS_ENUM(NSInteger, RCTriggerSettingsSection) {
         [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
             apply(value.doubleValue);
             [self.tableView reloadData];
-        }]];
-    }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = sourceView;
-    sheet.popoverPresentationController.sourceRect = sourceView.bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
-}
-
-// How long the NFC scan keeps going after the screen turns off. A window longer than the default
-// asks first: it costs battery and keeps the reader in use.
-static const double kRCNFCDefaultWindow = 120.0;
-
-- (NSString *)nfcWindowTitleForSeconds:(double)seconds {
-    if (seconds <= 0) return @"Off";
-    if (seconds < 60) return [NSString stringWithFormat:@"%.0f s", seconds];
-    NSInteger minutes = (NSInteger)lround(seconds / 60.0);
-    return minutes == 1 ? @"1 min" : [NSString stringWithFormat:@"%ld min", (long)minutes];
-}
-
-- (void)chooseNFCWindowFromView:(UIView *)sourceView {
-    RCConfigManager *cm = [RCConfigManager sharedManager];
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"NFC With Screen Off"
-        message:@"How long a tag can still be tapped after the screen turns off. Off reads tags only while the screen is on."
-        preferredStyle:UIAlertControllerStyleActionSheet];
-    NSArray<NSNumber *> *choices = @[@0, @30, @60, @120, @300, @600, @1800];
-    NSArray<NSString *> *names = @[@"Off", @"30 Seconds", @"1 Minute", @"2 Minutes", @"5 Minutes", @"10 Minutes", @"30 Minutes"];
-    for (NSUInteger i = 0; i < choices.count; i++) {
-        double seconds = choices[i].doubleValue;
-        BOOL isCurrent = fabs(seconds - cm.nfcScreenOffSeconds) < 1.0;
-        NSString *title = [NSString stringWithFormat:@"%@%@%@", names[i], seconds == kRCNFCDefaultWindow ? @" (Default)" : @"", isCurrent ? @" \u2713" : @""];
-        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            if (seconds <= kRCNFCDefaultWindow) {
-                cm.nfcScreenOffSeconds = seconds;
-                [self.tableView reloadData];
-                return;
-            }
-            UIAlertController *warning = [UIAlertController alertControllerWithTitle:@"Longer Scan Window"
-                message:@"The NFC reader stays in use while the screen is off. That costs battery (about 3% an hour on an iPhone 8) and warms the phone, and the system may switch the reader off for a few minutes. A longer window only helps when tags are tapped long after the screen goes dark."
-                preferredStyle:UIAlertControllerStyleAlert];
-            [warning addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"Use %@", names[i]] style:UIAlertActionStyleDefault handler:^(UIAlertAction *confirm) {
-                cm.nfcScreenOffSeconds = seconds;
-                [self.tableView reloadData];
-            }]];
-            [warning addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-            [self presentViewController:warning animated:YES completion:nil];
         }]];
     }
     [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];

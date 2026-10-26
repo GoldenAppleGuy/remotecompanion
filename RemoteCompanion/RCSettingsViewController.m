@@ -2,7 +2,6 @@
 #import "RCConfigManager.h"
 #import "RCUITweaker.h"
 #import "RCIntegrationsViewController.h"
-#import "RCBannersViewController.h"
 #import "RCTriggerSettingsViewController.h"
 #import "RCAdvancedSettingsViewController.h"
 #import "RCBackupDiagnosticsViewController.h"
@@ -12,13 +11,12 @@
 @property (nonatomic, strong) UILabel *versionLabel;
 @property (nonatomic, strong) UILabel *appTitleLabel;
 @property (nonatomic, strong) UISwitch *masterSwitch;
-@property (nonatomic, strong) UISwitch *wrapLongNamesSwitch;
 @end
 
 // Sections of the Settings table, in order
 typedef NS_ENUM(NSInteger, RCSettingsSection) {
     RCSettingsSectionGeneral,
-    RCSettingsSectionTriggers,
+    RCSettingsSectionButtons,
     RCSettingsSectionIntegrations,
     RCSettingsSectionAdvanced,
     RCSettingsSectionBackupDiagnostics,
@@ -114,7 +112,7 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    [self.tableView reloadData]; // refresh the Banners count after returning from it
+    [self.tableView reloadData];
 }
 
 - (void)dealloc {
@@ -158,9 +156,9 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
     NSString *title;
     if (section == RCSettingsSectionGeneral) title = @"General";
-    else if (section == RCSettingsSectionTriggers) title = @"Triggers & Buttons";
+    else if (section == RCSettingsSectionButtons) title = @"Buttons";
     else if (section == RCSettingsSectionIntegrations) title = @"Integrations";
-    else if (section == RCSettingsSectionAdvanced) title = @"Advanced";
+    else if (section == RCSettingsSectionAdvanced) title = @"Advanced Settings";
     else title = @"Backup & Diagnostics";
     
     UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 40)];
@@ -179,12 +177,12 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == RCSettingsSectionGeneral) {
         return nil;
-    } else if (section == RCSettingsSectionTriggers) {
-        return @"Button timing and NFC scanning options.";
+    } else if (section == RCSettingsSectionButtons) {
+        return @"Button timing options.";
     } else if (section == RCSettingsSectionIntegrations) {
         return @"Configure connections to external services and automations.";
     } else if (section == RCSettingsSectionAdvanced) {
-        return @"Network and debugging options.";
+        return @"NFC, banners, logging, Web UI, and display options.";
     } else if (section == RCSettingsSectionBackupDiagnostics) {
         return @"Export or import your configuration, and run on-device diagnostics.";
     }
@@ -192,15 +190,14 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == RCSettingsSectionGeneral) return 3; // Master + Banners + Wrap Long Names
-    return 1; // Triggers & Buttons, Integrations, Advanced, Backup & Diagnostics
+    if (section == RCSettingsSectionGeneral) return 1; // Enable All Triggers
+    return 1; // Buttons, Integrations, Advanced Settings, Backup & Diagnostics
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     RCConfigManager *cm = [RCConfigManager sharedManager];
     
-    BOOL isValueRow = (indexPath.section == RCSettingsSectionGeneral && indexPath.row == 1);
-    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:isValueRow ? UITableViewCellStyleValue1 : UITableViewCellStyleDefault reuseIdentifier:nil];
+    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
     cell.backgroundColor = [cm tweakColorForKey:@"blockBackground" defaultVal:0.12];
     
     UIView *selBg = [[UIView alloc] init];
@@ -217,28 +214,14 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
     }
     
     if (indexPath.section == RCSettingsSectionGeneral) {
-        if (indexPath.row == 0) {
-            cell.textLabel.text = @"Enable All Triggers";
-            _masterSwitch = [[UISwitch alloc] init];
-            _masterSwitch.on = cm.masterEnabled;
-            [_masterSwitch addTarget:self action:@selector(masterToggleChanged:) forControlEvents:UIControlEventValueChanged];
-            cell.accessoryView = _masterSwitch;
-            cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        } else if (indexPath.row == 1) {
-            cell.textLabel.text = @"Banners";
-            NSUInteger count = [RCBannersViewController checkedCount];
-            cell.detailTextLabel.text = count ? [NSString stringWithFormat:@"%lu", (unsigned long)count] : @"Off";
-            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        } else if (indexPath.row == 2) {
-            cell.textLabel.text = @"Wrap Long Names";
-            _wrapLongNamesSwitch = [[UISwitch alloc] init];
-            _wrapLongNamesSwitch.on = [[NSUserDefaults standardUserDefaults] boolForKey:@"RCWrapLongNamesEnabled"];
-            [_wrapLongNamesSwitch addTarget:self action:@selector(wrapLongNamesToggleChanged:) forControlEvents:UIControlEventValueChanged];
-            cell.accessoryView = _wrapLongNamesSwitch;
-            cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        }
-    } else if (indexPath.section == RCSettingsSectionTriggers) {
-        cell.textLabel.text = @"Triggers & Buttons";
+        cell.textLabel.text = @"Enable All Triggers";
+        _masterSwitch = [[UISwitch alloc] init];
+        _masterSwitch.on = cm.masterEnabled;
+        [_masterSwitch addTarget:self action:@selector(masterToggleChanged:) forControlEvents:UIControlEventValueChanged];
+        cell.accessoryView = _masterSwitch;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    } else if (indexPath.section == RCSettingsSectionButtons) {
+        cell.textLabel.text = @"Buttons";
         UIImage *img = [UIImage systemImageNamed:@"hand.tap.fill"];
         if (!img) img = [UIImage systemImageNamed:@"circle.grid.2x2"];
         cell.imageView.image = img;
@@ -254,7 +237,7 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
         cell.imageView.tintColor = [UIColor systemIndigoColor];
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     } else if (indexPath.section == RCSettingsSectionAdvanced) {
-        cell.textLabel.text = @"Advanced";
+        cell.textLabel.text = @"Advanced Settings";
         UIImage *img = [UIImage systemImageNamed:@"gearshape.2.fill"];
         if (!img) img = [UIImage systemImageNamed:@"gearshape"];
         cell.imageView.image = img;
@@ -275,9 +258,7 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
 
-    if (indexPath.section == RCSettingsSectionGeneral && indexPath.row == 1) {
-        [self.navigationController pushViewController:[[RCBannersViewController alloc] init] animated:YES];
-    } else if (indexPath.section == RCSettingsSectionTriggers) {
+    if (indexPath.section == RCSettingsSectionButtons) {
         [self.navigationController pushViewController:[[RCTriggerSettingsViewController alloc] init] animated:YES];
     } else if (indexPath.section == RCSettingsSectionIntegrations) {
         RCIntegrationsViewController *integrationsVC = [[RCIntegrationsViewController alloc] init];
@@ -293,11 +274,6 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 
 - (void)masterToggleChanged:(UISwitch *)sender {
     [RCConfigManager sharedManager].masterEnabled = sender.on;
-}
-
-- (void)wrapLongNamesToggleChanged:(UISwitch *)sender {
-    [[NSUserDefaults standardUserDefaults] setBool:sender.on forKey:@"RCWrapLongNamesEnabled"];
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"RCWrapLongNamesSettingChanged" object:nil];
 }
 
 - (void)openGitHub {
