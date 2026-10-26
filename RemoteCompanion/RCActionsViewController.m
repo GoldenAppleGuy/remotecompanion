@@ -241,6 +241,9 @@ static id g_actionClipboard = nil;
             }
         }
         paramText = firstArg;
+    } else if ([lower hasPrefix:@"unlock "]) {
+        baseText = @"Unlock Device ";
+        paramText = @"(Passcode)";
     }
     
     if (baseText && paramText) {
@@ -2334,6 +2337,9 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         }
         [self presentViewController:sheet animated:YES completion:nil];
         return;
+    } else if ([currentAction isEqualToString:@"unlock"] || [currentAction hasPrefix:@"unlock "]) {
+        [self promptEditUnlockActionAtIndex:indexPath.row];
+        return;
     } else {
         // Generic edit for other commands - show alert with current command
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Edit Action"
@@ -2358,6 +2364,74 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
 
         [self presentViewController:alert animated:YES completion:nil];
     }
+}
+
+- (void)promptEditUnlockActionAtIndex:(NSInteger)index {
+    if (index < 0 || index >= self.actions.count) return;
+    id item = self.actions[index];
+    NSString *cmdStr = [item isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)item)[@"command"] : item;
+    BOOL hasPasscode = [cmdStr hasPrefix:@"unlock "] && cmdStr.length > 7;
+    
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Edit Unlock Action"
+                                                                   message:@"Enter a passcode to unlock automatically, or choose 'Wake Screen Only' to present the passcode screen.\n\nNote: Configured passcodes are stored in plain text in trigger settings (rc_triggers.plist)."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    
+    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.placeholder = hasPasscode ? @"New Passcode (or leave blank to keep)" : @"Passcode (optional)";
+        textField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+        textField.secureTextEntry = YES;
+    }];
+    
+    __weak typeof(self) weakSelf = self;
+    
+    UIAlertAction *saveAction = [UIAlertAction actionWithTitle:@"Save Passcode" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        UITextField *tf = alert.textFields.firstObject;
+        NSString *pin = [tf.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        NSString *finalCmd;
+        if (pin.length > 0) {
+            finalCmd = [NSString stringWithFormat:@"unlock %@", pin];
+        } else if (hasPasscode) {
+            finalCmd = cmdStr;
+        } else {
+            finalCmd = @"unlock";
+        }
+        
+        if ([strongSelf.actions[index] isKindOfClass:[NSDictionary class]]) {
+            NSMutableDictionary *d = [strongSelf.actions[index] mutableCopy];
+            d[@"command"] = finalCmd;
+            strongSelf.actions[index] = d;
+        } else {
+            strongSelf.actions[index] = finalCmd;
+        }
+        [strongSelf saveActions];
+        [strongSelf.tableView reloadData];
+    }];
+    
+    UIAlertAction *wakeOnly = [UIAlertAction actionWithTitle:@"Wake Screen Only" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSString *finalCmd = @"unlock";
+        if ([strongSelf.actions[index] isKindOfClass:[NSDictionary class]]) {
+            NSMutableDictionary *d = [strongSelf.actions[index] mutableCopy];
+            d[@"command"] = finalCmd;
+            strongSelf.actions[index] = d;
+        } else {
+            strongSelf.actions[index] = finalCmd;
+        }
+        [strongSelf saveActions];
+        [strongSelf.tableView reloadData];
+    }];
+    
+    UIAlertAction *cancel = [UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil];
+    
+    [alert addAction:wakeOnly];
+    [alert addAction:saveAction];
+    [alert addAction:cancel];
+    alert.preferredAction = saveAction;
+    
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)promptEditKMParameterAtIndex:(NSInteger)index {

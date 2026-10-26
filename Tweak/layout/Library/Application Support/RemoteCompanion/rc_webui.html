@@ -2746,6 +2746,7 @@ function nameForCmd(cmd) {
   if (lowCmd.startsWith('focus on '))     return `Turn On ${cmd.slice(9)}`;
   if (lowCmd.startsWith('focus toggle ')) return `Toggle ${cmd.slice(13)}`;
   if (lowCmd.startsWith('airplay connect ')) return `AirPlay Connect ${cmd.slice(16)}`;
+  if (lowCmd.startsWith('unlock '))       return 'Unlock Device (Passcode)';
   if (lowCmd.startsWith('set-vol '))      return `Set Volume ${cmd.slice(8)}%`;
   if (lowCmd.startsWith('ringer volume ')) return `Set Ringer Volume ${cmd.slice(14)}%`;
   if (lowCmd.startsWith('brightness '))   return `Set Brightness ${cmd.slice(11)}%`;
@@ -2928,6 +2929,7 @@ function iconForCmd(cmd) {
   if (lowCmd.startsWith('bt connect '))   return { icon:'link',            cls:'icon-indigo' };
   if (lowCmd.startsWith('focus '))        return { icon:'moon_circle_fill', cls:'icon-indigo' };
   if (lowCmd.startsWith('airplay connect ')) return { icon:'airplayvideo',     cls:'icon-blue' };
+  if (lowCmd.startsWith('unlock '))          return { icon:'lock_open_fill',    cls:'icon-dark' };
   if (lowCmd.startsWith('set-vol '))      return { icon:'slider_horizontal_3',  cls:'icon-blue' };
   if (lowCmd.startsWith('ringer volume ')) return { icon:'bell_fill',       cls:'icon-blue' };
   if (lowCmd.startsWith('brightness '))   return { icon:'sun_max_fill',    cls:'icon-yellow' };
@@ -4687,6 +4689,13 @@ function editAction(idx) {
         actions[idx] = `brightness ${val}`;
         saveConfig(); renderActionList();
       }, true);
+    } else if (low === 'unlock' || low.startsWith('unlock ')) {
+      const currentPin = low.startsWith('unlock ') ? act.slice(7).trim() : '';
+      promptUnlockDialog(currentPin, val => {
+        actions[idx] = val;
+        saveConfig();
+        renderActionList();
+      });
     } else if (low.startsWith('km ') || low === 'km') {
       editKMAction(idx);
     }
@@ -4968,6 +4977,10 @@ function selectPickerAction(act) {
     openKMDialog();
   } else if (c === '__MQTT_PUBLISH__') {
     promptMQTTActionPicker();
+  } else if (c === 'unlock') {
+    promptUnlockDialog('', val => {
+      addActionToCurrent(val);
+    });
   } else {
     addActionToCurrent(c);
   }
@@ -6623,12 +6636,13 @@ function closeSheet() {
 }
 
 // ── Generic Dialog System ──────────────────────────────────────────────────────
-function showDialog(title, msg, defaultVal, okLabel, callback, isNumber = false, showRecordBtn = false) {
+function showDialog(title, msg, defaultVal, okLabel, callback, isNumber = false, showRecordBtn = false, isPassword = false) {
   document.getElementById('dialog-title').textContent = title;
   document.getElementById('dialog-msg').textContent   = msg;
   const input = document.getElementById('dialog-input');
   input.value = defaultVal || '';
-  input.type  = isNumber ? 'number' : 'text';
+  input.type  = isPassword ? 'password' : (isNumber ? 'number' : 'text');
+  input.placeholder = isPassword ? 'Passcode (optional)' : '';
   document.getElementById('dialog-ok').textContent = okLabel || 'OK';
   
   const recBtn = document.getElementById('dialog-record');
@@ -6645,7 +6659,7 @@ function showDialog(title, msg, defaultVal, okLabel, callback, isNumber = false,
 
   // Set modal width based on content type
   const box = document.querySelector('#dialog-backdrop .dialog-box');
-  if (isNumber || showRecordBtn) box.classList.remove('wide');
+  if (isNumber || showRecordBtn || isPassword) box.classList.remove('wide');
   else box.classList.add('wide');
   
   document.getElementById('dialog-backdrop').classList.add('visible');
@@ -6661,7 +6675,28 @@ function showDialog(title, msg, defaultVal, okLabel, callback, isNumber = false,
 
 function closeDialog() {
   document.getElementById('dialog-backdrop').classList.remove('visible');
+  const input = document.getElementById('dialog-input');
+  if (input) {
+    input.type = 'text';
+    input.placeholder = '';
+  }
   dialogCallback = null;
+}
+
+function promptUnlockDialog(initialPasscode = '', callback) {
+  showDialog(
+    'Unlock Device',
+    'Enter your device passcode to automatically unlock, or leave empty to wake screen only:',
+    initialPasscode,
+    'Save',
+    val => {
+      const pin = (val || '').trim();
+      callback(pin ? `unlock ${pin}` : 'unlock');
+    },
+    false,
+    false,
+    true
+  );
 }
 
 function _dialogBackdropClick(e) {

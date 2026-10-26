@@ -857,6 +857,7 @@
     [alert addAction:wakeOnly];
     [alert addAction:saveWithPasscode];
     [alert addAction:cancel];
+    alert.preferredAction = saveWithPasscode;
     
     [self presentViewController:alert animated:YES completion:nil];
 }
