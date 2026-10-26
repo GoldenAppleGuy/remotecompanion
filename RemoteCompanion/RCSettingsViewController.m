@@ -11,6 +11,7 @@
 @property (nonatomic, strong) UILabel *versionLabel;
 @property (nonatomic, strong) UILabel *appTitleLabel;
 @property (nonatomic, strong) UISwitch *masterSwitch;
+@property (nonatomic, strong) UISwitch *webUISwitch;
 @end
 
 // Sections of the Settings table, in order
@@ -147,6 +148,12 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
     [self dismissViewControllerAnimated:YES completion:nil];
 }
 
+#pragma mark - Web UI URL
+
+- (NSString *)webUIUrlString {
+    return @"http://localhost:8080";
+}
+
 #pragma mark - Table View Data Source
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
@@ -176,13 +183,13 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == RCSettingsSectionGeneral) {
-        return nil;
+        return @"Enable the built-in Web UI to configure RemoteCompanion from a browser.";
     } else if (section == RCSettingsSectionButtons) {
         return @"Button timing options.";
     } else if (section == RCSettingsSectionIntegrations) {
         return @"Configure connections to external services and automations.";
     } else if (section == RCSettingsSectionAdvanced) {
-        return @"NFC, banners, logging, Web UI, and display options.";
+        return @"NFC, banners, logging, and display options.";
     } else if (section == RCSettingsSectionBackupDiagnostics) {
         return @"Export or import your configuration, and run on-device diagnostics.";
     }
@@ -190,14 +197,18 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == RCSettingsSectionGeneral) return 1; // Enable All Triggers
+    if (section == RCSettingsSectionGeneral) {
+        return [RCConfigManager sharedManager].webUIEnabled ? 3 : 2;
+    }
     return 1; // Buttons, Integrations, Advanced Settings, Backup & Diagnostics
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     RCConfigManager *cm = [RCConfigManager sharedManager];
     
-    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+    BOOL isLinkRow = (indexPath.section == RCSettingsSectionGeneral && indexPath.row == 2);
+    UITableViewCellStyle style = isLinkRow ? UITableViewCellStyleValue1 : UITableViewCellStyleDefault;
+    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:style reuseIdentifier:nil];
     cell.backgroundColor = [cm tweakColorForKey:@"blockBackground" defaultVal:0.12];
     
     UIView *selBg = [[UIView alloc] init];
@@ -214,12 +225,25 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
     }
     
     if (indexPath.section == RCSettingsSectionGeneral) {
-        cell.textLabel.text = @"Enable All Triggers";
-        _masterSwitch = [[UISwitch alloc] init];
-        _masterSwitch.on = cm.masterEnabled;
-        [_masterSwitch addTarget:self action:@selector(masterToggleChanged:) forControlEvents:UIControlEventValueChanged];
-        cell.accessoryView = _masterSwitch;
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        if (indexPath.row == 0) {
+            cell.textLabel.text = @"Enable All Triggers";
+            _masterSwitch = [[UISwitch alloc] init];
+            _masterSwitch.on = cm.masterEnabled;
+            [_masterSwitch addTarget:self action:@selector(masterToggleChanged:) forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = _masterSwitch;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        } else if (indexPath.row == 1) {
+            cell.textLabel.text = @"Web UI";
+            _webUISwitch = [[UISwitch alloc] init];
+            _webUISwitch.on = cm.webUIEnabled;
+            [_webUISwitch addTarget:self action:@selector(webUIToggleChanged:) forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = _webUISwitch;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        } else if (indexPath.row == 2) {
+            cell.textLabel.text = @"Open Web UI";
+            cell.detailTextLabel.text = [self webUIUrlString];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        }
     } else if (indexPath.section == RCSettingsSectionButtons) {
         cell.textLabel.text = @"Buttons";
         UIImage *img = [UIImage systemImageNamed:@"hand.tap.fill"];
@@ -258,7 +282,9 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
 
-    if (indexPath.section == RCSettingsSectionButtons) {
+    if (indexPath.section == RCSettingsSectionGeneral && indexPath.row == 2) {
+        [self openWebUI];
+    } else if (indexPath.section == RCSettingsSectionButtons) {
         [self.navigationController pushViewController:[[RCTriggerSettingsViewController alloc] init] animated:YES];
     } else if (indexPath.section == RCSettingsSectionIntegrations) {
         RCIntegrationsViewController *integrationsVC = [[RCIntegrationsViewController alloc] init];
@@ -274,6 +300,18 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 
 - (void)masterToggleChanged:(UISwitch *)sender {
     [RCConfigManager sharedManager].masterEnabled = sender.on;
+}
+
+- (void)webUIToggleChanged:(UISwitch *)sender {
+    [RCConfigManager sharedManager].webUIEnabled = sender.on;
+    [self.tableView reloadData];
+}
+
+- (void)openWebUI {
+    NSURL *url = [NSURL URLWithString:[self webUIUrlString]];
+    if (url) {
+        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+    }
 }
 
 - (void)openGitHub {

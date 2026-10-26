@@ -6,7 +6,6 @@
 @interface RCAdvancedSettingsViewController ()
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) UISwitch *nfcSwitch;
-@property (nonatomic, strong) UISwitch *webUISwitch;
 @property (nonatomic, strong) UISwitch *wrapLongNamesSwitch;
 @end
 
@@ -125,7 +124,7 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
     } else if (section == RCAdvancedSettingsSectionNFC) {
         return @"NFC scanning options.";
     } else if (section == RCAdvancedSettingsSectionOptions) {
-        return @"Web UI, logging, and display options.";
+        return @"Logging and display options.";
     }
     return nil;
 }
@@ -133,7 +132,7 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section == RCAdvancedSettingsSectionBanners) return 1;
     if (section == RCAdvancedSettingsSectionNFC) return 2;
-    return 3; // Web UI, Wrap Long Names, Logging
+    return 2; // Wrap Long Names, Logging
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -141,7 +140,7 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
     
     BOOL isValueRow = (indexPath.section == RCAdvancedSettingsSectionBanners) ||
                       (indexPath.section == RCAdvancedSettingsSectionNFC && indexPath.row == 1) ||
-                      (indexPath.section == RCAdvancedSettingsSectionOptions && indexPath.row == 2);
+                      (indexPath.section == RCAdvancedSettingsSectionOptions && indexPath.row == 1);
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:isValueRow ? UITableViewCellStyleValue1 : UITableViewCellStyleDefault reuseIdentifier:nil];
     cell.backgroundColor = [cm tweakColorForKey:@"blockBackground" defaultVal:0.12];
     
@@ -178,20 +177,13 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
         }
     } else if (indexPath.section == RCAdvancedSettingsSectionOptions) {
         if (indexPath.row == 0) {
-            cell.textLabel.text = @"Web UI";
-            _webUISwitch = [[UISwitch alloc] init];
-            _webUISwitch.on = cm.webUIEnabled;
-            [_webUISwitch addTarget:self action:@selector(webUIToggleChanged:) forControlEvents:UIControlEventValueChanged];
-            cell.accessoryView = _webUISwitch;
-            cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        } else if (indexPath.row == 1) {
             cell.textLabel.text = @"Wrap Long Names";
             _wrapLongNamesSwitch = [[UISwitch alloc] init];
             _wrapLongNamesSwitch.on = [[NSUserDefaults standardUserDefaults] boolForKey:@"RCWrapLongNamesEnabled"];
             [_wrapLongNamesSwitch addTarget:self action:@selector(wrapLongNamesToggleChanged:) forControlEvents:UIControlEventValueChanged];
             cell.accessoryView = _wrapLongNamesSwitch;
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        } else if (indexPath.row == 2) {
+        } else if (indexPath.row == 1) {
             cell.textLabel.text = @"Logging";
             cell.detailTextLabel.text = [cm.logLevel capitalizedString];
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
@@ -208,7 +200,7 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
         [self.navigationController pushViewController:[[RCBannersViewController alloc] init] animated:YES];
     } else if (indexPath.section == RCAdvancedSettingsSectionNFC && indexPath.row == 1) {
         [self chooseNFCWindowFromView:[tableView cellForRowAtIndexPath:indexPath]];
-    } else if (indexPath.section == RCAdvancedSettingsSectionOptions && indexPath.row == 2) {
+    } else if (indexPath.section == RCAdvancedSettingsSectionOptions && indexPath.row == 1) {
         [self chooseLogLevelFromView:[tableView cellForRowAtIndexPath:indexPath]];
     }
 }
@@ -217,10 +209,6 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
 
 - (void)nfcToggleChanged:(UISwitch *)sender {
     [RCConfigManager sharedManager].nfcEnabled = sender.on;
-}
-
-- (void)webUIToggleChanged:(UISwitch *)sender {
-    [RCConfigManager sharedManager].webUIEnabled = sender.on;
 }
 
 - (void)wrapLongNamesToggleChanged:(UISwitch *)sender {
