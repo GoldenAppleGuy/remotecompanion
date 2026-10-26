@@ -1848,6 +1848,18 @@ static NSString *find_config_path() {
 static NSArray *g_blacklist = nil;
 static NSTimeInterval g_lastBlacklistLoad = 0;
 
+// Bypass for the bottom-swipe Control Center suppression when the open comes from an RC
+// action itself. handle_command runs async (RCExecuteTrigger dispatches to a background
+// queue), so a short timestamp window is used instead of a plain BOOL around the call.
+// See https://github.com/saihgupr/remotecompanion/issues/57
+static NSTimeInterval g_rcIntentionalCCOpenUntil = 0;
+static inline BOOL rc_cc_intentional_open_active(void) {
+    return [[NSDate date] timeIntervalSince1970] < g_rcIntentionalCCOpenUntil;
+}
+static inline void rc_mark_intentional_cc_open(void) {
+    g_rcIntentionalCCOpenUntil = [[NSDate date] timeIntervalSince1970] + 1.5;
+}
+
 static void load_blacklist() {
     NSString *path = @"/var/mobile/Library/Preferences/com.saihgupr.remotecompanion.blacklist.plist";
     g_blacklist = [NSArray arrayWithContentsOfFile:path];
@@ -8267,10 +8279,12 @@ static NSString *handle_command(NSString *cmd) {
                     [controller dismissAnimated:YES];
                     opened = YES;
                 } else {
+                    rc_mark_intentional_cc_open();
                     [controller presentAnimated:YES];
                     opened = YES;
                 }
             } else if (controller && [controller respondsToSelector:@selector(_presentControlCenterGestureBeganWithReason:)]) {
+                 rc_mark_intentional_cc_open();
                  [controller performSelector:@selector(_presentControlCenterGestureBeganWithReason:) withObject:@"RemoteCompanion"];
                  opened = YES;
             }
@@ -14695,18 +14709,6 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                             trigger_haptic();
                             RCExecuteTrigger(g_pendingBottomBarSwipeUpTrigger);
                             SRLog(@"[RCBottom] %@ FIRED during move!", g_pendingBottomBarSwipeUpTrigger);
-                            
-                            Class ccClass = objc_getClass("SBControlCenterController");
-                            if (ccClass && [ccClass respondsToSelector:@selector(sharedInstanceIfExists)]) {
-                                id cc = [ccClass performSelector:@selector(sharedInstanceIfExists)];
-                                if (cc) {
-                                    if ([cc respondsToSelector:@selector(isVisible)] && [cc isVisible]) {
-                                        [cc dismissAnimated:NO];
-                                    } else if ([cc respondsToSelector:@selector(_presentControlCenterGestureCancelled)]) {
-                                        [cc performSelector:@selector(_presentControlCenterGestureCancelled)];
-                                    }
-                                }
-                            }
                         }
                     }
                 }
@@ -14736,18 +14738,6 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                                 trigger_haptic();
                                 RCExecuteTrigger(g_pendingBottomBarSwipeUpTrigger);
                                 SRLog(@"[RCBottom] %@ FIRED on ended!", g_pendingBottomBarSwipeUpTrigger);
-                                
-                                Class ccClass = objc_getClass("SBControlCenterController");
-                                if (ccClass && [ccClass respondsToSelector:@selector(sharedInstanceIfExists)]) {
-                                    id cc = [ccClass performSelector:@selector(sharedInstanceIfExists)];
-                                    if (cc) {
-                                        if ([cc respondsToSelector:@selector(isVisible)] && [cc isVisible]) {
-                                            [cc dismissAnimated:NO];
-                                        } else if ([cc respondsToSelector:@selector(_presentControlCenterGestureCancelled)]) {
-                                            [cc performSelector:@selector(_presentControlCenterGestureCancelled)];
-                                        }
-                                    }
-                                }
                             }
                         }
                     }
@@ -15308,6 +15298,7 @@ static void rc_camera_launched_notification_callback(CFNotificationCenterRef cen
 }
 
 - (void)_presentControlCenterGestureBeganWithReason:(id)reason {
+    if (rc_cc_intentional_open_active()) { %orig; return; }
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if ((g_bottomBarTouchActive || g_bottomBarSwipeUpTriggered || (now - g_lastBottomSwipeTriggerTime < 0.8)) && has_any_bottom_swipe_trigger_enabled()) {
         SRLog(@"[RCBottom] SBControlCenterController suppressing _presentControlCenterGestureBeganWithReason: %@", reason);
@@ -15317,6 +15308,7 @@ static void rc_camera_launched_notification_callback(CFNotificationCenterRef cen
 }
 
 - (void)_presentControlCenterGestureUpdatedWithGrabberDistance:(double)dist andVelocity:(double)vel {
+    if (rc_cc_intentional_open_active()) { %orig; return; }
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if ((g_bottomBarTouchActive || g_bottomBarSwipeUpTriggered || (now - g_lastBottomSwipeTriggerTime < 0.8)) && has_any_bottom_swipe_trigger_enabled()) {
         return;
@@ -15325,6 +15317,7 @@ static void rc_camera_launched_notification_callback(CFNotificationCenterRef cen
 }
 
 - (void)_presentControlCenterGestureEndedWithVelocity:(double)vel completion:(id)comp {
+    if (rc_cc_intentional_open_active()) { %orig; return; }
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if ((g_bottomBarTouchActive || g_bottomBarSwipeUpTriggered || (now - g_lastBottomSwipeTriggerTime < 0.8)) && has_any_bottom_swipe_trigger_enabled()) {
         SRLog(@"[RCBottom] SBControlCenterController suppressing _presentControlCenterGestureEndedWithVelocity");
@@ -15334,6 +15327,7 @@ static void rc_camera_launched_notification_callback(CFNotificationCenterRef cen
 }
 
 - (void)presentAnimated:(BOOL)animated {
+    if (rc_cc_intentional_open_active()) { %orig; return; }
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (now - g_lastBottomSwipeTriggerTime < 0.8 && has_any_bottom_swipe_trigger_enabled()) {
         SRLog(@"[RCBottom] Suppressed Control Center presentAnimated within trigger window");
@@ -15343,6 +15337,7 @@ static void rc_camera_launched_notification_callback(CFNotificationCenterRef cen
 }
 
 - (void)presentAnimated:(BOOL)animated completion:(id)completion {
+    if (rc_cc_intentional_open_active()) { %orig; return; }
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (now - g_lastBottomSwipeTriggerTime < 0.8 && has_any_bottom_swipe_trigger_enabled()) {
         SRLog(@"[RCBottom] Suppressed Control Center presentAnimated:completion: within trigger window");
@@ -15352,6 +15347,7 @@ static void rc_camera_launched_notification_callback(CFNotificationCenterRef cen
 }
 
 - (BOOL)_canPresent {
+    if (rc_cc_intentional_open_active()) return %orig;
     if (g_bottomBarTouchActive && has_any_bottom_swipe_trigger_enabled()) {
         return NO;
     }

@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 - **Kill Current App action**: new `kill current` command (aliases `kill front`, `kill foreground`, `kill current app`, `kill front app`) force-closes the currently focused app, available in the iOS action picker, Web UI, and `rc` shell commands (#93).
 
 ### Fixed
+- **Control Center from Bottom Swipe Up triggers**: the `open control center` action no longer gets swallowed when fired from a Bottom Swipe Up zone. Intentional opens now bypass the bottom-swipe suppression window in `SBControlCenterController`, and the post-fire gesture-cancel that interfered with the programmatic open on iOS 16+ was removed (native swipe-up is still suppressed by the gesture hooks) (#57).
 - **Settings footer**: RemoteCompanion version label now scrolls with Settings content (table footer) instead of floating over it.
 - **Settings Web UI URL**: Open Web UI row now shows the device IP address instead of localhost.
 - **Unlock Device security**: Removed hardcoded fallback PIN, redacted passcodes from command logs, hex dumps, and HTTP API responses, masked passcodes in iOS action list and edit dialogs (`RCActionsViewController`), masked passcodes in the Web UI trigger lists and action sequences (`rc_webui.html`), added secure passcode configuration with wake fallback, and prevented lockout attempts when no passcode is configured (#41).
