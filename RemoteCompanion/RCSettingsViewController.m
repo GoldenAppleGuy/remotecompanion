@@ -5,6 +5,9 @@
 #import "RCTriggerSettingsViewController.h"
 #import "RCAdvancedSettingsViewController.h"
 #import "RCBackupDiagnosticsViewController.h"
+#include <ifaddrs.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
 
 @interface RCSettingsViewController ()
 @property (nonatomic, strong) UITableView *tableView;
@@ -157,7 +160,34 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 
 #pragma mark - Web UI URL
 
+- (NSString *)deviceIPAddress {
+    NSString *address = nil;
+    struct ifaddrs *interfaces = NULL;
+    if (getifaddrs(&interfaces) == 0) {
+        struct ifaddrs *temp_addr = interfaces;
+        while (temp_addr != NULL) {
+            if (temp_addr->ifa_addr && temp_addr->ifa_addr->sa_family == AF_INET) {
+                NSString *name = [NSString stringWithUTF8String:temp_addr->ifa_name];
+                if ([name isEqualToString:@"en0"]) {
+                    address = [NSString stringWithUTF8String:inet_ntoa(((struct sockaddr_in *)temp_addr->ifa_addr)->sin_addr)];
+                    break;
+                }
+                if (!address && [name isEqualToString:@"pdp_ip0"]) {
+                    address = [NSString stringWithUTF8String:inet_ntoa(((struct sockaddr_in *)temp_addr->ifa_addr)->sin_addr)];
+                }
+            }
+            temp_addr = temp_addr->ifa_next;
+        }
+    }
+    if (interfaces) freeifaddrs(interfaces);
+    return address;
+}
+
 - (NSString *)webUIUrlString {
+    NSString *ip = [self deviceIPAddress];
+    if (ip.length) {
+        return [NSString stringWithFormat:@"http://%@:8080", ip];
+    }
     return @"http://localhost:8080";
 }
 
