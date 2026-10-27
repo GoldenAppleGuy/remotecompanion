@@ -15,6 +15,7 @@
 #import "RCShortcutsHelper.h"
 #import <sys/wait.h>
 #import <sys/utsname.h>
+#import <sys/sysctl.h>
 #import <objc/runtime.h>
 #import <dlfcn.h>
 #import <os/lock.h>
@@ -2085,6 +2086,9 @@ static void start_schedule_timer();
 static void start_mqtt_subscriber();
 static void stop_mqtt_subscriber();
 
+void RCNFCConfigChanged(void);
+NSString *RCNFCScannerCommand(NSString *what);
+
 static void config_changed_callback(CFNotificationCenterRef center, void *observer,
                                     CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     SRLog(@"Config changed notification received.");
@@ -2098,6 +2102,7 @@ static void config_changed_callback(CFNotificationCenterRef center, void *observ
             update_simulation_observers();
             SRLog(@"Simulation observers updated. Updating edge gestures...");
             update_edge_gestures(); 
+            RCNFCConfigChanged();
             SRLog(@"Edge gestures updated. Checking schedule timer...");
             start_schedule_timer();
             SRLog(@"Checking MQTT subscriber...");
@@ -3682,6 +3687,28 @@ BOOL RCIsNFCEnabled() {
         return YES;
     }
     return [g_triggerConfig[@"nfcEnabled"] boolValue];
+}
+
+// iPhone XS and later read NFC tags in the background on their own (iPhone11,x and up)
+static BOOL RCNFCBackgroundReadingSupported(void) {
+    static int supported = -1;
+    if (supported < 0) {
+        char model[64] = {0};
+        size_t size = sizeof(model);
+        int major = 0;
+        if (sysctlbyname("hw.machine", model, &size, NULL, 0) == 0 && strncmp(model, "iPhone", 6) == 0) major = atoi(model + 6);
+        supported = major >= 11;
+    }
+    return supported;
+}
+
+// Experimental NFC (Settings): iOS's own reader reads tags while the screen is on, the scan runs only
+// with the screen off. Needs NFC Scanning on and an iPhone XS or later.
+BOOL RCNFCBackgroundReading() {
+    if (!g_triggerConfig) {
+        load_trigger_config();
+    }
+    return RCNFCBackgroundReadingSupported() && RCIsNFCEnabled() && [g_triggerConfig[@"nfcBackgroundReading"] boolValue];
 }
 
 // Seconds the NFC scan keeps going after the screen turns off (Settings > NFC With Screen Off)
@@ -8035,6 +8062,14 @@ static NSString *handle_command(NSString *cmd) {
     } else if ([cleanCmd isEqualToString:@"prev"]) {
         MRMediaRemoteSendCommand(kMRPreviousTrack, nil);
         return @"Previous track\n";
+    } else if ([cleanCmd isEqualToString:@"nfc scanner"] || [cleanCmd hasPrefix:@"nfc scanner "]) {
+        // nfc scanner pause|resume|toggle: pauses only the NFC scan (with Experimental NFC, iOS still
+        // reads tags while the screen is on); no argument reports the state
+        NSString *what = [cleanCmd isEqualToString:@"nfc scanner"] ? @"" : [[cleanCmd substringFromIndex:12] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        __block NSString *state;
+        if ([NSThread isMainThread]) state = RCNFCScannerCommand(what);
+        else dispatch_sync(dispatch_get_main_queue(), ^{ state = RCNFCScannerCommand(what); });
+        return [NSString stringWithFormat:@"NFC scanner %@\n", state];
     } else if ([cleanCmd isEqualToString:@"flashlight"] || [cleanCmd isEqualToString:@"torch"] || [cleanCmd isEqualToString:@"flashlight toggle"]) {
         SRLog(@"Toggling flashlight");
         AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];

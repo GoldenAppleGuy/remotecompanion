@@ -19,7 +19,7 @@ THEOS_PACKAGE_SCHEME ?= rootless
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = RemoteCommand RCShortcutsHelper
+TWEAK_NAME = RemoteCommand RCShortcutsHelper RCNFCReader
 
 # Lua source files
 LUA_FILES = $(wildcard lua/*.c)
@@ -34,6 +34,11 @@ RemoteCommand_LDFLAGS += -F/opt/theos/sdks/iPhoneOS16.5.sdk/System/Library/Priva
 # Loaded into siriactionsd, where it runs shortcuts (see RCShortcutsHelper.m)
 RCShortcutsHelper_FILES = RCShortcutsHelper.m
 RCShortcutsHelper_CFLAGS = -fno-objc-arc
+
+# Loaded into nfcd, where it passes tags iOS's own reader detects to SpringBoard (Experimental NFC,
+# see RCNFCReader.m)
+RCNFCReader_FILES = RCNFCReader.m
+RCNFCReader_CFLAGS = -fobjc-arc
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 

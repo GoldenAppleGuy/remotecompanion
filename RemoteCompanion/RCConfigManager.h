@@ -28,6 +28,9 @@
 @property (nonatomic, assign) BOOL nfcEnabled;
 // Seconds the NFC scan keeps going after the screen turns off (0: only while the screen is on)
 @property (nonatomic, assign) double nfcScreenOffSeconds;
+// Experimental NFC: the system's own background reader reads tags while the screen is on (iPhone XS and later)
+@property (nonatomic, assign) BOOL nfcBackgroundReading;
++ (BOOL)nfcBackgroundReadingSupported;
 @property (nonatomic, assign) BOOL rootEnabled;
 @property (nonatomic, assign) BOOL haEnabled;
 @property (nonatomic, copy) NSString *haUrl;
