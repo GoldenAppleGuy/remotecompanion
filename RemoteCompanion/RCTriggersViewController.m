@@ -14,6 +14,7 @@
 #import "RCScheduledTriggerViewController.h"
 #import "RCMQTTTriggerViewController.h"
 #import "RCCategoryBar.h"
+#import "RCServerClient.h"
 
 #define kSimulateNotificationPrefix "com.pizzaman.rc.simulate."
 
@@ -256,6 +257,45 @@
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self reloadTableData];
+    [self updatePauseState];
+}
+
+// Paused button triggers (the Button Triggers action, or another tweak): a line above the title,
+// and Resume when it's the action's pause. The states are the tweak's (see RC_TriggersPaused).
+- (void)updatePauseState {
+    static int untilToken = -1, tweakToken = -1;
+    static dispatch_once_t once;
+    __weak typeof(self) weakSelf = self;
+    dispatch_once(&once, ^{
+        notify_register_check("com.pizzaman.rc.pause_buttons_until", &untilToken);
+        notify_register_check("com.pizzaman.rc.pause_triggers", &tweakToken);
+        int t1, t2;
+        notify_register_dispatch("com.pizzaman.rc.pause_buttons_until", &t1, dispatch_get_main_queue(), ^(int t) { [weakSelf updatePauseState]; });
+        notify_register_dispatch("com.pizzaman.rc.pause_triggers", &t2, dispatch_get_main_queue(), ^(int t) { [weakSelf updatePauseState]; });
+    });
+    uint64_t until = 0, byTweak = 0;
+    if (untilToken != -1) notify_get_state(untilToken, &until);
+    if (tweakToken != -1) notify_get_state(tweakToken, &byTweak);
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (until != UINT64_MAX && until <= (uint64_t)now) until = 0;
+
+    NSString *prompt = nil;
+    if (until == UINT64_MAX) {
+        prompt = @"Button triggers paused";
+    } else if (until) {
+        NSString *time = [NSDateFormatter localizedStringFromDate:[NSDate dateWithTimeIntervalSince1970:until] dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterShortStyle];
+        prompt = [NSString stringWithFormat:@"Button triggers paused until %@", time];
+        // Clear the line when the pause runs out
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((until - now + 1) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [weakSelf updatePauseState]; });
+    } else if (byTweak) {
+        prompt = @"Button triggers paused by another tweak";
+    }
+    self.navigationItem.prompt = prompt;
+    self.navigationItem.leftBarButtonItem = until ? [[UIBarButtonItem alloc] initWithTitle:@"Resume" style:UIBarButtonItemStylePlain target:self action:@selector(resumeButtonTriggers)] : nil;
+}
+
+- (void)resumeButtonTriggers {
+    [[RCServerClient sharedClient] executeCommand:@"button triggers resume" completion:^(NSString *output, NSError *error) {}];
 }
 
 - (void)reloadTableData {
@@ -402,7 +442,7 @@
     if (selected == NSNotFound) self.selectedCategoryTitle = nil;
     self.categoryBar.selectedIndex = (selected == NSNotFound) ? -1 : (NSInteger)selected;
 
-    self.navigationItem.leftBarButtonItem = nil;
+    [self updatePauseState]; // the left button is Resume while paused, otherwise none
 
     [self.tableView reloadData];
 }

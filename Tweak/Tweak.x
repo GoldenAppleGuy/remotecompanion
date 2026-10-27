@@ -1774,6 +1774,123 @@ static void send_notification(NSString *title, NSString *message, BOOL urgent) {
 #define kConfigChangedNotification "com.pizzaman.rc.configchanged"
 
 static NSDictionary *g_triggerConfig = nil;
+
+// Pausing button triggers: the hardware button, Touch ID, ringer and screen gesture triggers step
+// aside, as if the master toggle were off; event triggers (NFC tags, Wi-Fi, Bluetooth, schedules,
+// notifications, apps, ...) still run.
+// - Another tweak that needs the buttons to itself for a while (an alarm that only a tag stops, for
+//   one) sets the state of kRCPauseTriggersNotification to 1, and back to 0 when it's done. A pause
+//   left on for 4 hours (the tweak that set it went away) ends by itself.
+// - The "button triggers pause [minutes]" command (Button Triggers action) pauses them until
+//   "button triggers resume", or for that many minutes. Its end time (seconds since 1970, UINT64_MAX
+//   for until resumed) is the state of kRCPauseButtonsUntilNotification, which the app reads too.
+#define kRCPauseTriggersNotification "com.pizzaman.rc.pause_triggers"
+#define kRCPauseButtonsUntilNotification "com.pizzaman.rc.pause_buttons_until"
+static NSDate *g_triggersPausedSince = nil;
+
+static int RC_PauseToken(const char *name) {
+    int token = -1;
+    if (notify_register_check(name, &token) != NOTIFY_STATUS_OK) return -1;
+    return token;
+}
+
+// Paused by another tweak
+static BOOL RC_TriggersPausedByTweak(void) {
+    static int token = -1;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        token = RC_PauseToken(kRCPauseTriggersNotification);
+        int logToken;
+        notify_register_dispatch(kRCPauseTriggersNotification, &logToken, dispatch_get_main_queue(), ^(int t) {
+            uint64_t now = 0;
+            notify_get_state(t, &now);
+            SRLogMin(@"[Pause] Button triggers %@ by another tweak", now ? @"paused" : @"resumed");
+            notify_post(kConfigChangedNotification); // gestures and button settings follow the pause
+        });
+    });
+    uint64_t state = 0;
+    if (token == -1 || notify_get_state(token, &state) != NOTIFY_STATUS_OK) return NO;
+    @synchronized ([NSDate class]) {
+        if (!state) { g_triggersPausedSince = nil; return NO; }
+        if (!g_triggersPausedSince) g_triggersPausedSince = [NSDate date];
+        if (-[g_triggersPausedSince timeIntervalSinceNow] > 4 * 3600) return NO;
+        return YES;
+    }
+}
+
+// End of a pause from the Button Triggers action (seconds since 1970; UINT64_MAX until resumed),
+// or 0 when there's none
+static uint64_t RC_ButtonPauseUntil(void) {
+    static int token = -1;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ token = RC_PauseToken(kRCPauseButtonsUntilNotification); });
+    uint64_t until = 0;
+    if (token == -1 || notify_get_state(token, &until) != NOTIFY_STATUS_OK) return 0;
+    if (until != UINT64_MAX && until <= (uint64_t)[[NSDate date] timeIntervalSince1970]) return 0;
+    return until;
+}
+
+static void RC_SetButtonPauseUntil(uint64_t until) {
+    static int token = -1;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ token = RC_PauseToken(kRCPauseButtonsUntilNotification); });
+    if (token == -1) return;
+    notify_set_state(token, until);
+    notify_post(kRCPauseButtonsUntilNotification);
+    // Gestures and button settings follow the pause, now and when a timed one ends
+    notify_post(kConfigChangedNotification);
+    if (until && until != UINT64_MAX) {
+        double delay = (double)until - [[NSDate date] timeIntervalSince1970] + 0.5;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(MAX(delay, 0) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            uint64_t current = 0;
+            if (notify_get_state(token, &current) != NOTIFY_STATUS_OK || current != until) return;
+            SRLogMin(@"[Pause] Button triggers resumed (time's up)");
+            notify_post(kConfigChangedNotification);
+        });
+    }
+}
+
+static BOOL RC_TriggersPaused(void) {
+    return RC_TriggersPausedByTweak() || RC_ButtonPauseUntil() != 0;
+}
+
+// The triggers a pause stops: the hardware buttons, Touch ID, the ringer switch and screen gestures
+static BOOL RC_IsButtonTrigger(NSString *key) {
+    if ([key isEqualToString:@"shake"]) return YES;
+    for (NSString *prefix in @[@"volume_", @"power_", @"touchid_", @"trigger_home_", @"trigger_ringer_",
+                               @"trigger_statusbar_", @"trigger_edge_", @"trigger_bottombar_", @"trigger_bottom_swipe_"]) {
+        if ([key hasPrefix:prefix]) return YES;
+    }
+    return NO;
+}
+
+// The master toggle as the button handling sees it: off while button triggers are paused, so it
+// steps aside
+static BOOL RC_MasterEnabled(void) {
+    return [g_triggerConfig[@"masterEnabled"] boolValue] && !RC_TriggersPaused();
+}
+
+// "button triggers pause [minutes]" / "button triggers resume" / "button triggers" (state)
+static NSString *RC_ButtonTriggersCommand(NSString *what) {
+    NSArray *words = [what componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    NSString *verb = words.count ? words[0] : @"";
+    if ([verb isEqualToString:@"pause"]) {
+        double minutes = words.count > 1 ? [words[1] doubleValue] : 0;
+        uint64_t until = minutes > 0 ? (uint64_t)([[NSDate date] timeIntervalSince1970] + minutes * 60) : UINT64_MAX;
+        RC_SetButtonPauseUntil(until);
+        SRLogMin(@"[Pause] Button triggers paused%@", minutes > 0 ? [NSString stringWithFormat:@" for %g min", minutes] : @" until resumed");
+    } else if ([verb isEqualToString:@"resume"]) {
+        RC_SetButtonPauseUntil(0);
+        SRLogMin(@"[Pause] Button triggers resumed");
+    } else if (verb.length) {
+        return @"Usage: button triggers pause [minutes] | resume\n";
+    }
+    uint64_t until = RC_ButtonPauseUntil();
+    if (until == UINT64_MAX) return @"Button triggers paused until resumed\n";
+    if (until) return [NSString stringWithFormat:@"Button triggers paused for %.0f more min\n", ceil((until - [[NSDate date] timeIntervalSince1970]) / 60.0)];
+    if (RC_TriggersPausedByTweak()) return @"Button triggers paused by another tweak\n";
+    return @"Button triggers active\n";
+}
 static NSString *g_resolvedConfigPath = nil;
 
 // g_triggerConfig is read on many threads (main, the web server, HID callbacks) without a lock.
@@ -3178,9 +3295,13 @@ void RCExecuteTrigger(NSString *triggerKey) {
         }
     }
     
-    // Check master toggle
+    // Check master toggle, and whether button triggers are paused (see RC_TriggersPaused)
     if (![g_triggerConfig[@"masterEnabled"] boolValue]) {
         SRLog(@"Master toggle is OFF, skipping trigger '%@'", triggerKey);
+        return;
+    }
+    if (RC_IsButtonTrigger(triggerKey) && RC_TriggersPaused()) {
+        SRLog(@"Button triggers are paused, skipping trigger '%@'", triggerKey);
         return;
     }
     
@@ -8075,6 +8196,9 @@ static NSString *handle_command(NSString *cmd) {
     } else if ([cleanCmd isEqualToString:@"prev"]) {
         MRMediaRemoteSendCommand(kMRPreviousTrack, nil);
         return @"Previous track\n";
+    } else if ([cleanCmd isEqualToString:@"button triggers"] || [cleanCmd hasPrefix:@"button triggers "]) {
+        NSString *what = [cleanCmd isEqualToString:@"button triggers"] ? @"" : [[cleanCmd substringFromIndex:16] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        return RC_ButtonTriggersCommand(what);
     } else if ([cleanCmd isEqualToString:@"nfc scanner"] || [cleanCmd hasPrefix:@"nfc scanner "]) {
         // nfc scanner pause|resume|toggle: pauses only the NFC scan (with Experimental NFC, iOS still
         // reads tags while the screen is on); no argument reports the state
@@ -11825,7 +11949,7 @@ static void RC_FinishHomePowerChord(void) {
     NSTimeInterval chordTime = g_homePowerChordTime;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         load_trigger_config();
-        if (![g_triggerConfig[@"masterEnabled"] boolValue] || RC_IsForegroundAppExcluded()) return;
+        if (!RC_MasterEnabled() || RC_IsForegroundAppExcluded()) return;
         if (g_lastIOSScreenshotTime >= chordTime - 0.1) return;
         SRLog(@"[Screenshot] Home + Power: iOS took no screenshot - taking one");
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ handle_command(@"screenshot"); });
@@ -11948,7 +12072,7 @@ static CFAbsoluteTime g_powerSequenceWokeAt = 0; // when that wake happened: an 
 // going to replace them with anything.
 static BOOL RC_TriggerIsActionable(NSString *key) {
     load_trigger_config();
-    if (![g_triggerConfig[@"masterEnabled"] boolValue]) return NO;
+    if (!RC_MasterEnabled()) return NO;
     id trigger = g_triggerConfig[@"triggers"][key];
     if (![trigger isKindOfClass:[NSDictionary class]]) return NO;
     if (![trigger[@"enabled"] boolValue]) return NO;
@@ -11960,7 +12084,7 @@ static BOOL RC_TriggerIsActionable(NSString *key) {
 // (Without this, a user with no power triggers would eat a 0.4s lock delay.)
 static BOOL RC_PowerMultiClickEnabled(void) {
     load_trigger_config();
-    if (![g_triggerConfig[@"masterEnabled"] boolValue]) return NO;
+    if (!RC_MasterEnabled()) return NO;
     NSDictionary *t = g_triggerConfig[@"triggers"];
     return [t[@"power_double_tap"][@"enabled"] boolValue] ||
            [t[@"power_triple_click"][@"enabled"] boolValue] ||
@@ -11973,7 +12097,7 @@ static BOOL RC_PowerMultiClickEnabled(void) {
 // and should reach Wallet immediately, same as always.
 static BOOL RC_HigherPowerMultiClickArmed(void) {
     load_trigger_config();
-    if (![g_triggerConfig[@"masterEnabled"] boolValue]) return NO;
+    if (!RC_MasterEnabled()) return NO;
     NSDictionary *t = g_triggerConfig[@"triggers"];
     return [t[@"power_triple_click"][@"enabled"] boolValue] ||
            [t[@"power_quadruple_click"][@"enabled"] boolValue];
@@ -12317,7 +12441,7 @@ static BOOL iPadIsSwappedBySystem() {
 
 static BOOL should_swap_in_hooks() {
     load_trigger_config();
-    if (![g_triggerConfig[@"masterEnabled"] boolValue]) return NO;
+    if (!RC_MasterEnabled()) return NO;
     if (![g_triggerConfig[@"fixedVolumeButtons"] boolValue]) return NO;
     
     return iPadIsSwappedBySystem();
@@ -12325,7 +12449,7 @@ static BOOL should_swap_in_hooks() {
 
 static BOOL should_swap_in_hid_listener() {
     load_trigger_config();
-    if (![g_triggerConfig[@"masterEnabled"] boolValue]) return NO;
+    if (!RC_MasterEnabled()) return NO;
     if ([g_triggerConfig[@"fixedVolumeButtons"] boolValue]) {
         return NO;
     }
@@ -13080,7 +13204,7 @@ static void RC_CheckAndFire() {
     
     // 2. Load Config
     load_trigger_config();
-    BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
+    BOOL masterEnabled = RC_MasterEnabled();
     BOOL quadEnabled = masterEnabled && [g_triggerConfig[@"triggers"][@"trigger_home_quadruple_click"][@"enabled"] boolValue];
 
     // 3. IMMEDIATE FIRE CHECK (Quadruple)
@@ -13152,7 +13276,7 @@ static void RC_CheckAndFirePower() {
     }
     
     load_trigger_config();
-    BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
+    BOOL masterEnabled = RC_MasterEnabled();
     BOOL quadEnabled = masterEnabled && [g_triggerConfig[@"triggers"][@"power_quadruple_click"][@"enabled"] boolValue];
     
     // 3. IMMEDIATE FIRE CHECK (Quadruple)
@@ -13306,7 +13430,7 @@ static void handle_hid_event(void* target, void* refcon, IOHIDEventSystemClientR
 
         dispatch_async(dispatch_get_main_queue(), ^{
             load_trigger_config();
-            BOOL enabled = [g_triggerConfig[@"masterEnabled"] boolValue] && 
+            BOOL enabled = RC_MasterEnabled() && 
                 ([g_triggerConfig[@"triggers"][@"touchid_hold"][@"enabled"] boolValue] || 
                  [g_triggerConfig[@"triggers"][@"touchid_tap"][@"enabled"] boolValue]);
             if (!enabled) return;
@@ -13869,7 +13993,7 @@ static void setup_background_hid_listener() {
     }
 
     load_trigger_config();
-    BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
+    BOOL masterEnabled = RC_MasterEnabled();
     BOOL longPressEnabled = masterEnabled && 
                    [g_triggerConfig[@"triggers"][@"power_long_press"][@"enabled"] boolValue];
 
@@ -14113,7 +14237,7 @@ static void setup_background_hid_listener() {
     }
 
     load_trigger_config();
-    BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
+    BOOL masterEnabled = RC_MasterEnabled();
     BOOL longPressEnabled = masterEnabled && 
                    [g_triggerConfig[@"triggers"][@"power_long_press"][@"enabled"] boolValue];
 
@@ -14276,7 +14400,7 @@ static BOOL RC_HomeSinglePressIsPartOfHeldClicks(void) {
     // counted for a replay (see g_powerPressIsHomeChord)
     if (g_powerPressIsHomeChord && !RC_IsForegroundAppExcluded()) {
         load_trigger_config();
-        if ([g_triggerConfig[@"masterEnabled"] boolValue]) {
+        if (RC_MasterEnabled()) {
             SRLog(@"Suppressing native singlePress: - Power was pressed with Home (the screenshot chord), so it doesn't sleep");
             return;
         }
@@ -14295,7 +14419,7 @@ static BOOL RC_HomeSinglePressIsPartOfHeldClicks(void) {
     // everything while the master switch is off, are left to iOS.
     if (g_powerReleasedWithVolumeHeld && RC_ScreenIsOn() && !RC_IsForegroundAppExcluded()) {
         load_trigger_config();
-        if ([g_triggerConfig[@"masterEnabled"] boolValue]) {
+        if (RC_MasterEnabled()) {
             SRLog(@"Suppressing native singlePress: - a Volume button was still held at its release, so it doesn't sleep");
             RCTKEvent(@"ios.singlePress", @{ @"press": @"volumeDownHeld" });
             return;
@@ -14329,7 +14453,7 @@ static BOOL RC_HomeSinglePressIsPartOfHeldClicks(void) {
 - (void)doublePress:(id)arg1 {
     SRLog(@"SBLockHardwareButton doublePress: called");
     load_trigger_config();
-    BOOL enabled = [g_triggerConfig[@"masterEnabled"] boolValue] &&
+    BOOL enabled = RC_MasterEnabled() &&
                    [g_triggerConfig[@"triggers"][@"power_double_tap"][@"enabled"] boolValue];
     if (enabled) {
         // We already handled it in Actions (hopefully), or we handle it here if Actions wasn't called
@@ -14767,7 +14891,7 @@ static BOOL should_suppress_bottom_edge_gesture(CGPoint loc, UIInterfaceOrientat
     if (!g_triggerConfig) {
         load_trigger_config();
     }
-    if (!g_triggerConfig || ![g_triggerConfig[@"masterEnabled"] boolValue]) {
+    if (!g_triggerConfig || !RC_MasterEnabled()) {
         return NO;
     }
     
@@ -14787,7 +14911,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
     if (!g_triggerConfig) {
         load_trigger_config();
     }
-    if (!g_triggerConfig || ![g_triggerConfig[@"masterEnabled"] boolValue]) {
+    if (!g_triggerConfig || !RC_MasterEnabled()) {
         return NO;
     }
     NSDictionary *triggers = g_triggerConfig[@"triggers"];
@@ -14847,7 +14971,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                     g_pendingStatusBarTrigger = nil;
                     
                     load_trigger_config();
-                    BOOL enabled = [g_triggerConfig[@"masterEnabled"] boolValue] && 
+                    BOOL enabled = RC_MasterEnabled() && 
                                    [g_triggerConfig[@"triggers"][@"trigger_statusbar_double_tap"][@"enabled"] boolValue];
                     
                     if (enabled) {
@@ -14887,7 +15011,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
 
                         if (g_pendingStatusBarTrigger) {
                             load_trigger_config();
-                            BOOL enabled = [g_triggerConfig[@"masterEnabled"] boolValue] && 
+                            BOOL enabled = RC_MasterEnabled() && 
                                            [g_triggerConfig[@"triggers"][g_pendingStatusBarTrigger][@"enabled"] boolValue];
                             
                             if (enabled) {
@@ -14965,7 +15089,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                     if (isHoz && abs_udx > 15 && !g_statusBarSwipeHapticFired) {
                         NSString *trigger = (user_dx > 0) ? @"trigger_statusbar_swipe_right" : @"trigger_statusbar_swipe_left";
                         load_trigger_config();
-                        if ([g_triggerConfig[@"masterEnabled"] boolValue] && [g_triggerConfig[@"triggers"][trigger][@"enabled"] boolValue]) {
+                        if (RC_MasterEnabled() && [g_triggerConfig[@"triggers"][trigger][@"enabled"] boolValue]) {
                             trigger_haptic();
                         }
                         if (RC_TriggerIsActionable(trigger)) RC_FreezeGestureScrolling();
@@ -14991,7 +15115,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                     if (isHoz && abs_udx > 15) {
                         NSString *trigger = (user_dx > 0) ? @"trigger_bottombar_swipe_right" : @"trigger_bottombar_swipe_left";
                         load_trigger_config();
-                        if ([g_triggerConfig[@"masterEnabled"] boolValue] && [g_triggerConfig[@"triggers"][trigger][@"enabled"] boolValue]) {
+                        if (RC_MasterEnabled() && [g_triggerConfig[@"triggers"][trigger][@"enabled"] boolValue]) {
                             trigger_haptic();
                         }
                         if (RC_TriggerIsActionable(trigger)) RC_FreezeGestureScrolling();
@@ -15011,7 +15135,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                 if (g_bottomBarTouchActive && !g_bottomBarSwipeUpTriggered && isVertUp && abs_udy > 45) {
                     if (g_pendingBottomBarSwipeUpTrigger) {
                         load_trigger_config();
-                        BOOL enabled = [g_triggerConfig[@"masterEnabled"] boolValue] && 
+                        BOOL enabled = RC_MasterEnabled() && 
                                        [g_triggerConfig[@"triggers"][g_pendingBottomBarSwipeUpTrigger][@"enabled"] boolValue];
                         if (enabled) {
                             g_bottomBarSwipeUpTriggered = YES;
@@ -15041,7 +15165,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                     if (g_bottomBarTouchActive && !g_bottomBarSwipeUpTriggered && isVertUp && abs_udy > 35) {
                         if (g_pendingBottomBarSwipeUpTrigger) {
                             load_trigger_config();
-                            BOOL enabled = [g_triggerConfig[@"masterEnabled"] boolValue] && 
+                            BOOL enabled = RC_MasterEnabled() && 
                                            [g_triggerConfig[@"triggers"][g_pendingBottomBarSwipeUpTrigger][@"enabled"] boolValue];
                             if (enabled) {
                                 g_bottomBarSwipeUpTriggered = YES;
@@ -15286,7 +15410,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
             
             if (triggerKey) {
                 load_trigger_config();
-                BOOL enabled = [g_triggerConfig[@"masterEnabled"] boolValue] && 
+                BOOL enabled = RC_MasterEnabled() && 
                                [g_triggerConfig[@"triggers"][triggerKey][@"enabled"] boolValue];
                 
                 if (enabled) {
@@ -15333,7 +15457,7 @@ static SBSystemGestureManager *g_gestureManager = nil;
 // Helper: Check if any edge gestures are enabled
 static BOOL should_register_edge_gestures() {
     if (!g_triggerConfig) return NO;
-    if (![g_triggerConfig[@"masterEnabled"] boolValue]) return NO;
+    if (!RC_MasterEnabled()) return NO;
     
     NSDictionary *triggers = g_triggerConfig[@"triggers"];
     NSArray *edgeTriggers = @[@"trigger_edge_left_swipe_up", 
