@@ -122,6 +122,10 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
     if (section == RCAdvancedSettingsSectionBanners) {
         return @"Actions that show a banner when a trigger runs them.";
     } else if (section == RCAdvancedSettingsSectionNFC) {
+        if (![RCConfigManager nfcBackgroundReadingSupported]) return @"Experimental NFC requires iPhone XS or later.";
+        if ([RCConfigManager sharedManager].nfcBackgroundReading) {
+            return @"Enabling Experimental NFC gives control of the NFC sensor back to iOS. This is so that express cards, tags, and passes still work as intended. iOS has an internal NFC cooldown of about 3 seconds. For cards and keys to work while the phone is locked, keep NFC With Screen Off set to Off.";
+        }
         return @"NFC scanning options.";
     } else if (section == RCAdvancedSettingsSectionOptions) {
         return @"Logging and display options.";
@@ -131,7 +135,7 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section == RCAdvancedSettingsSectionBanners) return 1;
-    if (section == RCAdvancedSettingsSectionNFC) return 2;
+    if (section == RCAdvancedSettingsSectionNFC) return 3;
     return 2; // Wrap Long Names, Logging
 }
 
@@ -139,7 +143,7 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
     RCConfigManager *cm = [RCConfigManager sharedManager];
     
     BOOL isValueRow = (indexPath.section == RCAdvancedSettingsSectionBanners) ||
-                      (indexPath.section == RCAdvancedSettingsSectionNFC && indexPath.row == 1) ||
+                      (indexPath.section == RCAdvancedSettingsSectionNFC && indexPath.row == 2) ||
                       (indexPath.section == RCAdvancedSettingsSectionOptions && indexPath.row == 1);
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:isValueRow ? UITableViewCellStyleValue1 : UITableViewCellStyleDefault reuseIdentifier:nil];
     cell.backgroundColor = [cm tweakColorForKey:@"blockBackground" defaultVal:0.12];
@@ -171,6 +175,14 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
             cell.accessoryView = _nfcSwitch;
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
         } else if (indexPath.row == 1) {
+            cell.textLabel.text = @"Experimental NFC";
+            UISwitch *experimental = [[UISwitch alloc] init];
+            experimental.on = cm.nfcBackgroundReading;
+            experimental.enabled = [RCConfigManager nfcBackgroundReadingSupported] && cm.nfcEnabled;
+            [experimental addTarget:self action:@selector(experimentalNFCChanged:) forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = experimental;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        } else if (indexPath.row == 2) {
             cell.textLabel.text = @"NFC With Screen Off";
             cell.detailTextLabel.text = [self nfcWindowTitleForSeconds:cm.nfcScreenOffSeconds];
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
@@ -198,7 +210,7 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
 
     if (indexPath.section == RCAdvancedSettingsSectionBanners) {
         [self.navigationController pushViewController:[[RCBannersViewController alloc] init] animated:YES];
-    } else if (indexPath.section == RCAdvancedSettingsSectionNFC && indexPath.row == 1) {
+    } else if (indexPath.section == RCAdvancedSettingsSectionNFC && indexPath.row == 2) {
         [self chooseNFCWindowFromView:[tableView cellForRowAtIndexPath:indexPath]];
     } else if (indexPath.section == RCAdvancedSettingsSectionOptions && indexPath.row == 1) {
         [self chooseLogLevelFromView:[tableView cellForRowAtIndexPath:indexPath]];
@@ -209,6 +221,21 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
 
 - (void)nfcToggleChanged:(UISwitch *)sender {
     [RCConfigManager sharedManager].nfcEnabled = sender.on;
+    [self.tableView reloadData];
+}
+
+- (void)experimentalNFCChanged:(UISwitch *)sender {
+    RCConfigManager *cm = [RCConfigManager sharedManager];
+    cm.nfcBackgroundReading = sender.on;
+    if (sender.on && cm.nfcScreenOffSeconds > 0) {
+        cm.nfcScreenOffSeconds = 0;
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Experimental NFC"
+            message:@"Enabling Experimental NFC gives control of the NFC sensor back to iOS. This is so that express cards, tags, and passes still work as intended. iOS has an internal NFC cooldown of about 3 seconds. For cards and keys to work while the phone is locked, keep NFC With Screen Off set to Off."
+            preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+    }
+    [self.tableView reloadData];
 }
 
 - (void)wrapLongNamesToggleChanged:(UISwitch *)sender {

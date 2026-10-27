@@ -18,6 +18,20 @@ extern BOOL RCIsNFCEnabled();
 // Declare the screen-off window from Tweak.x
 extern NSTimeInterval RCNFCScreenOffWindow();
 
+// Experimental NFC: iOS's own background tag reader (iPhone XS and later) reads tags while the screen is
+// on; the scan below runs only with the screen off. From Tweak.x.
+extern BOOL RCNFCBackgroundReading();
+
+// Darwin notifications shared with RCNFCReader (in nfcd)
+#define kRCNFCBackgroundState "com.pizzaman.rc.nfc_background"         // state 1: Experimental NFC is on
+#define kRCNFCBackgroundTag   "com.pizzaman.rc.nfc_background_tag"     // a tag: state = ID length << 56 | ID bytes
+
+// The scan paused by the NFC Scanner action (Pause / Resume / Toggle) until resumed or a respring.
+// Only the scan: with Experimental NFC, tags are still read while the screen is on.
+static BOOL g_rcnfcScannerPaused;
+// The screen is dark (com.apple.springboard.hasBlankedScreen): SpringBoard's own screen state can lag it
+static BOOL g_rcnfcScreenBlanked;
+
 // ============ Private NearField API ============
 @class NFReaderSession, NFTag;
 
@@ -306,6 +320,19 @@ static BOOL rcnfc_screenIsOn(void) {
         return;
     }
 
+    if (g_rcnfcScannerPaused) {
+        if (!self.quiet) SRLog(@"[NFC] The scanner is paused (NFC Scanner action) - not scanning");
+        self.quiet = NO;
+        return;
+    }
+
+    // Experimental NFC: with the screen on, iOS reads the tags itself and the scan stays out of the way
+    if (RCNFCBackgroundReading() && !g_rcnfcScreenBlanked && rcnfc_screenIsOn()) {
+        if (!self.quiet) SRLog(@"[NFC] Screen on with Experimental NFC: iOS reads the tags - not scanning");
+        self.quiet = NO;
+        return;
+    }
+
     // Wallet or Apple Pay is using the controller: look again in a moment
     if (rcnfc_walletCheck()) {
         self.quiet = YES; // looked at every second until it closes: not logged each time
@@ -436,6 +463,11 @@ static BOOL rcnfc_screenIsOn(void) {
 
 - (void)handleScreenWake {
     if (!RCIsNFCEnabled()) {
+        return;
+    }
+    // Experimental NFC: iOS reads the tags while the screen is on. These wake hooks also fire as the
+    // screen goes dark, so they leave the scan alone: the screen-dark notification starts and ends it.
+    if (RCNFCBackgroundReading()) {
         return;
     }
 
@@ -698,6 +730,62 @@ static void resume_nfc_callback(CFNotificationCenterRef center, void *observer, 
     [manager scheduleRescanAfter:2.5];
 }
 
+// Experimental NFC on or off (settings changed, or at start): RCNFCReader in nfcd is told, and the scan
+// starts or stops to match the screen
+void RCNFCConfigChanged(void) {
+    static int token = NOTIFY_TOKEN_INVALID;
+    if (token == NOTIFY_TOKEN_INVALID) notify_register_check(kRCNFCBackgroundState, &token);
+    BOOL on = RCNFCBackgroundReading();
+    uint64_t previous = 2;
+    notify_get_state(token, &previous);
+    if (previous == (on ? 1 : 0)) return;
+    notify_set_state(token, on ? 1 : 0);
+    notify_post(kRCNFCBackgroundState);
+    SRLog(@"[NFC] Experimental NFC %@", on ? @"on: iOS reads tags while the screen is on" : @"off");
+    RCNFCManager *manager = [RCNFCManager sharedInstance];
+    if (!rcnfc_screenIsOn()) return;
+    if (on) [manager stopScanning];
+    else [manager startScanning];
+}
+
+// The NFC Scanner action: "pause", "resume" or "toggle"; returns the state after it
+NSString *RCNFCScannerCommand(NSString *what) {
+    RCNFCManager *manager = [RCNFCManager sharedInstance];
+    BOOL pause = [what isEqualToString:@"pause"] ? YES : [what isEqualToString:@"resume"] ? NO : !g_rcnfcScannerPaused;
+    if (![what isEqualToString:@"pause"] && ![what isEqualToString:@"resume"] && ![what isEqualToString:@"toggle"]) {
+        return g_rcnfcScannerPaused ? @"paused" : @"running";
+    }
+    if (pause != g_rcnfcScannerPaused) {
+        g_rcnfcScannerPaused = pause;
+        SRLog(@"[NFC] Scanner %@ (NFC Scanner action)", pause ? @"paused" : @"resumed");
+        if (pause) {
+            [manager stopScanning];
+        } else {
+            [manager noteActivity];
+            manager.rescanLateness = 0;
+            [manager startScanning];
+        }
+    }
+    return g_rcnfcScannerPaused ? @"paused" : @"running";
+}
+
+// A tag iOS's own reader detected (Experimental NFC), from RCNFCReader in nfcd
+static void rcnfc_backgroundTag(uint64_t state) {
+    unsigned length = (unsigned)(state >> 56);
+    if (length == 0 || length > 7 || !RCIsNFCEnabled() || !RCNFCBackgroundReading()) return;
+    NSMutableString *uid = [NSMutableString string];
+    for (int i = (int)length - 1; i >= 0; i--) [uid appendFormat:@"%02X", (unsigned)((state >> (8 * i)) & 0xFF)];
+    RCNFCManager *manager = [RCNFCManager sharedInstance];
+    [manager noteActivity];
+    if ([manager isRepeatOfTag:uid]) {
+        SRLog(@"[NFC] Same tag as a moment ago (iOS reader) - not triggering again");
+        return;
+    }
+    SRLog(@"[NFC] Tag %@ read by iOS (Experimental NFC)", uid);
+    AudioServicesPlaySystemSound(1520);
+    RCExecuteTrigger([@"nfc_" stringByAppendingString:uid]);
+}
+
 %ctor {
     %init;
 
@@ -718,6 +806,42 @@ static void resume_nfc_callback(CFNotificationCenterRef center, void *observer, 
         CFNotificationSuspensionBehaviorDeliverImmediately);
         
     SRLog(@"[NFC-WAKE] RCNFCManager hooks initialized - multi-hook wake detection active");
+
+    // Experimental NFC: tags from iOS's own reader, and the screen going dark (the scan runs only then)
+    int tagToken;
+    notify_register_dispatch(kRCNFCBackgroundTag, &tagToken, dispatch_get_main_queue(), ^(int t) {
+        uint64_t state = 0;
+        notify_get_state(t, &state);
+        rcnfc_backgroundTag(state);
+    });
+    int blankToken;
+    notify_register_dispatch("com.apple.springboard.hasBlankedScreen", &blankToken, dispatch_get_main_queue(), ^(int t) {
+        uint64_t blanked = 0;
+        notify_get_state(t, &blanked);
+        g_rcnfcScreenBlanked = blanked != 0;
+        if (!RCIsNFCEnabled() || !RCNFCBackgroundReading()) return;
+        RCNFCManager *manager = [RCNFCManager sharedInstance];
+        if (!blanked) {
+            if (manager.isScanning) {
+                SRLog(@"[NFC] Screen on with Experimental NFC - ending the screen-off scan");
+                [manager stopScanning];
+            }
+            return;
+        }
+        if (RCNFCScreenOffWindow() <= 0) return;
+        if (g_rcnfcScannerPaused) {
+            SRLog(@"[NFC] Screen off with Experimental NFC - the scanner is paused (NFC Scanner action)");
+            return;
+        }
+        // Screen off: tags can be tapped for the screen-off window (Settings > NFC With Screen Off)
+        SRLog(@"[NFC] Screen off with Experimental NFC - scanning for %.0f s", RCNFCScreenOffWindow());
+        manager.screenOffSince = [NSDate date];
+        [manager noteActivity];
+        manager.rescanLateness = 0;
+        [manager startScanning];
+    });
+    // Tell nfcd once the settings are readable
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ RCNFCConfigChanged(); });
 }
 
 

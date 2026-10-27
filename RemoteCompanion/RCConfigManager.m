@@ -1,4 +1,5 @@
 #import "RCConfigManager.h"
+#import <sys/sysctl.h>
 #import <LocalAuthentication/LocalAuthentication.h>
 #import <notify.h>
 #include <fcntl.h>
@@ -332,6 +333,28 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         return YES;
     }
     return [_config[@"nfcEnabled"] boolValue];
+}
+
+- (BOOL)nfcBackgroundReading {
+    return [RCConfigManager nfcBackgroundReadingSupported] && [_config[@"nfcBackgroundReading"] boolValue];
+}
+
+- (void)setNfcBackgroundReading:(BOOL)on {
+    _config[@"nfcBackgroundReading"] = @(on);
+    [self saveConfig];
+}
+
+// iPhone XS and later (iPhone11,x and up) read NFC tags in the background
++ (BOOL)nfcBackgroundReadingSupported {
+    static int supported = -1;
+    if (supported < 0) {
+        char model[64] = {0};
+        size_t size = sizeof(model);
+        int major = 0;
+        if (sysctlbyname("hw.machine", model, &size, NULL, 0) == 0 && strncmp(model, "iPhone", 6) == 0) major = atoi(model + 6);
+        supported = major >= 11;
+    }
+    return supported;
 }
 
 - (double)nfcScreenOffSeconds {
@@ -852,6 +875,9 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         _config[@"masterEnabled"] = importedConfig[@"masterEnabled"];
     }
     
+    if (importedConfig[@"nfcBackgroundReading"]) {
+        _config[@"nfcBackgroundReading"] = importedConfig[@"nfcBackgroundReading"];
+    }
     if (importedConfig[@"nfcEnabled"]) {
         _config[@"nfcEnabled"] = importedConfig[@"nfcEnabled"];
     }
@@ -982,6 +1008,9 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"location on": @"Location Services On",
         @"location off": @"Location Services Off",
         @"location toggle": @"Location Services Toggle",
+        @"nfc scanner resume": @"NFC Scanner Resume",
+        @"nfc scanner pause": @"NFC Scanner Pause",
+        @"nfc scanner toggle": @"NFC Scanner Toggle",
         @"location status": @"Location Services Status",
         @"gps on": @"Location Services On",
         @"gps off": @"Location Services Off",
@@ -1502,6 +1531,9 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"location on": @"location.fill",
         @"location off": @"location.slash",
         @"location toggle": @"location.fill",
+        @"nfc scanner resume": @"wave.3.right",
+        @"nfc scanner pause": @"wave.3.right",
+        @"nfc scanner toggle": @"wave.3.right",
         @"location status": @"location.circle",
         @"gps on": @"location.fill",
         @"gps off": @"location.slash",
@@ -1776,6 +1808,14 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
             @"prefixes": @[@"flashlight ", @"flash "],
             @"suffixes": @[@"on", @"off", @"toggle"],
             @"displaySuffixes": @[@"On", @"Off", @"Toggle"]
+        },
+        @{
+            @"key": @"nfcscanner",
+            @"name": @"NFC Scanner",
+            @"icon": @"wave.3.right",
+            @"prefixes": @[@"nfc scanner "],
+            @"suffixes": @[@"resume", @"pause", @"toggle"],
+            @"displaySuffixes": @[@"Resume", @"Pause", @"Toggle"]
         },
         @{
             @"key": @"appearance",
