@@ -14391,6 +14391,84 @@ static NSTimeInterval g_lastStatusBarDoubleTapTime = 0;
 // Bottom Bar Extended State
 static NSTimeInterval g_lastBottomSwipeTriggerTime = 0;
 
+// ============ GESTURE SCROLL SUPPRESSION (issue #81) ============
+// While a status-bar swipe or bottom swipe-up is being executed, the
+// underlying list (SpringBoard home pages, Notification Center, cover
+// sheet, or a foreground app's table) would otherwise scroll with the
+// finger. SquidGesture avoids this by holding its recognizers on every
+// window; here we freeze SpringBoard's own scroll views once directional
+// intent is confirmed AND the matching trigger is actionable, broadcast a
+// Darwin notification so UIKit-injected app processes can freeze theirs,
+// and restore everything on touch end/cancel.
+static NSHashTable *g_rcFrozenScrollViews = nil;
+static BOOL g_rcGestureScrollFrozen = NO;
+
+static BOOL RC_GestureScrollSuppressionWanted(void) {
+    // Config-gated: don't touch scrolling unless at least one related
+    // trigger could actually fire (enabled + has actions).
+    static NSString * const keys[] = {
+        @"trigger_statusbar_swipe_left", @"trigger_statusbar_swipe_right",
+        @"trigger_statusbar_left_hold", @"trigger_statusbar_center_hold",
+        @"trigger_statusbar_right_hold", @"trigger_statusbar_double_tap",
+        @"trigger_bottombar_swipe_left", @"trigger_bottombar_swipe_right",
+        @"trigger_bottom_swipe_up_left", @"trigger_bottom_swipe_up_center",
+        @"trigger_bottom_swipe_up_right",
+        @"trigger_edge_left_swipe_up", @"trigger_edge_left_swipe_down",
+        @"trigger_edge_right_swipe_up", @"trigger_edge_right_swipe_down"
+    };
+    for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        if (RC_TriggerIsActionable(keys[i])) return YES;
+    }
+    return NO;
+}
+
+static void RC_CollectScrollViewsInView(UIView *view, NSMutableArray *out) {
+    if ([view isKindOfClass:[UIScrollView class]]) [out addObject:(UIScrollView *)view];
+    for (UIView *sub in view.subviews) RC_CollectScrollViewsInView(sub, out);
+}
+
+static void RC_FreezeGestureScrolling(void) {
+    if (g_rcGestureScrollFrozen) return;
+    if (!RC_GestureScrollSuppressionWanted()) return;
+    void (^work)(void) = ^{
+        if (g_rcGestureScrollFrozen) return;
+        g_rcGestureScrollFrozen = YES;
+        if (!g_rcFrozenScrollViews) g_rcFrozenScrollViews = [NSHashTable weakObjectsHashTable];
+        @try {
+            for (UIWindow *w in [UIApplication sharedApplication].windows) {
+                NSMutableArray *found = [NSMutableArray array];
+                RC_CollectScrollViewsInView(w, found);
+                for (UIScrollView *sv in found) {
+                    if (sv.scrollEnabled) {
+                        [g_rcFrozenScrollViews addObject:sv];
+                        sv.scrollEnabled = NO;
+                    }
+                }
+            }
+        } @catch (__unused NSException *e) { }
+        notify_post("com.saihgupr.remotecompanion.gesture-scroll-begin");
+    };
+    if ([NSThread isMainThread]) work();
+    else dispatch_async(dispatch_get_main_queue(), work);
+}
+
+static void RC_UnfreezeGestureScrolling(void) {
+    if (!g_rcGestureScrollFrozen) return;
+    void (^work)(void) = ^{
+        if (!g_rcGestureScrollFrozen) return;
+        g_rcGestureScrollFrozen = NO;
+        @try {
+            for (UIScrollView *sv in g_rcFrozenScrollViews) {
+                @try { sv.scrollEnabled = YES; } @catch (__unused NSException *e) { }
+            }
+        } @catch (__unused NSException *e) { }
+        [g_rcFrozenScrollViews removeAllObjects];
+        notify_post("com.saihgupr.remotecompanion.gesture-scroll-end");
+    };
+    if ([NSThread isMainThread]) work();
+    else dispatch_async(dispatch_get_main_queue(), work);
+}
+
 static UIInterfaceOrientation get_current_interface_orientation() {
     // SpringBoard's active orientation is authoritative (keyWindow/windowScene can
     // stay portrait on newer iPhones). Fall back to windowScene only if needed.
@@ -14692,6 +14770,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                             if (enabled) {
                                 g_statusBarHoldTriggered = YES;
                                 trigger_haptic();
+                                RC_FreezeGestureScrolling();
                                 RCExecuteTrigger(g_pendingStatusBarTrigger);
                                 SRLog(@"%@ FIRED!", g_pendingStatusBarTrigger);
                             }
@@ -14764,6 +14843,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                         load_trigger_config();
                         if ([g_triggerConfig[@"masterEnabled"] boolValue] && [g_triggerConfig[@"triggers"][trigger][@"enabled"] boolValue]) {
                             trigger_haptic();
+                            RC_FreezeGestureScrolling();
                         }
                         g_statusBarSwipeHapticFired = YES;
                     }
@@ -14782,6 +14862,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                         load_trigger_config();
                         if ([g_triggerConfig[@"masterEnabled"] boolValue] && [g_triggerConfig[@"triggers"][trigger][@"enabled"] boolValue]) {
                             trigger_haptic();
+                            RC_FreezeGestureScrolling();
                         }
                         g_bottomBarHapticFired = YES;
                     }
@@ -14797,6 +14878,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                             g_bottomBarSwipeUpTriggered = YES;
                             g_lastBottomSwipeTriggerTime = [[NSDate date] timeIntervalSince1970];
                             trigger_haptic();
+                            RC_FreezeGestureScrolling();
                             RCExecuteTrigger(g_pendingBottomBarSwipeUpTrigger);
                             SRLog(@"[RCBottom] %@ FIRED during move!", g_pendingBottomBarSwipeUpTrigger);
                         }
@@ -14826,6 +14908,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                                 g_bottomBarSwipeUpTriggered = YES;
                                 g_lastBottomSwipeTriggerTime = [[NSDate date] timeIntervalSince1970];
                                 trigger_haptic();
+                                RC_FreezeGestureScrolling();
                                 RCExecuteTrigger(g_pendingBottomBarSwipeUpTrigger);
                                 SRLog(@"[RCBottom] %@ FIRED on ended!", g_pendingBottomBarSwipeUpTrigger);
                             }
@@ -14843,6 +14926,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                     g_bottomBarSwipeUpTriggered = NO;
                     g_pendingBottomBarSwipeUpTrigger = nil;
                     g_rcLatchedTouchOrientationValid = NO;
+                    RC_UnfreezeGestureScrolling();
                 }
             }
         }
@@ -14859,6 +14943,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
             g_bottomBarSwipeUpTriggered = NO;
             g_pendingBottomBarSwipeUpTrigger = nil;
             g_rcLatchedTouchOrientationValid = NO;
+            RC_UnfreezeGestureScrolling();
         }
     }
     
@@ -14953,6 +15038,19 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
         CGFloat verticalSwipeDistance = fabs(dy_u);
         CGFloat horizontalDrift = fabs(dx_u);
 
+        // Early freeze: once vertical intent is clear and the matching
+        // trigger is actionable, hold the list still for the rest of the
+        // touch (firing itself happens at the 30pt threshold below).
+        if (!gesture.hasTriggered && verticalSwipeDistance > 10 && horizontalDrift < 100) {
+            NSString *earlyKey = nil;
+            if (gesture.isLeftEdge) {
+                earlyKey = (dy_u < 0) ? @"trigger_edge_left_swipe_up" : @"trigger_edge_left_swipe_down";
+            } else if (gesture.isRightEdge) {
+                earlyKey = (dy_u < 0) ? @"trigger_edge_right_swipe_up" : @"trigger_edge_right_swipe_down";
+            }
+            if (earlyKey && RC_TriggerIsActionable(earlyKey)) RC_FreezeGestureScrolling();
+        }
+
         // Threshold: 30pt for instant trigger
         if (verticalSwipeDistance > 30 && horizontalDrift < 100) {
             SRLogMin(@"Instant Edge Trigger! V=%.2f H=%.2f orient=%ld", verticalSwipeDistance, horizontalDrift, (long)orientation);
@@ -14974,6 +15072,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                 if (enabled) {
                     // Haptic feedback ONLY if enabled
                     trigger_haptic();
+                    RC_FreezeGestureScrolling();
                     RCExecuteTrigger(triggerKey);
                     SRLog(@"%@ FIRED INSTANTLY!", triggerKey);
                 } else {
@@ -14989,6 +15088,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
         gesture.state == UIGestureRecognizerStateFailed) {
         SRLog(@"Edge Gesture Finished (State %ld): hasTriggered=%d", (long)gesture.state, gesture.hasTriggered);
         gesture.hasTriggered = NO;
+        RC_UnfreezeGestureScrolling();
     }
 }
 @end
@@ -15579,6 +15679,77 @@ static BOOL RC_ShouldKeepBottomBarSideSwipe(void) {
 %end
 
 // ==========================================
+// App scroll guard (UIKit processes, issue #81)
+// ==========================================
+// SpringBoard detects the gesture and broadcasts a Darwin notification;
+// each UIKit-injected app process freezes its own scroll views for the
+// duration so the foreground list (e.g. Settings) does not scroll along
+// with a status-bar swipe or bottom swipe-up.
+
+%group AppScrollGuard
+
+static BOOL g_appSuppressScroll = NO;
+static NSHashTable *g_appFrozenScrollViews = nil;
+
+static void RCApp_CollectScrollViewsInView(UIView *view, NSMutableArray *out) {
+    if ([view isKindOfClass:[UIScrollView class]]) [out addObject:(UIScrollView *)view];
+    for (UIView *sub in view.subviews) RCApp_CollectScrollViewsInView(sub, out);
+}
+
+static void RCApp_SetScrollFrozen(BOOL frozen) {
+    void (^work)(void) = ^{
+        if (frozen == g_appSuppressScroll && frozen) return;
+        g_appSuppressScroll = frozen;
+        if (!g_appFrozenScrollViews) g_appFrozenScrollViews = [NSHashTable weakObjectsHashTable];
+        @try {
+            if (frozen) {
+                for (UIWindow *w in [UIApplication sharedApplication].windows) {
+                    NSMutableArray *found = [NSMutableArray array];
+                    RCApp_CollectScrollViewsInView(w, found);
+                    for (UIScrollView *sv in found) {
+                        if (sv.scrollEnabled) {
+                            [g_appFrozenScrollViews addObject:sv];
+                            sv.scrollEnabled = NO;
+                        }
+                    }
+                }
+            } else {
+                for (UIScrollView *sv in g_appFrozenScrollViews) {
+                    @try { sv.scrollEnabled = YES; } @catch (__unused NSException *e) { }
+                }
+                [g_appFrozenScrollViews removeAllObjects];
+            }
+        } @catch (__unused NSException *e) { }
+    };
+    if ([NSThread isMainThread]) work();
+    else dispatch_async(dispatch_get_main_queue(), work);
+}
+
+static void RCApp_ScrollBeginCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    RCApp_SetScrollFrozen(YES);
+}
+
+static void RCApp_ScrollEndCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    RCApp_SetScrollFrozen(NO);
+}
+
+%hook UIScrollView
+
+- (void)setContentOffset:(CGPoint)offset {
+    if (g_appSuppressScroll) return;
+    %orig;
+}
+
+- (void)setContentOffset:(CGPoint)offset animated:(BOOL)animated {
+    if (g_appSuppressScroll) return;
+    %orig;
+}
+
+%end
+
+%end
+
+// ==========================================
 // Camera App Hooks (com.apple.camera)
 // ==========================================
 
@@ -16012,6 +16183,25 @@ static NSTimeInterval s_last_camera_launch_notify = 0;
         %init(CameraHook);
         SRLog(@"[RemoteCompanion] Loaded inside com.apple.camera");
     } else {
-        SRLog(@"Tweak Loaded in %@ - Skipping Full Initialization (Choicy Visibility Only)", bundleID);
+        if (NSClassFromString(@"UIApplication") && NSClassFromString(@"UIWindow")) {
+            %init(AppScrollGuard);
+            CFNotificationCenterAddObserver(
+                CFNotificationCenterGetDarwinNotifyCenter(),
+                NULL,
+                (CFNotificationCallback)RCApp_ScrollBeginCallback,
+                CFSTR("com.saihgupr.remotecompanion.gesture-scroll-begin"),
+                NULL,
+                CFNotificationSuspensionBehaviorDeliverImmediately
+            );
+            CFNotificationCenterAddObserver(
+                CFNotificationCenterGetDarwinNotifyCenter(),
+                NULL,
+                (CFNotificationCallback)RCApp_ScrollEndCallback,
+                CFSTR("com.saihgupr.remotecompanion.gesture-scroll-end"),
+                NULL,
+                CFNotificationSuspensionBehaviorDeliverImmediately
+            );
+        }
+        SRLog(@"Tweak Loaded in %@ - Scroll guard only (Choicy Visibility Only)", bundleID);
     }
 }
