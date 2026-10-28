@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Lock Toggle passcode support**: added optional passcode argument to lock toggle (`lock-toggle <pin>` / `lock toggle <pin>`), enabling automatic passcode unlocking when the device is locked, with dedicated configuration dialogs in the iOS action picker, action editor, and Web UI (#99).
 - **Kill Current App action**: new `kill current` command (aliases `kill front`, `kill foreground`, `kill current app`, `kill front app`) force-closes the currently focused app, available in the iOS action picker, Web UI, and `rc` shell commands (#93).
 
 ### Fixed

@@ -2633,7 +2633,7 @@ const CMD_NAMES = {
   'camera shutter':'Camera Shutter / Snap','camera snap':'Camera Shutter / Snap',
   'camera record':'Camera Record Toggle','camera record toggle':'Camera Record Toggle',
   'sneakycam photo':'SneakyCam Photo','sneakycam takephoto':'SneakyCam Photo','sneakycam video':'SneakyCam Video','sneakycam startstopvideo':'SneakyCam Video','sneakycam record':'SneakyCam Video',
-  'lock':'Lock Device','unlock':'Unlock Device',
+  'lock':'Lock Device','unlock':'Unlock Device','lock-toggle':'Lock Toggle','lock toggle':'Lock Toggle',
   'dnd on':'Do Not Disturb On','dnd off':'Do Not Disturb Off','dnd toggle':'Do Not Disturb Toggle',
   'focus off':'Focus Off',
   'audiomix on':'AudioMix On','audiomix off':'AudioMix Off','audiomix toggle':'AudioMix Toggle',
@@ -2749,6 +2749,8 @@ function nameForCmd(cmd) {
   if (lowCmd.startsWith('focus toggle ')) return `Toggle ${cmd.slice(13)}`;
   if (lowCmd.startsWith('airplay connect ')) return `AirPlay Connect ${cmd.slice(16)}`;
   if (lowCmd.startsWith('unlock '))       return 'Unlock Device (Passcode)';
+  if (lowCmd.startsWith('lock-toggle ') || lowCmd.startsWith('lock toggle ')) return 'Lock Toggle (Passcode)';
+  if (lowCmd === 'lock-toggle' || lowCmd === 'lock toggle') return 'Lock Toggle';
   if (lowCmd.startsWith('set-vol '))      return `Set Volume ${cmd.slice(8)}%`;
   if (lowCmd.startsWith('ringer volume ')) return `Set Ringer Volume ${cmd.slice(14)}%`;
   if (lowCmd.startsWith('brightness '))   return `Set Brightness ${cmd.slice(11)}%`;
@@ -2892,7 +2894,7 @@ function iconForCmd(cmd) {
     'wifi on':'wifi','wifi off':'wifi_slash','wifi toggle':'wifi',
     'bluetooth on':'bolt_horizontal_fill','bluetooth off':'bolt_horizontal','bluetooth toggle':'bolt_horizontal_fill',
     'airplane on':'airplane','airplane off':'airplane','airplane toggle':'airplane',
-    'lock':'lock_fill','unlock':'lock_open_fill',
+    'lock':'lock_fill','unlock':'lock_open_fill','lock-toggle':'lock_fill','lock toggle':'lock_fill',
     'dnd on':'moon_fill','dnd off':'moon','dnd toggle':'moon_circle_fill',
     'audiomix on':'equalizer','audiomix off':'equalizer','audiomix toggle':'equalizer',
     'audiohandoff enabled on':'headphones','audiohandoff enabled off':'headphones','audiohandoff enabled toggle':'headphones','audiohandoff auto on':'headphones','audiohandoff auto off':'headphones','audiohandoff auto toggle':'headphones',
@@ -2936,6 +2938,7 @@ function iconForCmd(cmd) {
   if (lowCmd.startsWith('focus '))        return { icon:'moon_circle_fill', cls:'icon-indigo' };
   if (lowCmd.startsWith('airplay connect ')) return { icon:'airplayvideo',     cls:'icon-blue' };
   if (lowCmd.startsWith('unlock '))          return { icon:'lock_open_fill',    cls:'icon-dark' };
+  if (lowCmd.startsWith('lock-toggle ') || lowCmd.startsWith('lock toggle ') || lowCmd === 'lock-toggle' || lowCmd === 'lock toggle') return { icon:'lock_fill', cls:'icon-dark' };
   if (lowCmd.startsWith('set-vol '))      return { icon:'slider_horizontal_3',  cls:'icon-blue' };
   if (lowCmd.startsWith('ringer volume ')) return { icon:'bell_fill',       cls:'icon-blue' };
   if (lowCmd.startsWith('brightness '))   return { icon:'sun_max_fill',    cls:'icon-yellow' };
@@ -3004,6 +3007,7 @@ const ACTION_SECTIONS = [
     { name:'Rotation Lock',     cmd:'rotate toggle',     icon:'lock_rotation', is_toggle:true },
     { name:'Lock Device',       cmd:'lock',          icon:'lock_fill' },
     { name:'Unlock Device',     cmd:'unlock',        icon:'lock_open_fill' },
+    { name:'Lock Toggle',       cmd:'lock-toggle',   icon:'lock_fill', is_toggle:true },
     { name:'Do Not Disturb',    cmd:'dnd toggle',    icon:'moon_circle_fill', is_toggle:true },
     { name:'Set Focus…',        cmd:'__FOCUS__',     icon:'moon_circle_fill', needs_input:true },
     { name:'Low Power Mode',    cmd:'low power toggle',icon:'battery_25', is_toggle:true },
@@ -4706,6 +4710,13 @@ function editAction(idx) {
         saveConfig();
         renderActionList();
       });
+    } else if (low === 'lock-toggle' || low === 'lock toggle' || low.startsWith('lock-toggle ') || low.startsWith('lock toggle ')) {
+      const currentPin = (low.startsWith('lock-toggle ') || low.startsWith('lock toggle ')) ? act.slice(12).trim() : '';
+      promptLockToggleDialog(currentPin, val => {
+        actions[idx] = val;
+        saveConfig();
+        renderActionList();
+      });
     } else if (low.startsWith('km ') || low === 'km') {
       editKMAction(idx);
     }
@@ -4989,6 +5000,10 @@ function selectPickerAction(act) {
     promptMQTTActionPicker();
   } else if (c === 'unlock') {
     promptUnlockDialog('', val => {
+      addActionToCurrent(val);
+    });
+  } else if (c === 'lock-toggle') {
+    promptLockToggleDialog('', val => {
       addActionToCurrent(val);
     });
   } else {
@@ -6702,6 +6717,22 @@ function promptUnlockDialog(initialPasscode = '', callback) {
     val => {
       const pin = (val || '').trim();
       callback(pin ? `unlock ${pin}` : 'unlock');
+    },
+    false,
+    false,
+    true
+  );
+}
+
+function promptLockToggleDialog(initialPasscode = '', callback) {
+  showDialog(
+    'Lock Toggle',
+    'Enter your device passcode to automatically unlock when locked, or leave empty to toggle without passcode:',
+    initialPasscode,
+    'Save',
+    val => {
+      const pin = (val || '').trim();
+      callback(pin ? `lock-toggle ${pin}` : 'lock-toggle');
     },
     false,
     false,

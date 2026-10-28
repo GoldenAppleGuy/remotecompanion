@@ -175,6 +175,7 @@
             @{ @"name": @"Rotation Lock", @"command": @"rotate toggle", @"icon": @"lock.rotation" },
             @{ @"name": @"Lock Device", @"command": @"lock", @"icon": @"lock.fill" },
             @{ @"name": @"Unlock Device...", @"command": @"__UNLOCK_DEVICE__", @"icon": @"lock.open.fill" },
+            @{ @"name": @"Lock Toggle...", @"command": @"__LOCK_TOGGLE__", @"icon": @"lock.circle" },
             @{ @"name": @"Do Not Disturb", @"command": @"dnd toggle", @"icon": @"moon.circle.fill" },
             @{ @"name": @"Set Focus...", @"command": @"__FOCUS__", @"icon": @"moon.circle" },
             @{ @"name": @"Low Power Mode", @"command": @"low power toggle", @"icon": @"battery.25" },
@@ -508,7 +509,8 @@
         [cmd isEqualToString:@"__TAP__"] ||
         [cmd isEqualToString:@"__HOLD__"] ||
         [cmd isEqualToString:@"__SWIPE__"] ||
-        [cmd isEqualToString:@"__UNLOCK_DEVICE__"]) {
+        [cmd isEqualToString:@"__UNLOCK_DEVICE__"] ||
+        [cmd isEqualToString:@"__LOCK_TOGGLE__"]) {
         
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     }
@@ -525,6 +527,11 @@
 
     if ([command isEqualToString:@"__UNLOCK_DEVICE__"]) {
         [self handleUnlockDevice];
+        return;
+    }
+
+    if ([command isEqualToString:@"__LOCK_TOGGLE__"]) {
+        [self handleLockToggle];
         return;
     }
 
@@ -857,6 +864,60 @@
     }];
     
     [alert addAction:wakeOnly];
+    [alert addAction:saveWithPasscode];
+    [alert addAction:cancel];
+    alert.preferredAction = saveWithPasscode;
+    
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)handleLockToggle {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Lock Toggle"
+                                                                   message:@"Enter a passcode to unlock automatically when locked, or choose 'Toggle Without Passcode' to toggle without passcode entry.\n\nNote: Configured passcodes are stored in plain text in trigger settings (rc_triggers.plist)."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    
+    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.placeholder = @"Passcode (optional)";
+        textField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+        textField.secureTextEntry = YES;
+    }];
+    
+    __weak typeof(self) weakSelf = self;
+    
+    UIAlertAction *saveWithPasscode = [UIAlertAction actionWithTitle:@"Set Passcode" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        UITextField *tf = alert.textFields.firstObject;
+        NSString *pin = [tf.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        NSString *finalCmd = pin.length > 0 ? [NSString stringWithFormat:@"lock-toggle %@", pin] : @"lock-toggle";
+        if (strongSelf.onActionSelected) strongSelf.onActionSelected(finalCmd);
+        if (strongSelf.searchController.isActive) {
+            [strongSelf.searchController dismissViewControllerAnimated:NO completion:^{
+                [strongSelf dismissViewControllerAnimated:YES completion:nil];
+            }];
+        } else {
+            [strongSelf dismissViewControllerAnimated:YES completion:nil];
+        }
+    }];
+    
+    UIAlertAction *noPasscode = [UIAlertAction actionWithTitle:@"Toggle Without Passcode" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (strongSelf.onActionSelected) strongSelf.onActionSelected(@"lock-toggle");
+        if (strongSelf.searchController.isActive) {
+            [strongSelf.searchController dismissViewControllerAnimated:NO completion:^{
+                [strongSelf dismissViewControllerAnimated:YES completion:nil];
+            }];
+        } else {
+            [strongSelf dismissViewControllerAnimated:YES completion:nil];
+        }
+    }];
+    
+    UIAlertAction *cancel = [UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction * _Nonnull action) {
+        [self.tableView deselectRowAtIndexPath:[self.tableView indexPathForSelectedRow] animated:YES];
+    }];
+    
+    [alert addAction:noPasscode];
     [alert addAction:saveWithPasscode];
     [alert addAction:cancel];
     alert.preferredAction = saveWithPasscode;

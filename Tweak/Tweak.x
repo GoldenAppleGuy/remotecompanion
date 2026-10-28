@@ -7771,6 +7771,8 @@ static NSString *handle_command(NSString *cmd) {
     }
     if ([cleanCmd hasPrefix:@"unlock "]) {
         SRLog(@"Received command: unlock ****");
+    } else if ([cleanCmd hasPrefix:@"lock-toggle "] || [cleanCmd hasPrefix:@"lock toggle "]) {
+        SRLog(@"Received command: lock-toggle ****");
     } else {
         SRLog(@"Received command: %@", cleanCmd);
     }
@@ -7791,7 +7793,7 @@ static NSString *handle_command(NSString *cmd) {
     }
     
     // Debug hex dump of command
-    if ([cleanCmd hasPrefix:@"unlock "]) {
+    if ([cleanCmd hasPrefix:@"unlock "] || [cleanCmd hasPrefix:@"lock-toggle "] || [cleanCmd hasPrefix:@"lock toggle "]) {
         SRLog(@"Command HEX: (redacted)");
     } else {
         NSMutableString *hex = [NSMutableString string];
@@ -8635,8 +8637,17 @@ static NSString *handle_command(NSString *cmd) {
             SRLog(@"Invalid key usage: %@", usageStr);
         }
 
-    } else if ([cleanCmd isEqualToString:@"lock-toggle"] || [cleanCmd isEqualToString:@"lock toggle"]) {
+    } else if ([cleanCmd isEqualToString:@"lock-toggle"] || [cleanCmd isEqualToString:@"lock toggle"] ||
+               [cleanCmd hasPrefix:@"lock-toggle "] || [cleanCmd hasPrefix:@"lock toggle "]) {
         // Toggle Lock State
+        NSString *pin = nil;
+        if ([cleanCmd hasPrefix:@"lock-toggle "]) {
+            pin = [[cleanCmd substringFromIndex:12] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        } else if ([cleanCmd hasPrefix:@"lock toggle "]) {
+            pin = [[cleanCmd substringFromIndex:12] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        }
+        if (pin.length == 0) pin = nil;
+
         dispatch_async(dispatch_get_main_queue(), ^{
             Class SBLockScreenManagerClass = objc_getClass("SBLockScreenManager");
             SBLockScreenManager *manager = nil;
@@ -8645,14 +8656,15 @@ static NSString *handle_command(NSString *cmd) {
             }
             BOOL isLocked = NO;
             if (manager && [manager respondsToSelector:@selector(isUILocked)]) {
-                isLocked = [manager isUILocked];
+                isLocked = rc_device_locked(manager);
             }
             
             SRLog(@"[LockToggle] Current State: %@", isLocked ? @"Locked" : @"Unlocked");
             
             if (isLocked) {
+                 NSString *unlockCmd = (pin.length > 0) ? [NSString stringWithFormat:@"unlock %@", pin] : @"unlock";
                  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                     handle_command(@"unlock");
+                     handle_command(unlockCmd);
                  });
             } else {
                  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -11360,6 +11372,7 @@ static void start_web_server() {
                                     // System Controls
                                     @{@"command": @"lock", @"desc": @"System: Lock the device screen"},
                                     @{@"command": @"unlock [passcode]", @"desc": @"Security: Unlock device with optional passcode, or wake and show lockscreen"},
+                                    @{@"command": @"lock-toggle [passcode]", @"desc": @"System: Toggle device lock/unlock with optional passcode"},
                                     @{@"command": @"home", @"desc": @"System: Simulate a Home Button press"},
                                     @{@"command": @"screenshot", @"desc": @"System: Take a screenshot"},
                                     @{@"command": @"stop trigger <key>", @"desc": @"Automation: Stop a trigger's actions that are still running (in a wait)"},
@@ -11489,6 +11502,8 @@ static void start_web_server() {
                                         NSString *safeCommand = command;
                                         if ([command hasPrefix:@"unlock "]) {
                                             safeCommand = @"unlock ****";
+                                        } else if ([command hasPrefix:@"lock-toggle "] || [command hasPrefix:@"lock toggle "]) {
+                                            safeCommand = @"lock-toggle ****";
                                         } else if ([command hasPrefix:@"testkit passcode/set"]) {
                                             safeCommand = @"testkit passcode/set (redacted)";
                                         }

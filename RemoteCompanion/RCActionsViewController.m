@@ -252,6 +252,9 @@ static id g_actionClipboard = nil;
     } else if ([lower hasPrefix:@"unlock "]) {
         baseText = @"Unlock Device ";
         paramText = @"(Passcode)";
+    } else if ([lower hasPrefix:@"lock-toggle "] || [lower hasPrefix:@"lock toggle "]) {
+        baseText = @"Lock Toggle ";
+        paramText = @"(Passcode)";
     }
     
     if (baseText && paramText) {
@@ -2355,6 +2358,9 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     } else if ([currentAction isEqualToString:@"unlock"] || [currentAction hasPrefix:@"unlock "]) {
         [self promptEditUnlockActionAtIndex:indexPath.row];
         return;
+    } else if ([currentAction isEqualToString:@"lock-toggle"] || [currentAction isEqualToString:@"lock toggle"] || [currentAction hasPrefix:@"lock-toggle "] || [currentAction hasPrefix:@"lock toggle "]) {
+        [self promptEditLockToggleActionAtIndex:indexPath.row];
+        return;
     } else {
         // Generic edit for other commands - show alert with current command
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Edit Action"
@@ -2442,6 +2448,74 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     UIAlertAction *cancel = [UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil];
     
     [alert addAction:wakeOnly];
+    [alert addAction:saveAction];
+    [alert addAction:cancel];
+    alert.preferredAction = saveAction;
+    
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)promptEditLockToggleActionAtIndex:(NSInteger)index {
+    if (index < 0 || index >= self.actions.count) return;
+    id item = self.actions[index];
+    NSString *cmdStr = [item isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)item)[@"command"] : item;
+    BOOL hasPasscode = ([cmdStr hasPrefix:@"lock-toggle "] && cmdStr.length > 12) || ([cmdStr hasPrefix:@"lock toggle "] && cmdStr.length > 12);
+    
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Edit Lock Toggle Action"
+                                                                   message:@"Enter a passcode to unlock automatically when locked, or choose 'No Passcode' to toggle without passcode entry.\n\nNote: Configured passcodes are stored in plain text in trigger settings (rc_triggers.plist)."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    
+    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.placeholder = hasPasscode ? @"New Passcode (or leave blank to keep)" : @"Passcode (optional)";
+        textField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+        textField.secureTextEntry = YES;
+    }];
+    
+    __weak typeof(self) weakSelf = self;
+    
+    UIAlertAction *saveAction = [UIAlertAction actionWithTitle:@"Save Passcode" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        UITextField *tf = alert.textFields.firstObject;
+        NSString *pin = [tf.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        NSString *finalCmd;
+        if (pin.length > 0) {
+            finalCmd = [NSString stringWithFormat:@"lock-toggle %@", pin];
+        } else if (hasPasscode) {
+            finalCmd = cmdStr;
+        } else {
+            finalCmd = @"lock-toggle";
+        }
+        
+        if ([strongSelf.actions[index] isKindOfClass:[NSDictionary class]]) {
+            NSMutableDictionary *d = [strongSelf.actions[index] mutableCopy];
+            d[@"command"] = finalCmd;
+            strongSelf.actions[index] = d;
+        } else {
+            strongSelf.actions[index] = finalCmd;
+        }
+        [strongSelf saveActions];
+        [strongSelf.tableView reloadData];
+    }];
+    
+    UIAlertAction *noPasscode = [UIAlertAction actionWithTitle:@"No Passcode" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSString *finalCmd = @"lock-toggle";
+        if ([strongSelf.actions[index] isKindOfClass:[NSDictionary class]]) {
+            NSMutableDictionary *d = [strongSelf.actions[index] mutableCopy];
+            d[@"command"] = finalCmd;
+            strongSelf.actions[index] = d;
+        } else {
+            strongSelf.actions[index] = finalCmd;
+        }
+        [strongSelf saveActions];
+        [strongSelf.tableView reloadData];
+    }];
+    
+    UIAlertAction *cancel = [UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil];
+    
+    [alert addAction:noPasscode];
     [alert addAction:saveAction];
     [alert addAction:cancel];
     alert.preferredAction = saveAction;
