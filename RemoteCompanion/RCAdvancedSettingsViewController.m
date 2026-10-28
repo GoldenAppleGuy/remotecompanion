@@ -128,7 +128,7 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
         }
         return @"NFC scanning options.";
     } else if (section == RCAdvancedSettingsSectionOptions) {
-        return @"Logging and display options. Lock Scrolling During Gestures holds lists, row swipe actions, and taps still while a status bar, bottom bar, or edge swipe gesture runs.";
+        return nil;
     }
     return nil;
 }

@@ -291,6 +291,16 @@ extern Boolean MRMediaRemoteSendCommandToApp(MRMediaRemoteCommand command, NSDic
 @property (nonatomic, assign) BOOL hasTriggered;
 @end
 
+// Bottom-up system recognizer (issue #81 follow-up). Unlike the sendEvent
+// sniffing below, a real system-gesture-manager recognizer makes iOS cancel
+// the foreground app's touch on recognition — the same reason edge swipes
+// hold the list still. It only observes: firing stays in the sendEvent path
+// so trigger behavior is unchanged.
+@interface SRBottomUpGestureRecognizer : UIGestureRecognizer
+@property (nonatomic, copy) NSString *zoneTriggerKey;
+@property (nonatomic, assign) CGPoint startPoint;
+@end
+
 
 
 @interface SBReachabilityManager : NSObject
@@ -2080,6 +2090,7 @@ static float get_flash_brightness() {
 
 // Forward declarations for gesture management functions
 static BOOL should_register_edge_gestures();
+static BOOL should_register_bottom_up_gestures();
 static void register_edge_gestures();
 static void update_edge_gestures();
 static void start_schedule_timer();
@@ -14408,9 +14419,17 @@ static unsigned g_rcFreezeGen = 0;
 
 static void RC_UnfreezeGestureScrolling(void);
 
+// Snapshot of list positions at touch-down, restored on release so drift that
+// happened before the freeze engaged is reverted and the list ends where the
+// finger found it. Weak keys: dead views vanish on their own. The generation
+// guards against restoring a stale snapshot when touches overlap.
+static NSMapTable *g_rcBeganOffsets = nil;
+static unsigned g_rcBeganGen = 0;
+static unsigned g_rcFreezeBeganGen = 0;
+
 static BOOL RC_GestureScrollSuppressionWanted(void) {
-    // Off unless the user opts in via Advanced Settings (default off).
-    if (![g_triggerConfig[@"freezeListsDuringGestures"] boolValue]) return NO;
+    // On unless the user opts out via Advanced Settings (default on).
+    if ([g_triggerConfig[@"freezeListsDuringGestures"] isEqual:@NO]) return NO;
     static NSString * const keys[] = {
         @"trigger_statusbar_swipe_left", @"trigger_statusbar_swipe_right",
         @"trigger_statusbar_left_hold", @"trigger_statusbar_center_hold",
@@ -14447,12 +14466,34 @@ static void RC_ClearStuckHighlightsInView(UIView *view) {
     for (UIView *sub in view.subviews) RC_ClearStuckHighlightsInView(sub);
 }
 
+// Snapshots every scroll view's position at touch-down and tells app
+// processes to do the same. Posted for every bar/edge touch-down (cheap walk,
+// no visual effect); the snapshot is only ever used if a freeze engages for
+// that same touch (generation match at release).
+static void RC_SnapshotGestureOffsets(void) {
+    if (!g_rcBeganOffsets) g_rcBeganOffsets = [NSMapTable weakToStrongObjectsMapTable];
+    [g_rcBeganOffsets removeAllObjects];
+    @try {
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            NSMutableArray *found = [NSMutableArray array];
+            RC_CollectScrollViewsInView(w, found);
+            for (UIScrollView *sv in found) {
+                [g_rcBeganOffsets setObject:[NSValue valueWithCGPoint:sv.contentOffset] forKey:sv];
+            }
+        }
+    } @catch (__unused NSException *e) { }
+    g_rcBeganGen++;
+    notify_post("com.saihgupr.remotecompanion.gesture-touch-began");
+}
+
 static void RC_FreezeGestureScrolling(void) {
     if (g_rcGestureScrollFrozen) return;
     if (!RC_GestureScrollSuppressionWanted()) return;
     void (^work)(void) = ^{
         if (g_rcGestureScrollFrozen) return;
         g_rcGestureScrollFrozen = YES;
+        g_rcFreezeBeganGen = g_rcBeganGen;
+        SRLogMin(@"[RCG] Freeze engaged");
         if (!g_rcFrozenScrollViews) g_rcFrozenScrollViews = [NSHashTable weakObjectsHashTable];
         if (!g_rcFrozenGestureRecognizers) g_rcFrozenGestureRecognizers = [NSHashTable weakObjectsHashTable];
         if (!g_rcFrozenInteractionWindows) g_rcFrozenInteractionWindows = [NSHashTable weakObjectsHashTable];
@@ -14510,6 +14551,23 @@ static void RC_UnfreezeGestureScrolling(void) {
         if (!g_rcGestureScrollFrozen) return;
         g_rcGestureScrollFrozen = NO;
         @try {
+            if (g_rcFreezeBeganGen == g_rcBeganGen && g_rcBeganOffsets.count > 0) {
+                NSUInteger restored = 0;
+                CGFloat maxDelta = 0;
+                for (UIScrollView *sv in g_rcBeganOffsets) {
+                    NSValue *v = [g_rcBeganOffsets objectForKey:sv];
+                    if (!v) continue;
+                    CGPoint to = [v CGPointValue];
+                    CGPoint cur = sv.contentOffset;
+                    CGFloat d = fabs(cur.x - to.x) + fabs(cur.y - to.y);
+                    if (d > maxDelta) maxDelta = d;
+                    @try { if (d > 0.5) [sv setContentOffset:to animated:NO]; } @catch (__unused NSException *e) { }
+                    restored++;
+                }
+                SRLogMin(@"[RCG] Freeze released, restored %lu views (maxDelta=%.1f)", (unsigned long)restored, maxDelta);
+            } else {
+                SRLogMin(@"[RCG] Freeze released");
+            }
             for (UIScrollView *sv in g_rcFrozenScrollViews) {
                 @try { sv.scrollEnabled = YES; } @catch (__unused NSException *e) { }
             }
@@ -14526,6 +14584,7 @@ static void RC_UnfreezeGestureScrolling(void) {
         [g_rcFrozenScrollViews removeAllObjects];
         [g_rcFrozenGestureRecognizers removeAllObjects];
         [g_rcFrozenInteractionWindows removeAllObjects];
+        [g_rcBeganOffsets removeAllObjects];
         notify_post("com.saihgupr.remotecompanion.gesture-scroll-end");
     };
     if ([NSThread isMainThread]) work();
@@ -14772,6 +14831,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                 SRLogMin(@"[RCOrient] began orient=%ld loc=(%.0f,%.0f) screen=(%.0fx%.0f) win=(%.0fx%.0f)%@ top=%d bottom=%d prog=%.2f", (long)orientation, loc.x, loc.y, screenSize.width, screenSize.height, wsz.width, wsz.height, wcls, inTopRegion, inBottomRegion, edgeProgress);
             }
             if (inTopRegion) {
+                RC_SnapshotGestureOffsets();
                 g_statusBarSwipeStartX = loc.x;
                 g_statusBarSwipeStartY = loc.y;
                 g_statusBarTouchActive = YES;
@@ -14844,6 +14904,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
             
             // Bottom bar region = bottom 50pts
             if (inBottomRegion) {
+                RC_SnapshotGestureOffsets();
                 g_bottomBarSwipeStartX = loc.x;
                 g_bottomBarSwipeStartY = loc.y;
                 g_bottomBarTouchActive = YES;
@@ -15071,6 +15132,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
 
     [super touchesBegan:touches withEvent:event];
     self.hasTriggered = NO;
+    RC_SnapshotGestureOffsets();
     SRLogMin(@"Edge Gesture touchesBegan: X=%.2f Y=%.2f orient=%ld", loc.x, loc.y, (long)orientation);
 }
 
@@ -15087,11 +15149,91 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
 
 @end
 
+@implementation SRBottomUpGestureRecognizer
+
+- (void)reset {
+    [super reset];
+    self.zoneTriggerKey = nil;
+    self.startPoint = CGPointZero;
+}
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesBegan:touches withEvent:event];
+    if (!should_register_bottom_up_gestures()) {
+        self.state = UIGestureRecognizerStateFailed;
+        return;
+    }
+    if (rc_cover_sheet_showing()) {
+        // The lock screen keeps its own swipe up (matches trigger gating).
+        self.state = UIGestureRecognizerStateFailed;
+        return;
+    }
+    UITouch *touch = [touches anyObject];
+    CGPoint loc = [touch locationInView:nil];
+    UIInterfaceOrientation orientation = get_current_interface_orientation();
+    BOOL inBottom = NO;
+    NSString *key = get_bottom_swipe_trigger_for_touch(loc, orientation, &inBottom);
+    if (!inBottom || !key || !RC_TriggerIsActionable(key)) {
+        self.state = UIGestureRecognizerStateFailed;
+        return;
+    }
+    self.zoneTriggerKey = key;
+    self.startPoint = loc;
+    // Remain Possible while evaluating; fail fast below on any contradiction.
+}
+
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesMoved:touches withEvent:event];
+    if (self.state == UIGestureRecognizerStateFailed ||
+        self.state == UIGestureRecognizerStateRecognized) {
+        return;
+    }
+    UITouch *touch = [touches anyObject];
+    CGPoint loc = [touch locationInView:nil];
+    UIInterfaceOrientation orientation = get_current_interface_orientation();
+    CGFloat dx = 0, dy = 0;
+    RC_UserDeltaForOrientation(loc.x - self.startPoint.x, loc.y - self.startPoint.y,
+                              orientation, &dx, &dy);
+    CGFloat ax = fabs(dx), ay = fabs(dy);
+    // Contradicting motion (sideways or downward beyond slop): not ours.
+    // Failing releases any competing recognizers immediately.
+    if ((ax > 25 && ax > ay * 1.5) || dy > 18) {
+        self.state = UIGestureRecognizerStateFailed;
+        return;
+    }
+    // Upward intent past the threshold: claim the touch so the system
+    // cancels app delivery, exactly like the edge recognizers. Firing
+    // itself stays in the sendEvent path.
+    if (dy < -30 && ay > ax * 1.5) {
+        if (self.zoneTriggerKey && RC_TriggerIsActionable(self.zoneTriggerKey)) {
+            RC_FreezeGestureScrolling();
+        }
+        self.state = UIGestureRecognizerStateRecognized;
+    }
+}
+
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesEnded:touches withEvent:event];
+    if (self.state == UIGestureRecognizerStatePossible) {
+        self.state = UIGestureRecognizerStateFailed;
+    }
+}
+
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesCancelled:touches withEvent:event];
+    if (self.state == UIGestureRecognizerStatePossible) {
+        self.state = UIGestureRecognizerStateFailed;
+    }
+}
+
+@end
+
 // --- SYSTEM GESTURE MANAGER HOOK ---
 
 @interface SRGestureHelper : NSObject
 + (instancetype)sharedInstance;
 - (void)handleEdgeGesture:(SREdgeGestureRecognizer *)gesture;
+- (void)handleBottomUpGesture:(SRBottomUpGestureRecognizer *)gesture;
 @end
 
 @implementation SRGestureHelper
@@ -15169,10 +15311,23 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
         RC_UnfreezeGestureScrolling();
     }
 }
+
+// Bottom-up recognition only cancels app delivery and engages the freeze;
+// firing stays in the sendEvent path, and unfreeze stays with touch end
+// there (plus the failsafe), so this handler never unfreezes.
+- (void)handleBottomUpGesture:(SRBottomUpGestureRecognizer *)gesture {
+    if (gesture.state == UIGestureRecognizerStateRecognized) {
+        SRLogMin(@"[RCBottom] System bottom-up recognized, app touches cancelled");
+        if (gesture.zoneTriggerKey && RC_TriggerIsActionable(gesture.zoneTriggerKey)) {
+            RC_FreezeGestureScrolling();
+        }
+    }
+}
 @end
 
 static SREdgeGestureRecognizer *leftEdgeRecognizer;
 static SREdgeGestureRecognizer *rightEdgeRecognizer;
+static SRBottomUpGestureRecognizer *bottomUpRecognizer;
 static SBSystemGestureManager *g_gestureManager = nil;
 
 // Helper: Check if any edge gestures are enabled
@@ -15194,6 +15349,18 @@ static BOOL should_register_edge_gestures() {
     }
     
     return NO;
+}
+
+// Bottom-up system recognizer: only wanted when the scroll-lock toggle is on
+// and at least one bottom swipe-up zone could actually fire. Per-touch zone
+// gating happens in touchesBegan; this is just the registration switch.
+static BOOL should_register_bottom_up_gestures() {
+    if ([g_triggerConfig[@"freezeListsDuringGestures"] isEqual:@NO]) return NO;
+    if (!g_triggerConfig) return NO;
+    if (![g_triggerConfig[@"masterEnabled"] boolValue]) return NO;
+    return (RC_TriggerIsActionable(@"trigger_bottom_swipe_up_left") ||
+            RC_TriggerIsActionable(@"trigger_bottom_swipe_up_center") ||
+            RC_TriggerIsActionable(@"trigger_bottom_swipe_up_right"));
 }
 
 // Register gesture recognizers
@@ -15225,9 +15392,22 @@ static void register_edge_gestures() {
         [g_gestureManager addGestureRecognizer:rightEdgeRecognizer withType:121];
         SRLog(@"Registered RIGHT edge gesture recognizer");
     }
+
+    // Bottom swipe up: claims bottom-strip upward swipes so the system
+    // cancels app delivery at recognition (like the edge recognizers).
+    // cancelsTouchesInView=YES is the whole point here. It never fires
+    // triggers and never touches the home gesture: no failure requirements
+    // are set on anything, so Home and Control Center behave as before.
+    if (!bottomUpRecognizer) {
+        bottomUpRecognizer = [[SRBottomUpGestureRecognizer alloc] initWithTarget:[SRGestureHelper sharedInstance] action:@selector(handleBottomUpGesture:)];
+        bottomUpRecognizer.cancelsTouchesInView = YES; // Cancel app touches on recognition
+        bottomUpRecognizer.delaysTouchesBegan = NO;   // Don't add lag
+        [g_gestureManager addGestureRecognizer:bottomUpRecognizer withType:122];
+        SRLog(@"Registered BOTTOM-UP gesture recognizer");
+    }
 }
 
-// Turn the edge recognizers on or off to match the config. They're registered with
+// Turn the recognizers on or off to match the config. They're registered with
 // SpringBoard's system gesture manager the first time they're needed and only turned off
 // after that: removing them from their view and registering new ones left edge swipes dead
 // once the edge triggers had been turned off and on again, until a respring.
@@ -15243,6 +15423,16 @@ static void update_edge_gestures() {
         }
         leftEdgeRecognizer.enabled = wanted;
         rightEdgeRecognizer.enabled = wanted;
+
+        BOOL bottomWanted = should_register_bottom_up_gestures();
+        if ((wanted || bottomWanted) && !bottomUpRecognizer) {
+            SRLog(@"Bottom-up gesture enabled - registering...");
+            register_edge_gestures();
+        }
+        if (bottomUpRecognizer && bottomUpRecognizer.enabled != bottomWanted) {
+            SRLog(@"Bottom-up gesture %@", bottomWanted ? @"on" : @"off");
+        }
+        if (bottomUpRecognizer) bottomUpRecognizer.enabled = bottomWanted;
     } @catch (NSException *e) {
         SRLogMin(@"ERROR in update_edge_gestures: %@", e);
     }
@@ -15771,6 +15961,9 @@ static NSHashTable *g_appFrozenScrollViews = nil;
 static NSHashTable *g_appFrozenGestureRecognizers = nil;
 static NSHashTable *g_appFrozenInteractionWindows = nil;
 static unsigned g_appFreezeGen = 0;
+static NSMapTable *g_appBeganOffsets = nil;
+static unsigned g_appBeganGen = 0;
+static unsigned g_appFreezeBeganGen = 0;
 
 static void RCApp_CollectScrollViewsInView(UIView *view, NSMutableArray *out) {
     if ([view isKindOfClass:[UIScrollView class]]) [out addObject:(UIScrollView *)view];
@@ -15792,6 +15985,10 @@ static void RCApp_SetScrollFrozen(BOOL frozen) {
     void (^work)(void) = ^{
         if (frozen == g_appSuppressScroll && frozen) return;
         g_appSuppressScroll = frozen;
+        if (frozen) {
+            g_appFreezeBeganGen = g_appBeganGen;
+            SRLogMin(@"[RCG] App freeze engaged");
+        }
         if (!g_appFrozenScrollViews) g_appFrozenScrollViews = [NSHashTable weakObjectsHashTable];
         if (!g_appFrozenGestureRecognizers) g_appFrozenGestureRecognizers = [NSHashTable weakObjectsHashTable];
         if (!g_appFrozenInteractionWindows) g_appFrozenInteractionWindows = [NSHashTable weakObjectsHashTable];
@@ -15827,6 +16024,23 @@ static void RCApp_SetScrollFrozen(BOOL frozen) {
                     if (g_appSuppressScroll && gen == g_appFreezeGen) RCApp_SetScrollFrozen(NO);
                 });
             } else {
+                if (g_appFreezeBeganGen == g_appBeganGen && g_appBeganOffsets.count > 0) {
+                    NSUInteger restored = 0;
+                    CGFloat maxDelta = 0;
+                    for (UIScrollView *sv in g_appBeganOffsets) {
+                        NSValue *v = [g_appBeganOffsets objectForKey:sv];
+                        if (!v) continue;
+                        CGPoint to = [v CGPointValue];
+                        CGPoint cur = sv.contentOffset;
+                        CGFloat d = fabs(cur.x - to.x) + fabs(cur.y - to.y);
+                        if (d > maxDelta) maxDelta = d;
+                        @try { if (d > 0.5) [sv setContentOffset:to animated:NO]; } @catch (__unused NSException *e) { }
+                        restored++;
+                    }
+                    SRLogMin(@"[RCG] App freeze released, restored %lu views (maxDelta=%.1f)", (unsigned long)restored, maxDelta);
+                } else {
+                    SRLogMin(@"[RCG] App freeze released");
+                }
                 for (UIScrollView *sv in g_appFrozenScrollViews) {
                     @try { sv.scrollEnabled = YES; } @catch (__unused NSException *e) { }
                 }
@@ -15842,8 +16056,28 @@ static void RCApp_SetScrollFrozen(BOOL frozen) {
                 [g_appFrozenScrollViews removeAllObjects];
                 [g_appFrozenGestureRecognizers removeAllObjects];
                 [g_appFrozenInteractionWindows removeAllObjects];
+                [g_appBeganOffsets removeAllObjects];
             }
         } @catch (__unused NSException *e) { }
+    };
+    if ([NSThread isMainThread]) work();
+    else dispatch_async(dispatch_get_main_queue(), work);
+}
+
+static void RCApp_TouchBeganCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    void (^work)(void) = ^{
+        if (!g_appBeganOffsets) g_appBeganOffsets = [NSMapTable weakToStrongObjectsMapTable];
+        [g_appBeganOffsets removeAllObjects];
+        @try {
+            for (UIWindow *w in [UIApplication sharedApplication].windows) {
+                NSMutableArray *found = [NSMutableArray array];
+                RCApp_CollectScrollViewsInView(w, found);
+                for (UIScrollView *sv in found) {
+                    [g_appBeganOffsets setObject:[NSValue valueWithCGPoint:sv.contentOffset] forKey:sv];
+                }
+            }
+        } @catch (__unused NSException *e) { }
+        g_appBeganGen++;
     };
     if ([NSThread isMainThread]) work();
     else dispatch_async(dispatch_get_main_queue(), work);
@@ -16322,6 +16556,14 @@ static NSTimeInterval s_last_camera_launch_notify = 0;
                 NULL,
                 (CFNotificationCallback)RCApp_ScrollEndCallback,
                 CFSTR("com.saihgupr.remotecompanion.gesture-scroll-end"),
+                NULL,
+                CFNotificationSuspensionBehaviorDeliverImmediately
+            );
+            CFNotificationCenterAddObserver(
+                CFNotificationCenterGetDarwinNotifyCenter(),
+                NULL,
+                (CFNotificationCallback)RCApp_TouchBeganCallback,
+                CFSTR("com.saihgupr.remotecompanion.gesture-touch-began"),
                 NULL,
                 CFNotificationSuspensionBehaviorDeliverImmediately
             );

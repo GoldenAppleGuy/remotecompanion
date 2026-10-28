@@ -141,9 +141,9 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
             [self saveConfig];
         }
 
-        // Auto-add freezeListsDuringGestures (default to NO for upgrades)
+        // Auto-add freezeListsDuringGestures (default to YES for upgrades)
         if (_config[@"freezeListsDuringGestures"] == nil) {
-            _config[@"freezeListsDuringGestures"] = @NO;
+            _config[@"freezeListsDuringGestures"] = @YES;
             [self saveConfig];
         }
 
@@ -173,7 +173,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
             @"masterEnabled": @YES,
             @"tcpEnabled": @YES,
             @"webUIEnabled": @NO,
-            @"freezeListsDuringGestures": @NO,
+            @"freezeListsDuringGestures": @YES,
             @"nfcEnabled": @YES,
             @"rootEnabled": @YES,
             @"triggers": [@{
@@ -253,7 +253,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
 
 - (BOOL)freezeListsDuringGestures {
     if (!_config[@"freezeListsDuringGestures"]) {
-        return NO;
+        return YES;
     }
     return [_config[@"freezeListsDuringGestures"] boolValue];
 }
