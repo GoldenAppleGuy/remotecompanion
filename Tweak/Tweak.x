@@ -14408,50 +14408,146 @@ static UIInterfaceOrientation get_current_interface_orientation() {
     #pragma clang diagnostic pop
 }
 
-static NSString *get_bottom_swipe_trigger_for_touch(CGPoint loc, UIInterfaceOrientation orientation, BOOL *outInBottomRegion) {
-    // Logical 1-2-3-4 rotation: the bottom zones always live on the edge that is
-    // currently UI-bottom, even though that is a different physical edge in landscape.
-    // Mapping (verified: UIInterfaceOrientationLandscapeLeft = home on left):
-    //   Portrait:          bottom = physical bottom (y > L-50), progress = x/S
-    //   UpsideDown:        bottom = physical top (y < 50),      progress = 1-x/S
-    //   LandscapeLeft:     bottom = physical left (x < 50),     progress = y/S
-    //   LandscapeRight:    bottom = physical right (x > L-50),  progress = 1-y/S
+// =========================================================================
+// RC ORIENTATION CENTRAL: single source of truth for every bar/edge trigger.
+// -------------------------------------------------------------------------
+// Logical model: portrait is position 1, then the whole block (UI-top,
+// UI-bottom, UI-left, UI-right, bottom swipe-up zones, edge sides, swipe
+// direction) rotates as one. Per Apple, UIInterfaceOrientationLandscapeLeft
+// = home button on the left, LandscapeRight = home button on the right.
+//
+// Coordinate basis (VERIFIED by field logs: in landscape win stays 414x736
+// portrait while screen reports 736x414, and touches arrive with x in [0,S],
+// y in [0,L]): touch coords are device-fixed portrait coords. x ALWAYS spans
+// S (short side), y ALWAYS spans L (long side), in every orientation.
+// UI-top/UI-bottom follow gravity as the user sees the interface:
+//   Portrait:       UI-top = device top,    UI-bottom = device bottom
+//   UpsideDown:     UI-top = device bottom, UI-bottom = device top
+//   LandscapeLeft (home left, CW tilt, top points right):
+//                   UI-top = device left (physical top), UI-bottom = device right
+//   LandscapeRight (home right, CCW tilt, top points left):
+//                   UI-top = device right (physical top), UI-bottom = device left
+// Every zone / progress / delta helper below uses only S/L + orientation,
+// so a mapping fix here fixes all triggers at once.
+// =========================================================================
+
+// Orientation latched at touch Began, reused for Moved/Ended so a rotation
+// mid-swipe can't cross-wire a gesture between top and bottom.
+static UIInterfaceOrientation g_rcLatchedTouchOrientation = UIInterfaceOrientationPortrait;
+static BOOL g_rcLatchedTouchOrientationValid = NO;
+
+static inline void RC_ScreenSL(CGFloat *outS, CGFloat *outL) {
     CGSize screenSize = [[UIScreen mainScreen] bounds].size;
-    CGFloat S = MIN(screenSize.width, screenSize.height);
-    CGFloat L = MAX(screenSize.width, screenSize.height);
+    if (outS) *outS = MIN(screenSize.width, screenSize.height);
+    if (outL) *outL = MAX(screenSize.width, screenSize.height);
+}
 
-    BOOL inBottom = NO;
-    CGFloat progress = 0.5;
+static inline BOOL RC_InTopRegion(CGPoint loc, UIInterfaceOrientation orientation, CGFloat S, CGFloat L) {
+    (void)S; (void)L;
+    if (orientation == UIInterfaceOrientationPortrait) return (loc.y < 50);
+    if (orientation == UIInterfaceOrientationPortraitUpsideDown) return (loc.y > L - 50);
+    if (orientation == UIInterfaceOrientationLandscapeLeft) return (loc.x < 50);  // home left: UI-top = device left
+    if (orientation == UIInterfaceOrientationLandscapeRight) return (loc.x > S - 50); // home right: UI-top = device right
+    return (loc.y < 50);
+}
 
-    if (orientation == UIInterfaceOrientationPortrait) {
-        inBottom = (loc.y > L - 50);
-        progress = (S > 0) ? (loc.x / S) : 0.5;
-    } else if (orientation == UIInterfaceOrientationPortraitUpsideDown) {
-        inBottom = (loc.y < 50);
-        progress = (S > 0) ? (1.0 - (loc.x / S)) : 0.5;
+static inline BOOL RC_InBottomRegion(CGPoint loc, UIInterfaceOrientation orientation, CGFloat S, CGFloat L) {
+    (void)S; (void)L;
+    if (orientation == UIInterfaceOrientationPortrait) return (loc.y > L - 50);
+    if (orientation == UIInterfaceOrientationPortraitUpsideDown) return (loc.y < 50);
+    if (orientation == UIInterfaceOrientationLandscapeLeft) return (loc.x > S - 50);  // home left: UI-bottom = device right
+    if (orientation == UIInterfaceOrientationLandscapeRight) return (loc.x < 50);     // home right: UI-bottom = device left
+    return (loc.y > L - 50);
+}
+
+// Progress 0..1 along the UI-top / UI-bottom edge, left-to-right as the user sees it.
+// In landscape the bar edges are long edges, so progress runs along y with divisor L.
+static inline CGFloat RC_ProgressAlongEdge(CGPoint loc, UIInterfaceOrientation orientation, CGFloat S, CGFloat L) {
+    if (orientation == UIInterfaceOrientationPortrait) return (S > 0) ? (loc.x / S) : 0.5;
+    if (orientation == UIInterfaceOrientationPortraitUpsideDown) return (S > 0) ? (1.0 - (loc.x / S)) : 0.5;
+    if (L <= 0) return 0.5;
+    if (orientation == UIInterfaceOrientationLandscapeLeft) return (loc.y / L); // physical left = device top (y=0)
+    return (1.0 - (loc.y / L)); // LandscapeRight: physical left = device bottom (y=L)
+}
+
+static inline NSString *RC_StatusHoldTriggerForProgress(CGFloat progress) {
+    if (progress < 0.33) return @"trigger_statusbar_left_hold";
+    if (progress > 0.66) return @"trigger_statusbar_right_hold";
+    return @"trigger_statusbar_center_hold";
+}
+
+static inline NSString *RC_BottomSwipeTriggerForProgress(CGFloat progress) {
+    if (progress < 0.33) return @"trigger_bottom_swipe_up_left";
+    if (progress > 0.67) return @"trigger_bottom_swipe_up_right";
+    return @"trigger_bottom_swipe_up_center";
+}
+
+// Physical (window-space) delta -> logical delta as the user sees it.
+// Derived from 90-degree rotations of a fixed portrait frame:
+//   LandscapeLeft (home left, clockwise):  user_dx = -dy_p, user_dy = +dx_p
+//   LandscapeRight (home right, CCW):      user_dx = +dy_p, user_dy = -dx_p
+static inline void RC_UserDeltaForOrientation(CGFloat dx_phys, CGFloat dy_phys, UIInterfaceOrientation orientation, CGFloat *outDX, CGFloat *outDY) {
+    CGFloat user_dx = dx_phys, user_dy = dy_phys;
+    if (orientation == UIInterfaceOrientationPortraitUpsideDown) {
+        user_dx = -dx_phys; user_dy = -dy_phys;
     } else if (orientation == UIInterfaceOrientationLandscapeLeft) {
-        inBottom = (loc.x < 50);
-        progress = (S > 0) ? (1.0 - (loc.y / S)) : 0.5;
+        user_dx = -dy_phys; user_dy = dx_phys;
     } else if (orientation == UIInterfaceOrientationLandscapeRight) {
-        inBottom = (loc.x > L - 50);
-        progress = (S > 0) ? (loc.y / S) : 0.5;
+        user_dx = dy_phys; user_dy = -dx_phys;
     }
-    
+    if (outDX) *outDX = user_dx;
+    if (outDY) *outDY = user_dy;
+}
+
+// Logical left/right edges follow the interface as the user sees it. In
+// landscape these are the short side edges: UI-left/UI-right = device
+// bottom/device top (or vice versa). y spans L here, x spans S.
+static inline void RC_EdgeZonesForLoc(CGPoint loc, UIInterfaceOrientation orientation, CGFloat S, CGFloat L, CGFloat edgeThreshold, CGFloat margin, BOOL *outNearLeft, BOOL *outNearRight, BOOL *outWithinBounds) {
+    BOOL nearLeft = NO, nearRight = NO, within = NO;
+    if (orientation == UIInterfaceOrientationPortrait) {
+        nearLeft = (loc.x < edgeThreshold);
+        nearRight = (loc.x > S - edgeThreshold);
+        within = (loc.y > margin) && (loc.y < L - margin);
+    } else if (orientation == UIInterfaceOrientationPortraitUpsideDown) {
+        nearLeft = (loc.x > S - edgeThreshold);
+        nearRight = (loc.x < edgeThreshold);
+        within = (loc.y > margin) && (loc.y < L - margin);
+    } else if (orientation == UIInterfaceOrientationLandscapeLeft) {
+        nearLeft = (loc.y > L - edgeThreshold); // home left: UI-left = device bottom
+        nearRight = (loc.y < edgeThreshold);    // UI-right = device top
+        within = (loc.x > margin) && (loc.x < S - margin);
+    } else { // LandscapeRight
+        nearLeft = (loc.y < edgeThreshold);     // home right: UI-left = device top
+        nearRight = (loc.y > L - edgeThreshold);// UI-right = device bottom
+        within = (loc.x > margin) && (loc.x < S - margin);
+    }
+    if (outNearLeft) *outNearLeft = nearLeft;
+    if (outNearRight) *outNearRight = nearRight;
+    if (outWithinBounds) *outWithinBounds = within;
+}
+
+static NSString *get_bottom_swipe_trigger_for_touch(CGPoint loc, UIInterfaceOrientation orientation, BOOL *outInBottomRegion) {
+    // Bottom zones always live on the edge that is currently UI-bottom.
+    // Mapping (UIInterfaceOrientationLandscapeLeft = home on left):
+    //   Portrait:       bottom = device bottom (y > L-50), progress = x/S
+    //   UpsideDown:     bottom = device top (y < 50),       progress = 1-x/S
+    //   LandscapeLeft:  bottom = device right (x > S-50),   progress = y/L
+    //   LandscapeRight: bottom = device left (x < 50),      progress = 1-y/L
+    CGFloat S = 0, L = 0;
+    RC_ScreenSL(&S, &L);
+
+    BOOL inBottom = RC_InBottomRegion(loc, orientation, S, L);
+    CGFloat progress = RC_ProgressAlongEdge(loc, orientation, S, L);
+
     if (outInBottomRegion) {
         *outInBottomRegion = inBottom;
     }
-    
+
     if (!inBottom) {
         return nil;
     }
-    
-    if (progress < 0.33) {
-        return @"trigger_bottom_swipe_up_left";
-    } else if (progress > 0.67) {
-        return @"trigger_bottom_swipe_up_right";
-    } else {
-        return @"trigger_bottom_swipe_up_center";
-    }
+
+    return RC_BottomSwipeTriggerForProgress(progress);
 }
 
 // The lock screen, or the cover sheet pulled down over the home screen or an app, keeps iOS's
@@ -14509,42 +14605,30 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
         
         if (touch && touch.phase == UITouchPhaseBegan) {
             UIInterfaceOrientation orientation = get_current_interface_orientation();
+            // Latch for the life of this touch so Moved/Ended can't cross-wire on rotation.
+            g_rcLatchedTouchOrientation = orientation;
+            g_rcLatchedTouchOrientationValid = YES;
 
             CGPoint loc = [touch locationInView:nil];
             CGSize screenSize = [[UIScreen mainScreen] bounds].size;
 
-            // S = short side, L = long side (orientation-independent).
-            // In portrait W=S,H=L; in landscape W=L,H=S. Touch coords are in the
-            // current window's space, so x spans L in landscape, y spans S.
-            CGFloat S = MIN(screenSize.width, screenSize.height);
-            CGFloat L = MAX(screenSize.width, screenSize.height);
+            // S/L from the central helper (same values every call site uses).
+            CGFloat S = 0, L = 0;
+            RC_ScreenSL(&S, &L);
 
-            // Logical 1-2-3-4 rotation: top/bottom follow UI-top/UI-bottom.
-            // LandscapeLeft = home on left (bottom=left, top=right).
-            // LandscapeRight = home on right (bottom=right, top=left).
-            BOOL inTopRegion = NO;
-            BOOL inBottomRegion = NO;
-
-            if (orientation == UIInterfaceOrientationPortrait) {
-                inTopRegion = (loc.y < 50);
-                inBottomRegion = (loc.y > L - 50);
-            } else if (orientation == UIInterfaceOrientationPortraitUpsideDown) {
-                inTopRegion = (loc.y > L - 50);
-                inBottomRegion = (loc.y < 50);
-            } else if (orientation == UIInterfaceOrientationLandscapeLeft) {
-                inTopRegion = (loc.x > L - 50);
-                inBottomRegion = (loc.x < 50);
-            } else if (orientation == UIInterfaceOrientationLandscapeRight) {
-                inTopRegion = (loc.x < 50);
-                inBottomRegion = (loc.x > L - 50);
-            }
+            // All zones come from the orientation central: top/bottom follow UI-top/UI-bottom.
+            // LandscapeLeft = home on left (bottom=device right, top=device left).
+            // LandscapeRight = home on right (bottom=device left, top=device right).
+            BOOL inTopRegion = RC_InTopRegion(loc, orientation, S, L);
+            BOOL inBottomRegion = RC_InBottomRegion(loc, orientation, S, L);
 
             UIWindow *tw = touch.window;
             CGSize wsz = tw ? tw.bounds.size : CGSizeZero;
             NSString *wcls = tw ? NSStringFromClass([tw class]) : @"nil";
-            BOOL nearEdge = (loc.x < 60 || loc.y < 60 || loc.x > S - 60 || loc.y > L - 60 || loc.x > L - 60);
+            CGFloat edgeProgress = RC_ProgressAlongEdge(loc, orientation, S, L);
+            BOOL nearEdge = (loc.x < 60 || loc.y < 60 || loc.x > S - 60 || loc.y > L - 60);
             if (inTopRegion || inBottomRegion || nearEdge) {
-                SRLogMin(@"[RCOrient] began orient=%ld loc=(%.0f,%.0f) screen=(%.0fx%.0f) win=(%.0fx%.0f)%@ top=%d bottom=%d", (long)orientation, loc.x, loc.y, screenSize.width, screenSize.height, wsz.width, wsz.height, wcls, inTopRegion, inBottomRegion);
+                SRLogMin(@"[RCOrient] began orient=%ld loc=(%.0f,%.0f) screen=(%.0fx%.0f) win=(%.0fx%.0f)%@ top=%d bottom=%d prog=%.2f", (long)orientation, loc.x, loc.y, screenSize.width, screenSize.height, wsz.width, wsz.height, wcls, inTopRegion, inBottomRegion, edgeProgress);
             }
             if (inTopRegion) {
                 g_statusBarSwipeStartX = loc.x;
@@ -14579,26 +14663,9 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                         }
                     }
                 } else {
-                    // Determine region for status bar hold (Left, Center, Right)
-                    // Progress is along UI-top: x/S in portrait, y/S in landscape.
-                    CGFloat progress = 0;
-                    if (orientation == UIInterfaceOrientationPortrait) {
-                        progress = loc.x / S;
-                    } else if (orientation == UIInterfaceOrientationPortraitUpsideDown) {
-                        progress = 1.0 - (loc.x / S);
-                    } else if (orientation == UIInterfaceOrientationLandscapeLeft) {
-                        progress = 1.0 - (loc.y / S);
-                    } else if (orientation == UIInterfaceOrientationLandscapeRight) {
-                        progress = loc.y / S;
-                    }
-                    
-                    if (progress < 0.33) {
-                        g_pendingStatusBarTrigger = @"trigger_statusbar_left_hold";
-                    } else if (progress > 0.66) {
-                        g_pendingStatusBarTrigger = @"trigger_statusbar_right_hold";
-                    } else {
-                        g_pendingStatusBarTrigger = @"trigger_statusbar_center_hold";
-                    }
+                    // Zone along UI-top, left-to-right as the user sees it (central helper).
+                    CGFloat progress = RC_ProgressAlongEdge(loc, orientation, S, L);
+                    g_pendingStatusBarTrigger = RC_StatusHoldTriggerForProgress(progress);
                     
                     SRLog(@"[RCStatus] Top Region Touch at progress=%.2f -> Key: %@", progress, g_pendingStatusBarTrigger);
                     
@@ -14644,32 +14711,22 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                 g_bottomBarUserDX = 0;
                 g_bottomBarUserDY = 0;
                 
-                CGFloat progress = 0;
-                if (orientation == UIInterfaceOrientationPortrait) {
-                    progress = loc.x / S;
-                } else if (orientation == UIInterfaceOrientationPortraitUpsideDown) {
-                    progress = 1.0 - (loc.x / S);
-                } else if (orientation == UIInterfaceOrientationLandscapeLeft) {
-                    progress = 1.0 - (loc.y / S);
-                } else if (orientation == UIInterfaceOrientationLandscapeRight) {
-                    progress = loc.y / S;
-                }
-                
+                // Zone along UI-bottom, left-to-right as the user sees it (central helper).
+                CGFloat progress = RC_ProgressAlongEdge(loc, orientation, S, L);
+
                 if (rc_cover_sheet_showing()) {
                     g_pendingBottomBarSwipeUpTrigger = nil; // iOS keeps this swipe (see rc_cover_sheet_showing)
-                } else if (progress < 0.33) {
-                    g_pendingBottomBarSwipeUpTrigger = @"trigger_bottom_swipe_up_left";
-                } else if (progress > 0.67) {
-                    g_pendingBottomBarSwipeUpTrigger = @"trigger_bottom_swipe_up_right";
                 } else {
-                    g_pendingBottomBarSwipeUpTrigger = @"trigger_bottom_swipe_up_center";
+                    g_pendingBottomBarSwipeUpTrigger = RC_BottomSwipeTriggerForProgress(progress);
                 }
                 SRLog(@"[RCBottom] Bottom Touch began at progress=%.2f -> Zone: %@", progress, g_pendingBottomBarSwipeUpTrigger);
             }
         }
         else if (touch && (touch.phase == UITouchPhaseMoved || touch.phase == UITouchPhaseEnded)) {
             CGPoint loc = [touch locationInView:nil];
-            UIInterfaceOrientation orientation = get_current_interface_orientation();
+            // Use the orientation latched at Began so a rotation mid-swipe can't
+            // cross-wire top/bottom. Fall back to live only if somehow unlatched.
+            UIInterfaceOrientation orientation = g_rcLatchedTouchOrientationValid ? g_rcLatchedTouchOrientation : get_current_interface_orientation();
 
             BOOL isEnded = (touch.phase == UITouchPhaseEnded);
             
@@ -14680,21 +14737,10 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                 CGFloat dx_phys = loc.x - startX;
                 CGFloat dy_phys = loc.y - startY;
 
-                // Physical -> logical (as the user sees it). Derived from 90° rotations:
-                // LandscapeLeft (home left):  dx_u = dy_p, dy_u = -dx_p
-                // LandscapeRight (home right): dx_u = -dy_p, dy_u = dx_p
+                // Physical -> logical (as the user sees it), via the orientation central.
                 CGFloat user_dx = 0;
                 CGFloat user_dy = 0;
-                
-                if (orientation == UIInterfaceOrientationPortrait) {
-                    user_dx = dx_phys; user_dy = dy_phys;
-                } else if (orientation == UIInterfaceOrientationPortraitUpsideDown) {
-                    user_dx = -dx_phys; user_dy = -dy_phys;
-                } else if (orientation == UIInterfaceOrientationLandscapeLeft) {
-                    user_dx = -dy_phys; user_dy = dx_phys;
-                } else if (orientation == UIInterfaceOrientationLandscapeRight) {
-                    user_dx = dy_phys; user_dy = -dx_phys;
-                }
+                RC_UserDeltaForOrientation(dx_phys, dy_phys, orientation, &user_dx, &user_dy);
 
                 CGFloat abs_udx = fabs(user_dx);
                 CGFloat abs_udy = fabs(user_dy);
@@ -14796,6 +14842,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                     g_statusBarHoldTriggered = NO;
                     g_bottomBarSwipeUpTriggered = NO;
                     g_pendingBottomBarSwipeUpTrigger = nil;
+                    g_rcLatchedTouchOrientationValid = NO;
                 }
             }
         }
@@ -14811,6 +14858,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
             g_bottomBarHapticFired = NO;
             g_bottomBarSwipeUpTriggered = NO;
             g_pendingBottomBarSwipeUpTrigger = nil;
+            g_rcLatchedTouchOrientationValid = NO;
         }
     }
     
@@ -14830,39 +14878,18 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
 
     UITouch *touch = [touches anyObject];
     CGPoint loc = [touch locationInView:nil];
-    CGSize screenSize = [UIScreen mainScreen].bounds.size;
-    CGFloat S = MIN(screenSize.width, screenSize.height);
-    CGFloat L = MAX(screenSize.width, screenSize.height);
+    CGFloat S = 0, L = 0;
+    RC_ScreenSL(&S, &L);
     UIInterfaceOrientation orientation = get_current_interface_orientation();
 
-    // Logical 1-2-3-4 rotation: left/right recognizers follow the logical left/right
-    // edge, which is a different physical edge in landscape.
-    //   Portrait:     left=x<25, right=x>S-25 (y in middle)
-    //   UpsideDown:   left=physical right, right=physical left
-    //   LandscapeLeft:  left=physical top (y<25), right=physical bottom (y>S-25)
-    //   LandscapeRight: left=physical bottom, right=physical top
+    // Logical left/right edges follow the interface (orientation central).
+    // In landscape the logical left/right zones are strips along y (the short
+    // axis) bounded on x (the long axis); see RC_EdgeZonesForLoc.
     CGFloat edgeThreshold = 25.0;
     CGFloat margin = 100.0;
 
     BOOL nearLogicalLeft = NO, nearLogicalRight = NO, withinBounds = NO;
-
-    if (orientation == UIInterfaceOrientationPortrait) {
-        nearLogicalLeft = (loc.x < edgeThreshold);
-        nearLogicalRight = (loc.x > S - edgeThreshold);
-        withinBounds = (loc.y > margin) && (loc.y < L - margin);
-    } else if (orientation == UIInterfaceOrientationPortraitUpsideDown) {
-        nearLogicalLeft = (loc.x > S - edgeThreshold);
-        nearLogicalRight = (loc.x < edgeThreshold);
-        withinBounds = (loc.y > margin) && (loc.y < L - margin);
-    } else if (orientation == UIInterfaceOrientationLandscapeLeft) {
-        nearLogicalLeft = (loc.y > S - edgeThreshold);
-        nearLogicalRight = (loc.y < edgeThreshold);
-        withinBounds = (loc.x > margin) && (loc.x < L - margin);
-    } else { // LandscapeRight
-        nearLogicalLeft = (loc.y < edgeThreshold);
-        nearLogicalRight = (loc.y > S - edgeThreshold);
-        withinBounds = (loc.x > margin) && (loc.x < L - margin);
-    }
+    RC_EdgeZonesForLoc(loc, orientation, S, L, edgeThreshold, margin, &nearLogicalLeft, &nearLogicalRight, &withinBounds);
 
     if (!withinBounds) {
         self.state = UIGestureRecognizerStateFailed;
@@ -14921,14 +14948,8 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
     if (gesture.state == UIGestureRecognizerStateChanged && !gesture.hasTriggered) {
         CGPoint translation = [gesture translationInView:nil];
         UIInterfaceOrientation orientation = get_current_interface_orientation();
-        CGFloat dx_u = translation.x, dy_u = translation.y;
-        if (orientation == UIInterfaceOrientationPortraitUpsideDown) {
-            dx_u = -translation.x; dy_u = -translation.y;
-        } else if (orientation == UIInterfaceOrientationLandscapeLeft) {
-            dx_u = -translation.y; dy_u = translation.x;
-        } else if (orientation == UIInterfaceOrientationLandscapeRight) {
-            dx_u = translation.y; dy_u = -translation.x;
-        }
+        CGFloat dx_u = 0, dy_u = 0;
+        RC_UserDeltaForOrientation(translation.x, translation.y, orientation, &dx_u, &dy_u);
         CGFloat verticalSwipeDistance = fabs(dy_u);
         CGFloat horizontalDrift = fabs(dx_u);
 
