@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 - **Web UI Diagnostics buttons fixed**: added the missing `showConfirm` dialog (Respring/Safe Mode/Clear Log were throwing `ReferenceError`), hardened `triggerActionApi`/command fetches with status checks and failure toasts, and fixed Web UI URL Copy on plain HTTP with a textarea fallback.
 
 ### Fixed
+- **Landscape orientation for edge and bar triggers**: top bar, bottom bar, bottom swipe-up zones, and left/right edge swipes now rotate as one logical block using SpringBoard active orientation, with corrected landscape left/right mapping, thresholds, and swipe direction.
 - **Control Center from Bottom Swipe Up triggers**: the `open control center` action no longer gets swallowed when fired from a Bottom Swipe Up zone. Intentional opens now bypass the bottom-swipe suppression window in `SBControlCenterController`, and the post-fire gesture-cancel that interfered with the programmatic open on iOS 16+ was removed (native swipe-up is still suppressed by the gesture hooks) (#57).
 - **Settings footer**: RemoteCompanion version label now scrolls with Settings content (table footer) instead of floating over it.
 - **Settings Web UI URL**: Open Web UI row now shows the device IP address instead of localhost.
