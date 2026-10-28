@@ -908,6 +908,41 @@
     }
     .search-input::placeholder { color: #636366; }
 
+    /* ── Category filter pills (matches iOS RCCategoryBar) ── */
+    .category-bar-wrap {
+      position: sticky;
+      top: calc(44px + env(safe-area-inset-top, 0px));
+      z-index: 9;
+      background: #000;
+      padding: 4px 0 8px;
+    }
+    .category-bar {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 4px 16px;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+    }
+    .category-bar::-webkit-scrollbar { display: none; }
+    .cat-chip {
+      flex-shrink: 0;
+      border: none;
+      border-radius: 17px;
+      padding: 7px 14px;
+      font-size: 15px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      background: rgba(255,255,255,0.12);
+      color: #fff;
+      transition: background 0.15s, color 0.15s, transform 0.1s;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .cat-chip:active { transform: scale(0.96); }
+    .cat-chip.active { background: #fff; color: #000; }
+
     /* ── Picker action rows ── */
     .picker-section-header {
       font-size: 13px; font-weight: 500; letter-spacing: 0.05em;
@@ -1522,6 +1557,7 @@
 <div class="page-content">
   <div id="conn-banner">⚠ Unable to connect to device</div>
   <h1 class="large-title" id="main-large-title">RemoteCompanion</h1>
+  <div class="category-bar-wrap"><div class="category-bar" id="category-bar"></div></div>
   <div id="triggers-root"></div>
   <div class="page-footer">
     <strong>RemoteCompanion</strong>
@@ -2570,6 +2606,10 @@ let hasLoadedData = false;
 let currentKey = null;
 let dialogCallback = null;
 let editMode = false;
+let g_selectedCategoryId = null; // null = All (mirrors iOS RCCategoryBar selectedIndex -1)
+try {
+  g_selectedCategoryId = localStorage.getItem('rc_selected_category') || null;
+} catch (e) {}
 let cachedApps = [];
 try {
   const saved = localStorage.getItem('rc_cached_apps');
@@ -2607,13 +2647,13 @@ const TRIGGER_SECTIONS = [
   { title: 'Bottom Bar Gestures',    id: 'bottombar', keys: ['trigger_bottombar_swipe_left','trigger_bottombar_swipe_right','trigger_bottom_swipe_up_left','trigger_bottom_swipe_up_center','trigger_bottom_swipe_up_right'] },
   { title: 'Home Button',            id: 'home',      keys: ['trigger_home_double_click','trigger_home_triple_click','trigger_home_quadruple_click','touchid_tap','touchid_hold'] },
   { title: 'Ringer Switch',          id: 'ringer',    keys: ['trigger_ringer_mute','trigger_ringer_unmute','trigger_ringer_toggle'] },
-  { title: 'Device Status',          id: 'status',    keys: [], prefix: 'trigger_device_', prefix2: 'trigger_media_', deletable: true },
+  { title: 'Device State',           id: 'status',    keys: [], prefix: 'trigger_device_', prefix2: 'trigger_media_', deletable: true },
   { title: 'Motion Gestures',        id: 'motion',    keys: ['shake'] },
   { title: 'NFC Tags',               id: 'nfc',       keys: [], dynamic: true, prefix: 'nfc_',        deletable: true },
   { title: 'WiFi Network Triggers',  id: 'wifi',      keys: [], dynamic: true, prefix: 'wifi_',       deletable: true },
   { title: 'Bluetooth Device Triggers', id: 'bt',     keys: [], dynamic: true, prefix: 'bt_',         deletable: true },
   { title: 'Audio Output Triggers',   id: 'output',  keys: [], dynamic: true, prefix: 'output_',     deletable: true },
-  { title: 'Notification Triggers',  id: 'notif',     keys: [], dynamic: true, prefix: 'notif_',      deletable: true },
+  { title: 'Notification Triggers',  id: 'notif',     keys: [], dynamic: true, prefix: 'notif_', prefix2: 'notify_', deletable: true },
   { title: 'App Launch Triggers',    id: 'app',       keys: [], dynamic: true, prefix: 'app_launch_', deletable: true },
   { title: 'App Exit Triggers',      id: 'appexit',   keys: [], dynamic: true, prefix: 'app_exit_',   deletable: true },
   { title: 'Scheduled Triggers',     id: 'sched',     keys: [], dynamic: true, prefix: 'sched_',      deletable: true },
@@ -3337,28 +3377,85 @@ function triggerData(key) {
   return config.triggers[key];
 }
 
+// ── Category filter pills (mirrors iOS RCCategoryBar + selectedCategoryTitle) ──
+function shortChipTitle(title) {
+  return title.endsWith(' Triggers') ? title.slice(0, -9) : title;
+}
+
+function sectionMatches(sec, key) {
+  if (sec.prefix && key.startsWith(sec.prefix)) return true;
+  if (sec.prefix2 && key.startsWith(sec.prefix2)) return true;
+  return false;
+}
+
+// Sections that currently have something to show (same visibility rules as iOS)
+function computeVisibleSections() {
+  const allKeys = Object.keys(config.triggers);
+  const favs = config.favoriteTriggers || [];
+  const out = [];
+  TRIGGER_SECTIONS.forEach(sec => {
+    let keys;
+    if (sec.id === 'status') {
+      keys = allKeys.filter(k => ['trigger_device_','trigger_media_','trigger_power_','trigger_carplay_'].some(p => k.startsWith(p)));
+    } else if (sec.id === 'favorites') {
+      keys = favs.filter(k => config.triggers[k]);
+    } else if (sec.dynamic) {
+      keys = allKeys.filter(k => sectionMatches(sec, k));
+    } else {
+      keys = (sec.keys || []).slice();
+    }
+    if (sec.id !== 'favorites') keys = keys.filter(k => !favs.includes(k));
+    if (sec.dynamic && keys.length === 0) return;
+    if (sec.id === 'home' && typeof serverCapabilities !== 'undefined' && serverCapabilities.home_button === false) return;
+    if (sec.id === 'favorites' && keys.length === 0) return;
+    out.push({ sec, keys });
+  });
+  return out;
+}
+
+function renderCategoryBar(visible) {
+  const bar = document.getElementById('category-bar');
+  if (!bar) return;
+  // A selected section that went away (e.g. last NFC tag deleted) falls back to All
+  if (g_selectedCategoryId && !visible.some(v => v.sec.id === g_selectedCategoryId)) {
+    g_selectedCategoryId = null;
+    try { localStorage.removeItem('rc_selected_category'); } catch (e) {}
+  }
+  bar.innerHTML = '';
+  const mkChip = (label, id) => {
+    const btn = document.createElement('button');
+    btn.className = 'cat-chip' + ((id === g_selectedCategoryId) ? ' active' : '');
+    btn.textContent = label;
+    btn.addEventListener('click', () => selectCategory(id, btn));
+    bar.appendChild(btn);
+    return btn;
+  };
+  mkChip('All', null);
+  visible.forEach(v => mkChip(shortChipTitle(v.sec.title), v.sec.id));
+  const active = bar.querySelector('.cat-chip.active');
+  if (active) active.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+}
+
+function selectCategory(id, btnEl) {
+  g_selectedCategoryId = id;
+  try {
+    if (id) localStorage.setItem('rc_selected_category', id);
+    else localStorage.removeItem('rc_selected_category');
+  } catch (e) {}
+  renderAll();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
 // ── Render main list ──────────────────────────────────────────────────────────
 function renderAll() {
   const root = document.getElementById('triggers-root');
   root.innerHTML = '';
 
-  const allKeys = Object.keys(config.triggers);
-  TRIGGER_SECTIONS.forEach(sec => {
-    if (sec.id === 'status') {
-      sec.keys = allKeys.filter(k => ['trigger_device_','trigger_media_','trigger_power_','trigger_carplay_'].some(p => k.startsWith(p)));
-    } else if (sec.dynamic) {
-      sec.keys = allKeys.filter(k => k.startsWith(sec.prefix));
-    }
-    if (sec.id === 'favorites') sec.keys = (config.favoriteTriggers || []).filter(k => config.triggers[k]);
-  });
+  const visible = computeVisibleSections();
+  renderCategoryBar(visible);
 
-  TRIGGER_SECTIONS.forEach(sec => {
-    const favs = config.favoriteTriggers || [];
-    let keys = sec.keys;
-    if (sec.id !== 'favorites') keys = keys.filter(k => !favs.includes(k));
-    if (sec.dynamic && keys.length === 0) return;
-    if (sec.id === 'home' && serverCapabilities.home_button === false) return;
-    if (sec.id === 'favorites' && keys.length === 0) return;
+  visible.forEach(({ sec, keys }) => {
+    if (g_selectedCategoryId && sec.id !== g_selectedCategoryId) return;
 
     // Section header
     const hdr = document.createElement('div');
