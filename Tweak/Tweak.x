@@ -14401,6 +14401,7 @@ static NSTimeInterval g_lastBottomSwipeTriggerTime = 0;
 // Darwin notification so UIKit-injected app processes can freeze theirs,
 // and restore everything on touch end/cancel.
 static NSHashTable *g_rcFrozenScrollViews = nil;
+static NSHashTable *g_rcFrozenGestureRecognizers = nil;
 static BOOL g_rcGestureScrollFrozen = NO;
 
 static BOOL RC_GestureScrollSuppressionWanted(void) {
@@ -14434,6 +14435,7 @@ static void RC_FreezeGestureScrolling(void) {
         if (g_rcGestureScrollFrozen) return;
         g_rcGestureScrollFrozen = YES;
         if (!g_rcFrozenScrollViews) g_rcFrozenScrollViews = [NSHashTable weakObjectsHashTable];
+        if (!g_rcFrozenGestureRecognizers) g_rcFrozenGestureRecognizers = [NSHashTable weakObjectsHashTable];
         @try {
             for (UIWindow *w in [UIApplication sharedApplication].windows) {
                 NSMutableArray *found = [NSMutableArray array];
@@ -14442,6 +14444,16 @@ static void RC_FreezeGestureScrolling(void) {
                     if (sv.scrollEnabled) {
                         [g_rcFrozenScrollViews addObject:sv];
                         sv.scrollEnabled = NO;
+                    }
+                    // Row swipe actions (e.g. table cell actions) are driven
+                    // by the scroll view's own gesture recognizers, which
+                    // scrollEnabled=NO alone does not stop. Disabling them
+                    // cancels the in-flight swipe action.
+                    for (UIGestureRecognizer *gr in sv.gestureRecognizers) {
+                        if (gr.enabled) {
+                            [g_rcFrozenGestureRecognizers addObject:gr];
+                            gr.enabled = NO;
+                        }
                     }
                 }
             }
@@ -14461,8 +14473,12 @@ static void RC_UnfreezeGestureScrolling(void) {
             for (UIScrollView *sv in g_rcFrozenScrollViews) {
                 @try { sv.scrollEnabled = YES; } @catch (__unused NSException *e) { }
             }
+            for (UIGestureRecognizer *gr in g_rcFrozenGestureRecognizers) {
+                @try { gr.enabled = YES; } @catch (__unused NSException *e) { }
+            }
         } @catch (__unused NSException *e) { }
         [g_rcFrozenScrollViews removeAllObjects];
+        [g_rcFrozenGestureRecognizers removeAllObjects];
         notify_post("com.saihgupr.remotecompanion.gesture-scroll-end");
     };
     if ([NSThread isMainThread]) work();
@@ -14856,6 +14872,13 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                 }
                 
                 // --- Bottom Bar Moves ---
+                // Early freeze: once horizontal intent is clear and that
+                // direction's trigger is actionable, hold the list (and any
+                // row swipe actions) still for the rest of the touch.
+                if (g_bottomBarTouchActive && isHoz && abs_udx > 10) {
+                    NSString *sideKey = (user_dx > 0) ? @"trigger_bottombar_swipe_right" : @"trigger_bottombar_swipe_left";
+                    if (RC_TriggerIsActionable(sideKey)) RC_FreezeGestureScrolling();
+                }
                 if (g_bottomBarTouchActive && !g_bottomBarHapticFired) {
                     if (isHoz && abs_udx > 15) {
                         NSString *trigger = (user_dx > 0) ? @"trigger_bottombar_swipe_right" : @"trigger_bottombar_swipe_left";
@@ -14869,6 +14892,14 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                 }
                 
                 // Bottom Bar Swipe Up (3-Zone) during Move
+                // Early freeze: once upward intent is clear and the zoned
+                // trigger is actionable, hold the list still for the rest
+                // of the touch (firing itself happens at 45pt below).
+                if (g_bottomBarTouchActive && !g_bottomBarSwipeUpTriggered && isVertUp && abs_udy > 10) {
+                    if (g_pendingBottomBarSwipeUpTrigger && RC_TriggerIsActionable(g_pendingBottomBarSwipeUpTrigger)) {
+                        RC_FreezeGestureScrolling();
+                    }
+                }
                 if (g_bottomBarTouchActive && !g_bottomBarSwipeUpTriggered && isVertUp && abs_udy > 45) {
                     if (g_pendingBottomBarSwipeUpTrigger) {
                         load_trigger_config();
@@ -15690,6 +15721,7 @@ static BOOL RC_ShouldKeepBottomBarSideSwipe(void) {
 
 static BOOL g_appSuppressScroll = NO;
 static NSHashTable *g_appFrozenScrollViews = nil;
+static NSHashTable *g_appFrozenGestureRecognizers = nil;
 
 static void RCApp_CollectScrollViewsInView(UIView *view, NSMutableArray *out) {
     if ([view isKindOfClass:[UIScrollView class]]) [out addObject:(UIScrollView *)view];
@@ -15701,6 +15733,7 @@ static void RCApp_SetScrollFrozen(BOOL frozen) {
         if (frozen == g_appSuppressScroll && frozen) return;
         g_appSuppressScroll = frozen;
         if (!g_appFrozenScrollViews) g_appFrozenScrollViews = [NSHashTable weakObjectsHashTable];
+        if (!g_appFrozenGestureRecognizers) g_appFrozenGestureRecognizers = [NSHashTable weakObjectsHashTable];
         @try {
             if (frozen) {
                 for (UIWindow *w in [UIApplication sharedApplication].windows) {
@@ -15711,13 +15744,23 @@ static void RCApp_SetScrollFrozen(BOOL frozen) {
                             [g_appFrozenScrollViews addObject:sv];
                             sv.scrollEnabled = NO;
                         }
+                        for (UIGestureRecognizer *gr in sv.gestureRecognizers) {
+                            if (gr.enabled) {
+                                [g_appFrozenGestureRecognizers addObject:gr];
+                                gr.enabled = NO;
+                            }
+                        }
                     }
                 }
             } else {
                 for (UIScrollView *sv in g_appFrozenScrollViews) {
                     @try { sv.scrollEnabled = YES; } @catch (__unused NSException *e) { }
                 }
+                for (UIGestureRecognizer *gr in g_appFrozenGestureRecognizers) {
+                    @try { gr.enabled = YES; } @catch (__unused NSException *e) { }
+                }
                 [g_appFrozenScrollViews removeAllObjects];
+                [g_appFrozenGestureRecognizers removeAllObjects];
             }
         } @catch (__unused NSException *e) { }
     };
