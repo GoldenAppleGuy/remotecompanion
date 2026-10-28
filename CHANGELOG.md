@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 - **Lock Toggle passcode support**: added optional passcode argument to lock toggle (`lock-toggle <pin>` / `lock toggle <pin>`), enabling automatic passcode unlocking when the device is locked, with dedicated configuration dialogs in the iOS action picker, action editor, and Web UI (#99).
 - **Kill Current App action**: new `kill current` command (aliases `kill front`, `kill foreground`, `kill current app`, `kill front app`) force-closes the currently focused app, available in the iOS action picker, Web UI, and `rc` shell commands (#93).
+- **Web UI Settings parity with iOS**: Settings root now mirrors iOS (General / Buttons / Integrations / Advanced Settings / Backup & Diagnostics) with dedicated sub-panels for Button Timing, Integrations (HA/KM/MQTT), Advanced (Banners/NFC/Logging), and Backup & Diagnostics.
 
 ### Fixed
 - **Control Center from Bottom Swipe Up triggers**: the `open control center` action no longer gets swallowed when fired from a Bottom Swipe Up zone. Intentional opens now bypass the bottom-swipe suppression window in `SBControlCenterController`, and the post-fire gesture-cancel that interfered with the programmatic open on iOS 16+ was removed (native swipe-up is still suppressed by the gesture hooks) (#57).

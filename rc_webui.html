@@ -1602,37 +1602,110 @@
         </div>
       </div>
       <div class="settings-row">
-        <span class="settings-label">NFC Scanning</span>
-        <div class="settings-btn">
-          <input type="checkbox" class="ios-toggle" id="setting-nfc" onchange="config.nfcEnabled=this.checked;saveConfig()">
-        </div>
-      </div>
-      <div class="settings-row">
         <span class="settings-label">Web UI</span>
         <div class="settings-btn">
           <input type="checkbox" class="ios-toggle" id="setting-webui" onchange="config.webUIEnabled=this.checked;saveConfig()">
         </div>
       </div>
-      <div class="settings-row" style="cursor:pointer" onclick="openBannersPanel()">
-        <span class="settings-label">Banners</span>
-        <div class="settings-btn" style="color:#8e8e93;display:flex;align-items:center;gap:6px">
-          <span id="setting-banners-count">Off</span><i class="f7-icons" style="font-size:14px;color:#48484a">chevron_right</i>
-        </div>
-      </div>
-      <div class="settings-row">
-        <span class="settings-label">Logging</span>
-        <div class="settings-btn">
-          <select id="setting-loglevel" onchange="config.logLevel=this.value;saveConfig()" style="appearance:none;-webkit-appearance:none;background:none;border:none;color:#8e8e93;font-size:17px;font-family:inherit;text-align:right;outline:none;cursor:pointer">
-            <option value="off">Off</option>
-            <option value="minimal">Minimal</option>
-            <option value="full">Full</option>
-          </select>
-        </div>
-      </div>
+    </div>
 
+    <div class="action-list-header">Buttons</div>
+    <div class="action-list-card">
+      <div class="action-list-row" onclick="openButtonsPanel()">
+        <div class="action-row-icon icon-orange"><i class="f7-icons">hand_tap_fill</i></div>
+        <div class="action-row-text">Buttons</div>
+        <i class="f7-icons row-chevron" style="color:#8e8e93; font-size:14px;">chevron_right</i>
+      </div>
     </div>
 
     <div class="action-list-header">Integrations</div>
+    <div class="action-list-card">
+      <div class="action-list-row" onclick="openIntegrationsPanel()">
+        <div class="action-row-icon icon-indigo"><i class="f7-icons">puzzlepiece_extension_fill</i></div>
+        <div class="action-row-text" style="flex:1">Integrations<br><span id="setting-integrations-status" style="font-size:13px;color:#8e8e93;font-weight:400">Disabled</span></div>
+        <i class="f7-icons row-chevron" style="color:#8e8e93; font-size:14px;">chevron_right</i>
+      </div>
+    </div>
+
+    <div class="action-list-header">Advanced Settings</div>
+    <div class="action-list-card">
+      <div class="action-list-row" onclick="openAdvancedPanel()">
+        <div class="action-row-icon icon-purple"><i class="f7-icons">gearshape_2_fill</i></div>
+        <div class="action-row-text">Advanced Settings</div>
+        <i class="f7-icons row-chevron" style="color:#8e8e93; font-size:14px;">chevron_right</i>
+      </div>
+    </div>
+
+    <div class="action-list-header">Backup & Diagnostics</div>
+    <div class="action-list-card">
+      <div class="action-list-row" onclick="openBackupDiagnosticsPanel()">
+        <div class="action-row-icon icon-teal"><i class="f7-icons">externaldrive_fill</i></div>
+        <div class="action-row-text">Backup & Diagnostics</div>
+        <i class="f7-icons row-chevron" style="color:#8e8e93; font-size:14px;">chevron_right</i>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ══ BUTTONS PANEL (Settings > Buttons) ═══════════════════════════════════ -->
+<div class="rc-panel" id="buttons-panel">
+  <div class="panel-navbar">
+    <button class="panel-back" onclick="closeButtonsPanel()">
+      <i class="f7-icons">chevron_left</i> Settings
+    </button>
+    <div class="panel-title">Buttons</div>
+    <div style="width:80px"></div>
+  </div>
+  <div class="panel-content">
+    <div class="action-list-header" style="margin-top:28px">Button Timing</div>
+    <div class="action-list-card">
+      <div class="settings-row">
+        <span class="settings-label">Volume Sequence</span>
+        <div class="settings-btn">
+          <select id="setting-volume-seq" onchange="config.volumeSequenceWindow=parseFloat(this.value);saveConfig()" style="appearance:none;-webkit-appearance:none;background:none;border:none;color:#8e8e93;font-size:17px;font-family:inherit;text-align:right;outline:none;cursor:pointer"></select>
+        </div>
+      </div>
+      <div class="settings-row">
+        <span class="settings-label">Power Clicks</span>
+        <div class="settings-btn">
+          <select id="setting-power-click" onchange="config.powerClickWindow=parseFloat(this.value);saveConfig()" style="appearance:none;-webkit-appearance:none;background:none;border:none;color:#8e8e93;font-size:17px;font-family:inherit;text-align:right;outline:none;cursor:pointer"></select>
+        </div>
+      </div>
+      <div class="settings-row">
+        <span class="settings-label">Home Clicks</span>
+        <div class="settings-btn">
+          <select id="setting-home-click" onchange="config.homeClickWindow=parseFloat(this.value);saveConfig()" style="appearance:none;-webkit-appearance:none;background:none;border:none;color:#8e8e93;font-size:17px;font-family:inherit;text-align:right;outline:none;cursor:pointer"></select>
+        </div>
+      </div>
+      <div class="settings-row">
+        <span class="settings-label">Volume Hold</span>
+        <div class="settings-btn">
+          <select id="setting-volume-hold" onchange="config.volumeHoldTime=parseFloat(this.value);saveConfig()" style="appearance:none;-webkit-appearance:none;background:none;border:none;color:#8e8e93;font-size:17px;font-family:inherit;text-align:right;outline:none;cursor:pointer"></select>
+        </div>
+      </div>
+      <div class="settings-row">
+        <span class="settings-label">Power Hold</span>
+        <div class="settings-btn">
+          <select id="setting-power-hold" onchange="config.powerHoldTime=parseFloat(this.value);saveConfig()" style="appearance:none;-webkit-appearance:none;background:none;border:none;color:#8e8e93;font-size:17px;font-family:inherit;text-align:right;outline:none;cursor:pointer"></select>
+        </div>
+      </div>
+    </div>
+    <div style="color:#8e8e93;font-size:13px;margin:8px 16px 0">How long a press waits for the next one before it counts. A shorter time responds sooner and needs quicker presses.</div>
+  </div>
+</div>
+
+<!-- ══ INTEGRATIONS PANEL (Settings > Integrations) ═══════════════════════ -->
+<div class="rc-panel" id="integrations-panel">
+  <div class="panel-navbar">
+    <button class="panel-back" onclick="closeIntegrationsPanel()">
+      <i class="f7-icons">chevron_left</i> Settings
+    </button>
+    <div class="panel-title">Integrations</div>
+    <div style="width:80px"></div>
+  </div>
+  <div class="panel-content">
+    <div class="action-list-header" style="margin-top:28px">External Services</div>
     <div class="action-list-card">
       <div class="settings-row">
         <span class="settings-label">Home Assistant</span>
@@ -1740,8 +1813,65 @@
         </div>
       </div>
     </div>
+    <div style="color:#8e8e93;font-size:13px;margin:8px 16px 0">Configure external service integrations to trigger actions and control third-party automations.</div>
+  </div>
+</div>
 
-    <div class="action-list-header">Backup</div>
+<!-- ══ ADVANCED PANEL (Settings > Advanced Settings) ══════════════════════ -->
+<div class="rc-panel" id="advanced-panel">
+  <div class="panel-navbar">
+    <button class="panel-back" onclick="closeAdvancedPanel()">
+      <i class="f7-icons">chevron_left</i> Settings
+    </button>
+    <div class="panel-title">Advanced Settings</div>
+    <div style="width:80px"></div>
+  </div>
+  <div class="panel-content">
+    <div class="action-list-header" style="margin-top:28px">Banners</div>
+    <div class="action-list-card">
+      <div class="action-list-row" onclick="openBannersPanel()">
+        <div class="action-row-icon icon-purple"><i class="f7-icons">bell_fill</i></div>
+        <div class="action-row-text" style="flex:1">Banners<br><span id="setting-banners-count" style="font-size:13px;color:#8e8e93;font-weight:400">Off</span></div>
+        <i class="f7-icons row-chevron" style="color:#8e8e93; font-size:14px;">chevron_right</i>
+      </div>
+    </div>
+    <div class="action-list-header">NFC</div>
+    <div class="action-list-card">
+      <div class="settings-row">
+        <span class="settings-label">NFC Scanning</span>
+        <div class="settings-btn">
+          <input type="checkbox" class="ios-toggle" id="setting-nfc" onchange="config.nfcEnabled=this.checked;saveConfig()">
+        </div>
+      </div>
+    </div>
+    <div class="action-list-header">Options</div>
+    <div class="action-list-card">
+      <div class="settings-row">
+        <span class="settings-label">Logging</span>
+        <div class="settings-btn">
+          <select id="setting-loglevel" onchange="config.logLevel=this.value;saveConfig()" style="appearance:none;-webkit-appearance:none;background:none;border:none;color:#8e8e93;font-size:17px;font-family:inherit;text-align:right;outline:none;cursor:pointer">
+            <option value="off">Off</option>
+            <option value="minimal">Minimal</option>
+            <option value="full">Full</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div style="color:#8e8e93;font-size:13px;margin:8px 16px 0">NFC, banners, logging, and display options.</div>
+  </div>
+</div>
+
+<!-- ══ BACKUP & DIAGNOSTICS PANEL (Settings > Backup & Diagnostics) ══════ -->
+<div class="rc-panel" id="backup-panel">
+  <div class="panel-navbar">
+    <button class="panel-back" onclick="closeBackupDiagnosticsPanel()">
+      <i class="f7-icons">chevron_left</i> Settings
+    </button>
+    <div class="panel-title">Backup & Diagnostics</div>
+    <div style="width:80px"></div>
+  </div>
+  <div class="panel-content">
+    <div class="action-list-header" style="margin-top:28px">Backup</div>
     <div class="action-list-card">
       <div class="action-list-row" onclick="exportConfig()">
         <div class="action-row-icon icon-blue"><i class="f7-icons">square_arrow_up</i></div>
@@ -1761,6 +1891,7 @@
         <i class="f7-icons row-chevron" style="color:#8e8e93; font-size:14px;">chevron_right</i>
       </div>
     </div>
+    <div style="color:#8e8e93;font-size:13px;margin:8px 16px 0">Export or import your configuration, and run on-device diagnostics.</div>
     <input type="file" id="import-file-input" accept=".json" style="display:none" onchange="handleImportFile(this)">
 
   </div>
@@ -5270,6 +5401,8 @@ function openSettings() {
   document.getElementById('setting-webui').checked  = !!config.webUIEnabled;
   document.getElementById('setting-loglevel').value = ['off','minimal','full'].includes(config.logLevel) ? config.logLevel : 'minimal';
   updateBannersCount();
+  updateIntegrationsStatus();
+  populateTimingSelects();
 
   const haToggle = document.getElementById('setting-ha');
   if (haToggle) {
@@ -5312,6 +5445,7 @@ function onHAToggleChange(enabled) {
   saveConfig();
   const wrapper = document.getElementById('ha-credentials-wrapper');
   if (wrapper) wrapper.style.display = enabled ? 'block' : 'none';
+  updateIntegrationsStatus();
   renderPickerSections();
 }
 
@@ -5320,6 +5454,7 @@ function onKMToggleChange(enabled) {
   saveConfig();
   const wrapper = document.getElementById('km-credentials-wrapper');
   if (wrapper) wrapper.style.display = enabled ? 'block' : 'none';
+  updateIntegrationsStatus();
   renderPickerSections();
 }
 
@@ -5328,7 +5463,88 @@ function onMQTTToggleChange(enabled) {
   saveConfig();
   const wrapper = document.getElementById('mqtt-credentials-wrapper');
   if (wrapper) wrapper.style.display = enabled ? 'block' : 'none';
+  updateIntegrationsStatus();
   renderPickerSections();
+}
+
+function updateIntegrationsStatus() {
+  const el = document.getElementById('setting-integrations-status');
+  if (!el) return;
+  const names = [];
+  if (config.haEnabled) names.push('Home Assistant');
+  if (config.kmEnabled) names.push('Keyboard Maestro');
+  if (config.mqttEnabled) names.push('MQTT');
+  el.textContent = names.length ? names.join(' • ') : 'Disabled';
+}
+
+function openButtonsPanel() {
+  populateTimingSelects();
+  document.getElementById('buttons-panel').classList.add('active');
+}
+
+function closeButtonsPanel() {
+  document.getElementById('buttons-panel').classList.remove('active');
+}
+
+function openIntegrationsPanel() {
+  document.getElementById('integrations-panel').classList.add('active');
+}
+
+function closeIntegrationsPanel() {
+  document.getElementById('integrations-panel').classList.remove('active');
+  updateIntegrationsStatus();
+}
+
+function openAdvancedPanel() {
+  document.getElementById('setting-nfc').checked = !!config.nfcEnabled;
+  document.getElementById('setting-loglevel').value = ['off','minimal','full'].includes(config.logLevel) ? config.logLevel : 'minimal';
+  updateBannersCount();
+  document.getElementById('advanced-panel').classList.add('active');
+}
+
+function closeAdvancedPanel() {
+  document.getElementById('advanced-panel').classList.remove('active');
+}
+
+function openBackupDiagnosticsPanel() {
+  document.getElementById('backup-panel').classList.add('active');
+}
+
+function closeBackupDiagnosticsPanel() {
+  document.getElementById('backup-panel').classList.remove('active');
+}
+
+const RC_TIMING_OPTIONS = {
+  'setting-volume-seq': { key: 'volumeSequenceWindow', values: [0.20,0.25,0.30,0.38,0.45,0.55,0.65], def: 0.38 },
+  'setting-power-click': { key: 'powerClickWindow', values: [0.10,0.15,0.20,0.25,0.30,0.35,0.40,0.50,0.60,0.70], def: 0.40 },
+  'setting-home-click': { key: 'homeClickWindow', values: [0.25,0.30,0.35,0.45,0.55,0.65], def: 0.35 },
+  'setting-volume-hold': { key: 'volumeHoldTime', values: [0.20,0.25,0.30,0.35,0.45,0.55,0.70], def: 0.35 },
+  'setting-power-hold': { key: 'powerHoldTime', values: [0.30,0.40,0.50,0.60,0.75], def: 0.50 }
+};
+
+function populateTimingSelects() {
+  Object.keys(RC_TIMING_OPTIONS).forEach(id => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    const opt = RC_TIMING_OPTIONS[id];
+    const current = (config[opt.key] != null) ? parseFloat(config[opt.key]) : opt.def;
+    sel.innerHTML = '';
+    opt.values.forEach(v => {
+      const o = document.createElement('option');
+      o.value = String(v);
+      o.textContent = v.toFixed(2) + ' s' + (Math.abs(v - opt.def) < 0.005 ? ' (Default)' : '');
+      if (Math.abs(v - current) < 0.005) o.selected = true;
+      sel.appendChild(o);
+    });
+    // If current value is custom (not in list), preserve it
+    if (!opt.values.some(v => Math.abs(v - current) < 0.005)) {
+      const o = document.createElement('option');
+      o.value = String(current);
+      o.textContent = current.toFixed(2) + ' s';
+      o.selected = true;
+      sel.appendChild(o);
+    }
+  });
 }
 
 function toggleKMPasswordVisibility() {
