@@ -14786,7 +14786,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                             if (enabled) {
                                 g_statusBarHoldTriggered = YES;
                                 trigger_haptic();
-                                RC_FreezeGestureScrolling();
+                                if (RC_TriggerIsActionable(g_pendingStatusBarTrigger)) RC_FreezeGestureScrolling();
                                 RCExecuteTrigger(g_pendingStatusBarTrigger);
                                 SRLog(@"%@ FIRED!", g_pendingStatusBarTrigger);
                             }
@@ -14859,8 +14859,8 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                         load_trigger_config();
                         if ([g_triggerConfig[@"masterEnabled"] boolValue] && [g_triggerConfig[@"triggers"][trigger][@"enabled"] boolValue]) {
                             trigger_haptic();
-                            RC_FreezeGestureScrolling();
                         }
+                        if (RC_TriggerIsActionable(trigger)) RC_FreezeGestureScrolling();
                         g_statusBarSwipeHapticFired = YES;
                     }
                     
@@ -14885,8 +14885,8 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                         load_trigger_config();
                         if ([g_triggerConfig[@"masterEnabled"] boolValue] && [g_triggerConfig[@"triggers"][trigger][@"enabled"] boolValue]) {
                             trigger_haptic();
-                            RC_FreezeGestureScrolling();
                         }
+                        if (RC_TriggerIsActionable(trigger)) RC_FreezeGestureScrolling();
                         g_bottomBarHapticFired = YES;
                     }
                 }
@@ -14909,7 +14909,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                             g_bottomBarSwipeUpTriggered = YES;
                             g_lastBottomSwipeTriggerTime = [[NSDate date] timeIntervalSince1970];
                             trigger_haptic();
-                            RC_FreezeGestureScrolling();
+                            if (RC_TriggerIsActionable(g_pendingBottomBarSwipeUpTrigger)) RC_FreezeGestureScrolling();
                             RCExecuteTrigger(g_pendingBottomBarSwipeUpTrigger);
                             SRLog(@"[RCBottom] %@ FIRED during move!", g_pendingBottomBarSwipeUpTrigger);
                         }
@@ -14939,7 +14939,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                                 g_bottomBarSwipeUpTriggered = YES;
                                 g_lastBottomSwipeTriggerTime = [[NSDate date] timeIntervalSince1970];
                                 trigger_haptic();
-                                RC_FreezeGestureScrolling();
+                                if (RC_TriggerIsActionable(g_pendingBottomBarSwipeUpTrigger)) RC_FreezeGestureScrolling();
                                 RCExecuteTrigger(g_pendingBottomBarSwipeUpTrigger);
                                 SRLog(@"[RCBottom] %@ FIRED on ended!", g_pendingBottomBarSwipeUpTrigger);
                             }
@@ -15103,7 +15103,7 @@ static BOOL has_any_bottom_swipe_trigger_enabled() {
                 if (enabled) {
                     // Haptic feedback ONLY if enabled
                     trigger_haptic();
-                    RC_FreezeGestureScrolling();
+                    if (RC_TriggerIsActionable(triggerKey)) RC_FreezeGestureScrolling();
                     RCExecuteTrigger(triggerKey);
                     SRLog(@"%@ FIRED INSTANTLY!", triggerKey);
                 } else {

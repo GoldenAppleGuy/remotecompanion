@@ -128,7 +128,7 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
         }
         return @"NFC scanning options.";
     } else if (section == RCAdvancedSettingsSectionOptions) {
-        return @"Logging and display options. Freeze Lists During Gestures holds lists and row swipe actions still while a status bar, bottom bar, or edge swipe gesture runs.";
+        return @"Logging and display options. Lock Scrolling During Gestures holds lists and row swipe actions still while a status bar, bottom bar, or edge swipe gesture runs.";
     }
     return nil;
 }
@@ -200,7 +200,7 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
             cell.detailTextLabel.text = [cm.logLevel capitalizedString];
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         } else if (indexPath.row == 2) {
-            cell.textLabel.text = @"Freeze Lists During Gestures";
+            cell.textLabel.text = @"Lock Scrolling During Gestures";
             UISwitch *freezeSwitch = [[UISwitch alloc] init];
             freezeSwitch.on = cm.freezeListsDuringGestures;
             [freezeSwitch addTarget:self action:@selector(freezeListsToggleChanged:) forControlEvents:UIControlEventValueChanged];
