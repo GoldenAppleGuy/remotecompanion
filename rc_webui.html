@@ -962,9 +962,9 @@
     .cond-option-row .picker-row-text.dim { color: #636366; }
     .cond-check { font-size: 16px; color: #0a84ff; flex-shrink: 0; margin-left: 8px; }
 
-    /* ── Condition picker iOS inset-grouped colors ── */
-    #cond-picker-content { background: transparent; }
-    #cond-picker-content .picker-section-header {
+    /* ── Dialog pickers iOS inset-grouped colors ── */
+    #cond-picker-content, #picker-content { background: transparent; }
+    #cond-picker-content .picker-section-header, #picker-content .picker-section-header {
       background: transparent;
       position: static;
       font-size: 13px;
@@ -974,24 +974,24 @@
       padding: 0 18px;
       margin: 20px 0 6px;
     }
-    #cond-picker-content .picker-section-header:first-child { margin-top: 6px; }
-    #cond-picker-content .cond-card {
+    #cond-picker-content .picker-section-header:first-child, #picker-content .picker-section-header:first-child { margin-top: 6px; }
+    .dialog-card {
       margin: 0 2px 8px;
       background: #1c1c1e;
       border-radius: 12px;
       overflow: hidden;
       border: 0.5px solid rgba(255,255,255,0.08);
     }
-    #cond-picker-content .picker-row { border-bottom: none; background: transparent; min-height: 52px; position: relative; }
-    #cond-picker-content .picker-row + .picker-row::after {
+    #cond-picker-content .picker-row, #picker-content .picker-row { border-bottom: none; background: transparent; min-height: 52px; position: relative; }
+    #cond-picker-content .picker-row + .picker-row::after, #picker-content .picker-row + .picker-row::after {
       content: ''; position: absolute; left: 60px; right: 0; top: 0; height: 0.5px;
       background: rgba(255,255,255,0.12);
     }
-    .cond-row-icon {
+    .dialog-row-icon {
       width: 30px; display: flex; align-items: center; justify-content: center;
       flex-shrink: 0; margin-right: 14px; color: #8e8e93;
     }
-    .cond-row-icon i { font-size: 22px; }
+    .dialog-row-icon i { font-size: 22px; }
 
     /* ── Picker action rows ── */
     .picker-section-header {
@@ -5231,12 +5231,13 @@ function renderPickerSections() {
     container.appendChild(hdr);
 
     const card = document.createElement('div');
-    card.className = 'list-card';
+    card.className = 'dialog-card';
+    container.appendChild(card);
     filtered.forEach(act => {
       const row = document.createElement('div');
       row.className = 'picker-row';
       row.innerHTML = `
-        <div class="picker-row-icon icon-dark">
+        <div class="dialog-row-icon">
           <i class="f7-icons">${act.icon}</i>
         </div>
         <div class="picker-row-text">${escHtml(act.name)}</div>
@@ -5245,7 +5246,6 @@ function renderPickerSections() {
       row.onclick = () => selectPickerAction(act);
       card.appendChild(row);
     });
-    container.appendChild(card);
   });
 }
 
@@ -5720,7 +5720,7 @@ function renderCondPicker() {
     container.appendChild(hdr);
 
     const card = document.createElement('div');
-    card.className = 'cond-card';
+    card.className = 'dialog-card';
     container.appendChild(card);
 
     g.defs.forEach(d => {
@@ -5729,7 +5729,7 @@ function renderCondPicker() {
       row.dataset.condKey = d.key;
       const expanded = d.key === condPickerExpandedKey;
       row.innerHTML = `
-        <div class="cond-row-icon">
+        <div class="dialog-row-icon">
           <i class="f7-icons">${d.icon || 'question_circle'}</i>
         </div>
         <div class="picker-row-text">${escHtml(d.title)}</div>
