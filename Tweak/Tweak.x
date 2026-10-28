@@ -14402,7 +14402,11 @@ static NSTimeInterval g_lastBottomSwipeTriggerTime = 0;
 // and restore everything on touch end/cancel.
 static NSHashTable *g_rcFrozenScrollViews = nil;
 static NSHashTable *g_rcFrozenGestureRecognizers = nil;
+static NSHashTable *g_rcFrozenInteractionWindows = nil;
 static BOOL g_rcGestureScrollFrozen = NO;
+static unsigned g_rcFreezeGen = 0;
+
+static void RC_UnfreezeGestureScrolling(void);
 
 static BOOL RC_GestureScrollSuppressionWanted(void) {
     // Off unless the user opts in via Advanced Settings (default off).
@@ -14436,8 +14440,10 @@ static void RC_FreezeGestureScrolling(void) {
         g_rcGestureScrollFrozen = YES;
         if (!g_rcFrozenScrollViews) g_rcFrozenScrollViews = [NSHashTable weakObjectsHashTable];
         if (!g_rcFrozenGestureRecognizers) g_rcFrozenGestureRecognizers = [NSHashTable weakObjectsHashTable];
+        if (!g_rcFrozenInteractionWindows) g_rcFrozenInteractionWindows = [NSHashTable weakObjectsHashTable];
         @try {
-            for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            NSArray *windows = [UIApplication sharedApplication].windows;
+            for (UIWindow *w in windows) {
                 NSMutableArray *found = [NSMutableArray array];
                 RC_CollectScrollViewsInView(w, found);
                 for (UIScrollView *sv in found) {
@@ -14457,8 +14463,26 @@ static void RC_FreezeGestureScrolling(void) {
                     }
                 }
             }
+            // Block taps/clicks for the gesture duration: a touch that began
+            // on a button or row would otherwise activate on lift. Flipping
+            // userInteraction mid-touch cancels delivery to those views; the
+            // gesture itself is tracked from the raw event above, so it is
+            // unaffected.
+            for (UIWindow *w in windows) {
+                if (w.userInteractionEnabled) {
+                    [g_rcFrozenInteractionWindows addObject:w];
+                    w.userInteractionEnabled = NO;
+                }
+            }
         } @catch (__unused NSException *e) { }
         notify_post("com.saihgupr.remotecompanion.gesture-scroll-begin");
+        // Failsafe: a missed touch-end must never leave the UI untouchable.
+        // Gestures finish in well under a second.
+        g_rcFreezeGen++;
+        unsigned gen = g_rcFreezeGen;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (g_rcGestureScrollFrozen && gen == g_rcFreezeGen) RC_UnfreezeGestureScrolling();
+        });
     };
     if ([NSThread isMainThread]) work();
     else dispatch_async(dispatch_get_main_queue(), work);
@@ -14476,9 +14500,13 @@ static void RC_UnfreezeGestureScrolling(void) {
             for (UIGestureRecognizer *gr in g_rcFrozenGestureRecognizers) {
                 @try { gr.enabled = YES; } @catch (__unused NSException *e) { }
             }
+            for (UIWindow *w in g_rcFrozenInteractionWindows) {
+                @try { w.userInteractionEnabled = YES; } @catch (__unused NSException *e) { }
+            }
         } @catch (__unused NSException *e) { }
         [g_rcFrozenScrollViews removeAllObjects];
         [g_rcFrozenGestureRecognizers removeAllObjects];
+        [g_rcFrozenInteractionWindows removeAllObjects];
         notify_post("com.saihgupr.remotecompanion.gesture-scroll-end");
     };
     if ([NSThread isMainThread]) work();
@@ -15722,6 +15750,8 @@ static BOOL RC_ShouldKeepBottomBarSideSwipe(void) {
 static BOOL g_appSuppressScroll = NO;
 static NSHashTable *g_appFrozenScrollViews = nil;
 static NSHashTable *g_appFrozenGestureRecognizers = nil;
+static NSHashTable *g_appFrozenInteractionWindows = nil;
+static unsigned g_appFreezeGen = 0;
 
 static void RCApp_CollectScrollViewsInView(UIView *view, NSMutableArray *out) {
     if ([view isKindOfClass:[UIScrollView class]]) [out addObject:(UIScrollView *)view];
@@ -15734,9 +15764,11 @@ static void RCApp_SetScrollFrozen(BOOL frozen) {
         g_appSuppressScroll = frozen;
         if (!g_appFrozenScrollViews) g_appFrozenScrollViews = [NSHashTable weakObjectsHashTable];
         if (!g_appFrozenGestureRecognizers) g_appFrozenGestureRecognizers = [NSHashTable weakObjectsHashTable];
+        if (!g_appFrozenInteractionWindows) g_appFrozenInteractionWindows = [NSHashTable weakObjectsHashTable];
         @try {
             if (frozen) {
-                for (UIWindow *w in [UIApplication sharedApplication].windows) {
+                NSArray *windows = [UIApplication sharedApplication].windows;
+                for (UIWindow *w in windows) {
                     NSMutableArray *found = [NSMutableArray array];
                     RCApp_CollectScrollViewsInView(w, found);
                     for (UIScrollView *sv in found) {
@@ -15752,6 +15784,17 @@ static void RCApp_SetScrollFrozen(BOOL frozen) {
                         }
                     }
                 }
+                for (UIWindow *w in windows) {
+                    if (w.userInteractionEnabled) {
+                        [g_appFrozenInteractionWindows addObject:w];
+                        w.userInteractionEnabled = NO;
+                    }
+                }
+                g_appFreezeGen++;
+                unsigned gen = g_appFreezeGen;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (g_appSuppressScroll && gen == g_appFreezeGen) RCApp_SetScrollFrozen(NO);
+                });
             } else {
                 for (UIScrollView *sv in g_appFrozenScrollViews) {
                     @try { sv.scrollEnabled = YES; } @catch (__unused NSException *e) { }
@@ -15759,8 +15802,12 @@ static void RCApp_SetScrollFrozen(BOOL frozen) {
                 for (UIGestureRecognizer *gr in g_appFrozenGestureRecognizers) {
                     @try { gr.enabled = YES; } @catch (__unused NSException *e) { }
                 }
+                for (UIWindow *w in g_appFrozenInteractionWindows) {
+                    @try { w.userInteractionEnabled = YES; } @catch (__unused NSException *e) { }
+                }
                 [g_appFrozenScrollViews removeAllObjects];
                 [g_appFrozenGestureRecognizers removeAllObjects];
+                [g_appFrozenInteractionWindows removeAllObjects];
             }
         } @catch (__unused NSException *e) { }
     };
