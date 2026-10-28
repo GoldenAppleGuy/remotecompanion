@@ -943,6 +943,19 @@
     .cat-chip:active { transform: scale(0.96); }
     .cat-chip.active { background: #fff; color: #000; }
 
+    /* ── Picker dialog category pills (same component, dialog sizing) ── */
+    .picker-category-bar {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 2px 2px 10px;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+      flex-shrink: 0;
+    }
+    .picker-category-bar::-webkit-scrollbar { display: none; }
+    .picker-category-bar .cat-chip { font-size: 13px; padding: 6px 12px; }
+
     /* ── Picker action rows ── */
     .picker-section-header {
       font-size: 13px; font-weight: 500; letter-spacing: 0.05em;
@@ -1624,6 +1637,7 @@
         <i class="f7-icons" style="font-size:16px;color:#8e8e93;flex-shrink:0">search</i>
         <input class="app-picker-search" type="text" placeholder="Search actions…" id="action-search" autocorrect="off" autocapitalize="none" spellcheck="false" oninput="renderPickerSections()">
       </div>
+      <div class="picker-category-bar" id="picker-category-bar"></div>
       <div class="app-picker-list" id="picker-content" style="max-height: 48vh; max-height: 48dvh; overflow-y: auto;"></div>
     </div>
     <div class="dialog-btns">
@@ -5084,8 +5098,38 @@ function removeKMParameter(idx) {
 }
 
 // ── Action picker dialog ───────────────────────────────────────────────────────
+let g_pickerCategory = null; // null = All (mirrors iOS RCActionPickerViewController selectedCategory)
+
+function renderPickerCategoryBar() {
+  const bar = document.getElementById('picker-category-bar');
+  if (!bar) return;
+  bar.innerHTML = '';
+  const mkChip = (label, title) => {
+    const btn = document.createElement('button');
+    btn.className = 'cat-chip' + ((title === g_pickerCategory) ? ' active' : '');
+    btn.textContent = label;
+    btn.addEventListener('click', () => selectPickerCategory(title, btn));
+    bar.appendChild(btn);
+  };
+  mkChip('All', null);
+  ACTION_SECTIONS.forEach(sec => mkChip(sec.title, sec.title));
+}
+
+function selectPickerCategory(title, btnEl) {
+  g_pickerCategory = title;
+  document.querySelectorAll('#picker-category-bar .cat-chip').forEach(el => {
+    el.classList.toggle('active', el === btnEl);
+  });
+  renderPickerSections();
+  const list = document.getElementById('picker-content');
+  if (list) list.scrollTop = 0;
+  if (btnEl && btnEl.scrollIntoView) btnEl.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+}
+
 function showActionPickerPanel() {
   document.getElementById('action-search').value = '';
+  g_pickerCategory = null; // fresh open starts at All, like a new iOS picker VC
+  renderPickerCategoryBar();
   renderPickerSections();
   document.getElementById('picker-dialog-backdrop').classList.add('visible');
   setTimeout(() => document.getElementById('action-search').focus(), 100);
@@ -5120,7 +5164,11 @@ function renderPickerSections() {
   const container = document.getElementById('picker-content');
   container.innerHTML = '';
 
-  ACTION_SECTIONS.forEach(sec => {
+  const sections = g_pickerCategory
+    ? ACTION_SECTIONS.filter(sec => sec.title === g_pickerCategory)
+    : ACTION_SECTIONS;
+
+  sections.forEach(sec => {
     const actions = sec.actions.filter(a => pickerActionAvailable(sec, a));
     const filtered = query
       ? actions.filter(a => a.name.toLowerCase().includes(query) || (a.cmd && a.cmd.toLowerCase().includes(query)))
