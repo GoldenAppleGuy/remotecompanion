@@ -128,7 +128,7 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
         }
         return @"NFC scanning options.";
     } else if (section == RCAdvancedSettingsSectionOptions) {
-        return @"Logging and display options.";
+        return @"Logging and display options. Freeze Lists During Gestures holds lists and row swipe actions still while a status bar, bottom bar, or edge swipe gesture runs.";
     }
     return nil;
 }
@@ -136,7 +136,7 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section == RCAdvancedSettingsSectionBanners) return 1;
     if (section == RCAdvancedSettingsSectionNFC) return 3;
-    return 2; // Wrap Long Names, Logging
+    return 3; // Wrap Long Names, Logging, Freeze Lists During Gestures
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -199,6 +199,13 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
             cell.textLabel.text = @"Logging";
             cell.detailTextLabel.text = [cm.logLevel capitalizedString];
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        } else if (indexPath.row == 2) {
+            cell.textLabel.text = @"Freeze Lists During Gestures";
+            UISwitch *freezeSwitch = [[UISwitch alloc] init];
+            freezeSwitch.on = cm.freezeListsDuringGestures;
+            [freezeSwitch addTarget:self action:@selector(freezeListsToggleChanged:) forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = freezeSwitch;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
         }
     }
     
@@ -241,6 +248,10 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
 - (void)wrapLongNamesToggleChanged:(UISwitch *)sender {
     [[NSUserDefaults standardUserDefaults] setBool:sender.on forKey:@"RCWrapLongNamesEnabled"];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"RCWrapLongNamesSettingChanged" object:nil];
+}
+
+- (void)freezeListsToggleChanged:(UISwitch *)sender {
+    [RCConfigManager sharedManager].freezeListsDuringGestures = sender.on;
 }
 
 - (void)chooseLogLevelFromView:(UIView *)sourceView {

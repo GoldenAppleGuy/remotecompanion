@@ -14405,8 +14405,8 @@ static NSHashTable *g_rcFrozenGestureRecognizers = nil;
 static BOOL g_rcGestureScrollFrozen = NO;
 
 static BOOL RC_GestureScrollSuppressionWanted(void) {
-    // Config-gated: don't touch scrolling unless at least one related
-    // trigger could actually fire (enabled + has actions).
+    // Off unless the user opts in via Advanced Settings (default off).
+    if (![g_triggerConfig[@"freezeListsDuringGestures"] boolValue]) return NO;
     static NSString * const keys[] = {
         @"trigger_statusbar_swipe_left", @"trigger_statusbar_swipe_right",
         @"trigger_statusbar_left_hold", @"trigger_statusbar_center_hold",

@@ -141,6 +141,12 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
             [self saveConfig];
         }
 
+        // Auto-add freezeListsDuringGestures (default to NO for upgrades)
+        if (_config[@"freezeListsDuringGestures"] == nil) {
+            _config[@"freezeListsDuringGestures"] = @NO;
+            [self saveConfig];
+        }
+
         // Cleanup deprecated watch triggers
         BOOL didChange = NO;
         if (triggers[@"watch_near"]) { [triggers removeObjectForKey:@"watch_near"]; didChange = YES; }
@@ -167,6 +173,7 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
             @"masterEnabled": @YES,
             @"tcpEnabled": @YES,
             @"webUIEnabled": @NO,
+            @"freezeListsDuringGestures": @NO,
             @"nfcEnabled": @YES,
             @"rootEnabled": @YES,
             @"triggers": [@{
@@ -241,6 +248,18 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
 
 - (void)setWebUIEnabled:(BOOL)webUIEnabled {
     _config[@"webUIEnabled"] = @(webUIEnabled);
+    [self saveConfig];
+}
+
+- (BOOL)freezeListsDuringGestures {
+    if (!_config[@"freezeListsDuringGestures"]) {
+        return NO;
+    }
+    return [_config[@"freezeListsDuringGestures"] boolValue];
+}
+
+- (void)setFreezeListsDuringGestures:(BOOL)freezeListsDuringGestures {
+    _config[@"freezeListsDuringGestures"] = @(freezeListsDuringGestures);
     [self saveConfig];
 }
 

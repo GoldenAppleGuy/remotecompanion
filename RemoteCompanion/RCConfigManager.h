@@ -6,6 +6,9 @@
 @property (nonatomic, assign) BOOL masterEnabled;
 @property (nonatomic, assign) BOOL tcpEnabled;
 @property (nonatomic, assign) BOOL webUIEnabled;
+// Hold lists (and row swipe actions) still while a status bar, bottom bar,
+// or edge swipe gesture is being executed. Off by default.
+@property (nonatomic, assign) BOOL freezeListsDuringGestures;
 // The tweak's log: @"off", @"minimal" (the default: triggers, actions, conditions, errors)
 // or @"full" (every step, for chasing a bug)
 @property (nonatomic, copy) NSString *logLevel;
