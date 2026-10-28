@@ -3,23 +3,25 @@
 #import "RCUITweaker.h"
 #import "RCIntegrationsViewController.h"
 #import "RCAdvancedSettingsViewController.h"
-#import "RCBackupDiagnosticsViewController.h"
+#import "RCTestKitViewController.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <ifaddrs.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
-@interface RCSettingsViewController ()
+@interface RCSettingsViewController () <UIDocumentPickerDelegate>
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) UISwitch *masterSwitch;
 @property (nonatomic, strong) UISwitch *webUISwitch;
 @end
 
-// Sections of the Settings table, in order
+// Sections of the Settings table, in order. Backup sits at the bottom.
 typedef NS_ENUM(NSInteger, RCSettingsSection) {
     RCSettingsSectionGeneral,
     RCSettingsSectionIntegrations,
     RCSettingsSectionAdvanced,
-    RCSettingsSectionBackupDiagnostics,
+    RCSettingsSectionDiagnostics,
+    RCSettingsSectionBackup,
 };
 
 @implementation RCSettingsViewController
@@ -192,7 +194,7 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 #pragma mark - Table View Data Source
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 4;
+    return 5;
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
@@ -200,7 +202,8 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
     if (section == RCSettingsSectionGeneral) title = @"General";
     else if (section == RCSettingsSectionIntegrations) title = @"Integrations";
     else if (section == RCSettingsSectionAdvanced) title = @"Advanced Settings";
-    else title = @"Backup & Diagnostics";
+    else if (section == RCSettingsSectionDiagnostics) title = @"Diagnostics";
+    else title = @"Backup";
     
     UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 40)];
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, 15, tableView.bounds.size.width - 40, 20)];
@@ -222,8 +225,10 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
         return @"Configure connections to external services and automations.";
     } else if (section == RCSettingsSectionAdvanced) {
         return @"NFC, banners, logging, and display options.";
-    } else if (section == RCSettingsSectionBackupDiagnostics) {
-        return @"Export or import your configuration, and run on-device diagnostics.";
+    } else if (section == RCSettingsSectionDiagnostics) {
+        return @"Tests RemoteCompanion on this device and shares the results.";
+    } else if (section == RCSettingsSectionBackup) {
+        return @"Export your configuration to share or backup. Import to restore.";
     }
     return nil;
 }
@@ -232,7 +237,10 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
     if (section == RCSettingsSectionGeneral) {
         return [RCConfigManager sharedManager].webUIEnabled ? 3 : 2;
     }
-    return 1; // Integrations, Advanced Settings, Backup & Diagnostics
+    if (section == RCSettingsSectionBackup) {
+        return 2;
+    }
+    return 1; // Integrations, Advanced Settings, Diagnostics
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -292,11 +300,21 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
         cell.imageView.image = img;
         cell.imageView.tintColor = [UIColor systemPurpleColor];
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    } else if (indexPath.section == RCSettingsSectionBackupDiagnostics) {
-        cell.textLabel.text = @"Backup & Diagnostics";
-        UIImage *img = [UIImage systemImageNamed:@"externaldrive.fill"];
-        if (!img) img = [UIImage systemImageNamed:@"folder"];
-        cell.imageView.image = img;
+    } else if (indexPath.section == RCSettingsSectionBackup) {
+        if (indexPath.row == 0) {
+            cell.textLabel.text = @"Export Configuration";
+            cell.imageView.image = [UIImage systemImageNamed:@"square.and.arrow.up"];
+            cell.imageView.tintColor = [UIColor systemBlueColor];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        } else {
+            cell.textLabel.text = @"Import Configuration";
+            cell.imageView.image = [UIImage systemImageNamed:@"square.and.arrow.down"];
+            cell.imageView.tintColor = [UIColor systemGreenColor];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        }
+    } else if (indexPath.section == RCSettingsSectionDiagnostics) {
+        cell.textLabel.text = @"Test Kit";
+        cell.imageView.image = [UIImage systemImageNamed:@"checklist"] ?: [UIImage systemImageNamed:@"list.bullet.rectangle"];
         cell.imageView.tintColor = [UIColor systemTealColor];
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     }
@@ -314,8 +332,14 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
         [self.navigationController pushViewController:integrationsVC animated:YES];
     } else if (indexPath.section == RCSettingsSectionAdvanced) {
         [self.navigationController pushViewController:[[RCAdvancedSettingsViewController alloc] init] animated:YES];
-    } else if (indexPath.section == RCSettingsSectionBackupDiagnostics) {
-        [self.navigationController pushViewController:[[RCBackupDiagnosticsViewController alloc] init] animated:YES];
+    } else if (indexPath.section == RCSettingsSectionDiagnostics) {
+        [self.navigationController pushViewController:[[RCTestKitViewController alloc] init] animated:YES];
+    } else if (indexPath.section == RCSettingsSectionBackup) {
+        if (indexPath.row == 0) {
+            [self exportConfig];
+        } else {
+            [self importConfig];
+        }
     }
 }
 
@@ -339,6 +363,122 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 
 - (void)openGitHub {
     [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"https://github.com/saihgupr/RemoteCompanion"] options:@{} completionHandler:nil];
+}
+
+#pragma mark - Backup / Import
+
+- (void)exportConfig {
+    NSData *jsonData = [[RCConfigManager sharedManager] exportConfigAsJSON];
+    if (!jsonData) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Export Failed" message:@"Could not export configuration" preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+
+    NSDateFormatter *df = [[NSDateFormatter alloc] init];
+    [df setDateFormat:@"yyyyMMdd_HHmm"];
+    NSString *dateStr = [df stringFromDate:[NSDate date]];
+    if (!dateStr) dateStr = @"backup";
+
+    NSString *filename = [NSString stringWithFormat:@"rc_config_%@.json", dateStr];
+
+    // Use system /tmp directly to avoid sandbox confusion for system app
+    NSString *exportPath = [@"/tmp" stringByAppendingPathComponent:filename];
+
+    NSError *writeError = nil;
+    BOOL written = [jsonData writeToFile:exportPath options:NSDataWritingAtomic error:&writeError];
+
+    if (!written || writeError) {
+        NSLog(@"[RemoteCompanion] Error writing export file: %@", writeError);
+        // Show exact path in alert for debugging
+        NSString *debugMsg = [NSString stringWithFormat:@"Failed to write to:\n%@\n\nError: %@", exportPath, writeError.localizedDescription];
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Export Error" message:debugMsg preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Copy Path" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+            [UIPasteboard generalPasteboard].string = exportPath;
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+
+    NSURL *fileURL = [NSURL fileURLWithPath:exportPath];
+    if (!fileURL) {
+         NSLog(@"[RemoteCompanion] Error: fileURL is nil");
+         return;
+    }
+
+    // Use share sheet instead of document picker to avoid glitchy loading indicator
+    UIActivityViewController *activityVC = [[UIActivityViewController alloc] initWithActivityItems:@[fileURL] applicationActivities:nil];
+    activityVC.modalPresentationStyle = UIModalPresentationFormSheet;
+
+    // Success callback when user saves the file
+    activityVC.completionWithItemsHandler = ^(UIActivityType activityType, BOOL completed, NSArray *returnedItems, NSError *error) {
+        if (completed) {
+            NSLog(@"[RemoteCompanion] Export successful via: %@", activityType);
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Export Successful" message:@"Configuration file has been saved." preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [self presentViewController:alert animated:YES completion:nil];
+        }
+    };
+
+    [self presentViewController:activityVC animated:YES completion:nil];
+}
+
+- (void)importConfig {
+    // iOS 14+ supported
+    NSArray *types = @[[UTType typeWithIdentifier:@"public.json"], [UTType typeWithIdentifier:@"public.plain-text"]];
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types];
+    picker.delegate = self;
+    picker.modalPresentationStyle = UIModalPresentationFormSheet;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+#pragma mark - UIDocumentPickerDelegate (Import only)
+
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    NSURL *url = urls.firstObject;
+    if (!url) return;
+
+    NSLog(@"[RemoteCompanion] Import selected URL: %@", url);
+
+    // Security scoped access is mandatory for 'Opening' mode
+    BOOL accessing = [url startAccessingSecurityScopedResource];
+
+    NSError *readError = nil;
+    NSData *data = [NSData dataWithContentsOfURL:url options:0 error:&readError];
+
+    if (accessing) {
+        [url stopAccessingSecurityScopedResource];
+    }
+
+    if (!data) {
+        NSLog(@"[RemoteCompanion] Failed to read file: %@", readError);
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Import Failed" message:[NSString stringWithFormat:@"Could not read file: %@", readError.localizedDescription] preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+
+    NSError *error = nil;
+    BOOL success = [[RCConfigManager sharedManager] importConfigFromJSON:data error:&error];
+
+    if (success) {
+        [self.tableView reloadData];
+
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Import Successful" message:@"Configuration restored. Return to Triggers to see changes." preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+    } else {
+        NSLog(@"[RemoteCompanion] Import Parsing Failed: %@", error);
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Import Failed" message:error.localizedDescription ?: @"Invalid configuration file" preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+    }
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+    NSLog(@"[RemoteCompanion] Import cancelled by user");
 }
 
 @end

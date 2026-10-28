@@ -1638,14 +1638,28 @@
       </div>
     </div>
 
-    <div class="action-list-header">Backup & Diagnostics</div>
+    <div class="action-list-header">Diagnostics</div>
     <div class="action-list-card">
-      <div class="action-list-row" onclick="openBackupDiagnosticsPanel()">
-        <div class="action-row-icon icon-teal"><i class="f7-icons">archivebox</i></div>
-        <div class="action-row-text">Backup & Diagnostics</div>
+      <div class="action-list-row" onclick="openSysInfoPanel()">
+        <div class="action-row-icon icon-blue"><i class="f7-icons">info_circle</i></div>
+        <div class="action-row-text">Device Diagnostics & Health</div>
         <i class="f7-icons row-chevron" style="color:#8e8e93; font-size:14px;">chevron_right</i>
       </div>
     </div>
+
+    <div class="action-list-header">Backup</div>
+    <div class="action-list-card">
+      <div class="action-list-row" onclick="exportConfig()">
+        <div class="action-row-icon icon-blue"><i class="f7-icons">square_arrow_up</i></div>
+        <div class="action-row-text">Export Configuration</div>
+      </div>
+      <div class="action-list-row" onclick="importConfig()">
+        <div class="action-row-icon icon-green"><i class="f7-icons">square_arrow_down</i></div>
+        <div class="action-row-text">Import Configuration</div>
+      </div>
+    </div>
+    <div style="color:#8e8e93;font-size:13px;margin:8px 16px 0">Export your configuration to share or backup. Import to restore.</div>
+    <input type="file" id="import-file-input" accept=".json" style="display:none" onchange="handleImportFile(this)">
 
   </div>
 </div>
@@ -1874,42 +1888,6 @@
       </div>
     </div>
     <div style="color:#8e8e93;font-size:13px;margin:8px 16px 0">How long a press waits for the next one before it counts. A shorter time responds sooner and needs quicker presses.</div>
-  </div>
-</div>
-
-<!-- ══ BACKUP & DIAGNOSTICS PANEL (Settings > Backup & Diagnostics) ══════ -->
-<div class="rc-panel" id="backup-panel">
-  <div class="panel-navbar">
-    <button class="panel-back" onclick="closeBackupDiagnosticsPanel()">
-      <i class="f7-icons">chevron_left</i> Settings
-    </button>
-    <div class="panel-title">Backup & Diagnostics</div>
-    <div style="width:80px"></div>
-  </div>
-  <div class="panel-content">
-    <div class="action-list-header" style="margin-top:28px">Backup</div>
-    <div class="action-list-card">
-      <div class="action-list-row" onclick="exportConfig()">
-        <div class="action-row-icon icon-blue"><i class="f7-icons">square_arrow_up</i></div>
-        <div class="action-row-text">Export Configuration</div>
-      </div>
-      <div class="action-list-row" onclick="importConfig()">
-        <div class="action-row-icon icon-green"><i class="f7-icons">square_arrow_down</i></div>
-        <div class="action-row-text">Import Configuration</div>
-      </div>
-    </div>
-
-    <div class="action-list-header">Diagnostics</div>
-    <div class="action-list-card">
-      <div class="action-list-row" onclick="openSysInfoPanel()">
-        <div class="action-row-icon icon-blue"><i class="f7-icons">info_circle</i></div>
-        <div class="action-row-text">Device Diagnostics & Health</div>
-        <i class="f7-icons row-chevron" style="color:#8e8e93; font-size:14px;">chevron_right</i>
-      </div>
-    </div>
-    <div style="color:#8e8e93;font-size:13px;margin:8px 16px 0">Export or import your configuration, and run on-device diagnostics.</div>
-    <input type="file" id="import-file-input" accept=".json" style="display:none" onchange="handleImportFile(this)">
-
   </div>
 </div>
 
@@ -5659,14 +5637,6 @@ function closeIntegrationsPanel() {
 
 function closeAdvancedPanel() {
   document.getElementById('advanced-panel').classList.remove('active');
-}
-
-function openBackupDiagnosticsPanel() {
-  document.getElementById('backup-panel').classList.add('active');
-}
-
-function closeBackupDiagnosticsPanel() {
-  document.getElementById('backup-panel').classList.remove('active');
 }
 
 const RC_TIMING_OPTIONS = {

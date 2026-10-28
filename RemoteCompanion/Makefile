@@ -26,6 +26,5 @@ RemoteCompanion_FILES += RCFocusPickerViewController.m
 
 # Reorganized Settings submenus
 RemoteCompanion_FILES += RCAdvancedSettingsViewController.m
-RemoteCompanion_FILES += RCBackupDiagnosticsViewController.m
 
 include $(THEOS_MAKE_PATH)/application.mk

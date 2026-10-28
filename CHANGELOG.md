@@ -21,6 +21,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 - **Settings reorganization**: slim root (General, Buttons, Integrations, Advanced Settings, Backup & Diagnostics) with button timing in Buttons, NFC/Banners/Wrap Long Names/Web UI/Logging in Advanced Settings, and Export/Import/Test Kit in Backup & Diagnostics.
+- **Backup & Diagnostics dissolved into Settings root**: the sub-panel is gone on iOS and Web UI. Diagnostics (Test Kit on iOS, Device Diagnostics & Health on Web) is its own section, and Backup (Export/Import Configuration) sits at the bottom of the main Settings screen.
 
 ## [4.0.0]
 
