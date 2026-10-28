@@ -2,7 +2,6 @@
 #import "RCConfigManager.h"
 #import "RCUITweaker.h"
 #import "RCIntegrationsViewController.h"
-#import "RCTriggerSettingsViewController.h"
 #import "RCAdvancedSettingsViewController.h"
 #import "RCBackupDiagnosticsViewController.h"
 #include <ifaddrs.h>
@@ -18,7 +17,6 @@
 // Sections of the Settings table, in order
 typedef NS_ENUM(NSInteger, RCSettingsSection) {
     RCSettingsSectionGeneral,
-    RCSettingsSectionButtons,
     RCSettingsSectionIntegrations,
     RCSettingsSectionAdvanced,
     RCSettingsSectionBackupDiagnostics,
@@ -194,13 +192,12 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 #pragma mark - Table View Data Source
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 5;
+    return 4;
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
     NSString *title;
     if (section == RCSettingsSectionGeneral) title = @"General";
-    else if (section == RCSettingsSectionButtons) title = @"Buttons";
     else if (section == RCSettingsSectionIntegrations) title = @"Integrations";
     else if (section == RCSettingsSectionAdvanced) title = @"Advanced Settings";
     else title = @"Backup & Diagnostics";
@@ -221,8 +218,6 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == RCSettingsSectionGeneral) {
         return @"Enable the built-in Web UI to configure RemoteCompanion from a browser.";
-    } else if (section == RCSettingsSectionButtons) {
-        return @"Button timing options.";
     } else if (section == RCSettingsSectionIntegrations) {
         return @"Configure connections to external services and automations.";
     } else if (section == RCSettingsSectionAdvanced) {
@@ -237,7 +232,7 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
     if (section == RCSettingsSectionGeneral) {
         return [RCConfigManager sharedManager].webUIEnabled ? 3 : 2;
     }
-    return 1; // Buttons, Integrations, Advanced Settings, Backup & Diagnostics
+    return 1; // Integrations, Advanced Settings, Backup & Diagnostics
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -281,13 +276,6 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
             cell.detailTextLabel.text = [self webUIUrlString];
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         }
-    } else if (indexPath.section == RCSettingsSectionButtons) {
-        cell.textLabel.text = @"Buttons";
-        UIImage *img = [UIImage systemImageNamed:@"hand.tap.fill"];
-        if (!img) img = [UIImage systemImageNamed:@"circle.grid.2x2"];
-        cell.imageView.image = img;
-        cell.imageView.tintColor = [UIColor systemOrangeColor];
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     } else if (indexPath.section == RCSettingsSectionIntegrations) {
         cell.textLabel.text = @"Integrations";
         UIImage *puzzleImg = [UIImage systemImageNamed:@"puzzlepiece.extension.fill"];
@@ -321,8 +309,6 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
 
     if (indexPath.section == RCSettingsSectionGeneral && indexPath.row == 2) {
         [self openWebUI];
-    } else if (indexPath.section == RCSettingsSectionButtons) {
-        [self.navigationController pushViewController:[[RCTriggerSettingsViewController alloc] init] animated:YES];
     } else if (indexPath.section == RCSettingsSectionIntegrations) {
         RCIntegrationsViewController *integrationsVC = [[RCIntegrationsViewController alloc] init];
         [self.navigationController pushViewController:integrationsVC animated:YES];

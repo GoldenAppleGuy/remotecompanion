@@ -1609,15 +1609,6 @@
       </div>
     </div>
 
-    <div class="action-list-header">Buttons</div>
-    <div class="action-list-card">
-      <div class="action-list-row" onclick="openButtonsPanel()">
-        <div class="action-row-icon icon-orange"><i class="f7-icons">timer</i></div>
-        <div class="action-row-text">Buttons</div>
-        <i class="f7-icons row-chevron" style="color:#8e8e93; font-size:14px;">chevron_right</i>
-      </div>
-    </div>
-
     <div class="action-list-header">Integrations</div>
     <div class="action-list-card">
       <div class="action-list-row" onclick="openIntegrationsPanel()">
@@ -1645,53 +1636,6 @@
       </div>
     </div>
 
-  </div>
-</div>
-
-<!-- ══ BUTTONS PANEL (Settings > Buttons) ═══════════════════════════════════ -->
-<div class="rc-panel" id="buttons-panel">
-  <div class="panel-navbar">
-    <button class="panel-back" onclick="closeButtonsPanel()">
-      <i class="f7-icons">chevron_left</i> Settings
-    </button>
-    <div class="panel-title">Buttons</div>
-    <div style="width:80px"></div>
-  </div>
-  <div class="panel-content">
-    <div class="action-list-header" style="margin-top:28px">Button Timing</div>
-    <div class="action-list-card">
-      <div class="settings-row">
-        <span class="settings-label">Volume Sequence</span>
-        <div class="settings-btn">
-          <select id="setting-volume-seq" onchange="config.volumeSequenceWindow=parseFloat(this.value);saveConfig()" style="appearance:none;-webkit-appearance:none;background:none;border:none;color:#8e8e93;font-size:17px;font-family:inherit;text-align:right;outline:none;cursor:pointer"></select>
-        </div>
-      </div>
-      <div class="settings-row">
-        <span class="settings-label">Power Clicks</span>
-        <div class="settings-btn">
-          <select id="setting-power-click" onchange="config.powerClickWindow=parseFloat(this.value);saveConfig()" style="appearance:none;-webkit-appearance:none;background:none;border:none;color:#8e8e93;font-size:17px;font-family:inherit;text-align:right;outline:none;cursor:pointer"></select>
-        </div>
-      </div>
-      <div class="settings-row">
-        <span class="settings-label">Home Clicks</span>
-        <div class="settings-btn">
-          <select id="setting-home-click" onchange="config.homeClickWindow=parseFloat(this.value);saveConfig()" style="appearance:none;-webkit-appearance:none;background:none;border:none;color:#8e8e93;font-size:17px;font-family:inherit;text-align:right;outline:none;cursor:pointer"></select>
-        </div>
-      </div>
-      <div class="settings-row">
-        <span class="settings-label">Volume Hold</span>
-        <div class="settings-btn">
-          <select id="setting-volume-hold" onchange="config.volumeHoldTime=parseFloat(this.value);saveConfig()" style="appearance:none;-webkit-appearance:none;background:none;border:none;color:#8e8e93;font-size:17px;font-family:inherit;text-align:right;outline:none;cursor:pointer"></select>
-        </div>
-      </div>
-      <div class="settings-row">
-        <span class="settings-label">Power Hold</span>
-        <div class="settings-btn">
-          <select id="setting-power-hold" onchange="config.powerHoldTime=parseFloat(this.value);saveConfig()" style="appearance:none;-webkit-appearance:none;background:none;border:none;color:#8e8e93;font-size:17px;font-family:inherit;text-align:right;outline:none;cursor:pointer"></select>
-        </div>
-      </div>
-    </div>
-    <div style="color:#8e8e93;font-size:13px;margin:8px 16px 0">How long a press waits for the next one before it counts. A shorter time responds sooner and needs quicker presses.</div>
   </div>
 </div>
 
@@ -1861,7 +1805,40 @@
         </div>
       </div>
     </div>
-    <div style="color:#8e8e93;font-size:13px;margin:8px 16px 0">NFC, banners, logging, and display options.</div>
+    <div class="action-list-header">Buttons</div>
+    <div class="action-list-card">
+      <div class="settings-row">
+        <span class="settings-label">Volume Sequence</span>
+        <div class="settings-btn">
+          <select id="setting-volume-seq" onchange="config.volumeSequenceWindow=parseFloat(this.value);saveConfig()" style="appearance:none;-webkit-appearance:none;background:none;border:none;color:#8e8e93;font-size:17px;font-family:inherit;text-align:right;outline:none;cursor:pointer"></select>
+        </div>
+      </div>
+      <div class="settings-row">
+        <span class="settings-label">Power Clicks</span>
+        <div class="settings-btn">
+          <select id="setting-power-click" onchange="config.powerClickWindow=parseFloat(this.value);saveConfig()" style="appearance:none;-webkit-appearance:none;background:none;border:none;color:#8e8e93;font-size:17px;font-family:inherit;text-align:right;outline:none;cursor:pointer"></select>
+        </div>
+      </div>
+      <div class="settings-row">
+        <span class="settings-label">Home Clicks</span>
+        <div class="settings-btn">
+          <select id="setting-home-click" onchange="config.homeClickWindow=parseFloat(this.value);saveConfig()" style="appearance:none;-webkit-appearance:none;background:none;border:none;color:#8e8e93;font-size:17px;font-family:inherit;text-align:right;outline:none;cursor:pointer"></select>
+        </div>
+      </div>
+      <div class="settings-row">
+        <span class="settings-label">Volume Hold</span>
+        <div class="settings-btn">
+          <select id="setting-volume-hold" onchange="config.volumeHoldTime=parseFloat(this.value);saveConfig()" style="appearance:none;-webkit-appearance:none;background:none;border:none;color:#8e8e93;font-size:17px;font-family:inherit;text-align:right;outline:none;cursor:pointer"></select>
+        </div>
+      </div>
+      <div class="settings-row">
+        <span class="settings-label">Power Hold</span>
+        <div class="settings-btn">
+          <select id="setting-power-hold" onchange="config.powerHoldTime=parseFloat(this.value);saveConfig()" style="appearance:none;-webkit-appearance:none;background:none;border:none;color:#8e8e93;font-size:17px;font-family:inherit;text-align:right;outline:none;cursor:pointer"></select>
+        </div>
+      </div>
+    </div>
+    <div style="color:#8e8e93;font-size:13px;margin:8px 16px 0">How long a press waits for the next one before it counts. A shorter time responds sooner and needs quicker presses.<br><br>NFC, banners, logging, and display options.</div>
   </div>
 </div>
 
@@ -5512,13 +5489,12 @@ function updateIntegrationsStatus() {
   el.textContent = names.length ? names.join(' • ') : 'Disabled';
 }
 
-function openButtonsPanel() {
+function openAdvancedPanel() {
+  document.getElementById('setting-nfc').checked = !!config.nfcEnabled;
+  document.getElementById('setting-loglevel').value = ['off','minimal','full'].includes(config.logLevel) ? config.logLevel : 'minimal';
+  updateBannersCount();
   populateTimingSelects();
-  document.getElementById('buttons-panel').classList.add('active');
-}
-
-function closeButtonsPanel() {
-  document.getElementById('buttons-panel').classList.remove('active');
+  document.getElementById('advanced-panel').classList.add('active');
 }
 
 function openIntegrationsPanel() {
@@ -5528,13 +5504,6 @@ function openIntegrationsPanel() {
 function closeIntegrationsPanel() {
   document.getElementById('integrations-panel').classList.remove('active');
   updateIntegrationsStatus();
-}
-
-function openAdvancedPanel() {
-  document.getElementById('setting-nfc').checked = !!config.nfcEnabled;
-  document.getElementById('setting-loglevel').value = ['off','minimal','full'].includes(config.logLevel) ? config.logLevel : 'minimal';
-  updateBannersCount();
-  document.getElementById('advanced-panel').classList.add('active');
 }
 
 function closeAdvancedPanel() {

@@ -14,6 +14,7 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
     RCAdvancedSettingsSectionBanners,
     RCAdvancedSettingsSectionNFC,
     RCAdvancedSettingsSectionOptions,
+    RCAdvancedSettingsSectionButtons,
 };
 
 @implementation RCAdvancedSettingsViewController
@@ -96,14 +97,15 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
 #pragma mark - Table View Data Source
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 3;
+    return 4;
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
     NSString *title;
     if (section == RCAdvancedSettingsSectionBanners) title = @"Banners";
     else if (section == RCAdvancedSettingsSectionNFC) title = @"NFC";
-    else title = @"Options";
+    else if (section == RCAdvancedSettingsSectionOptions) title = @"Options";
+    else title = @"Buttons";
     
     UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 40)];
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, 15, tableView.bounds.size.width - 40, 20)];
@@ -129,6 +131,8 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
         return @"NFC scanning options.";
     } else if (section == RCAdvancedSettingsSectionOptions) {
         return nil;
+    } else if (section == RCAdvancedSettingsSectionButtons) {
+        return @"How long a press waits for the next one before it counts. A shorter time responds sooner and needs quicker presses.";
     }
     return nil;
 }
@@ -136,6 +140,7 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section == RCAdvancedSettingsSectionBanners) return 1;
     if (section == RCAdvancedSettingsSectionNFC) return 3;
+    if (section == RCAdvancedSettingsSectionButtons) return (NSInteger)[self timingRows].count;
     return 3; // Wrap Long Names, Logging, Freeze Lists During Gestures
 }
 
@@ -144,7 +149,8 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
     
     BOOL isValueRow = (indexPath.section == RCAdvancedSettingsSectionBanners) ||
                       (indexPath.section == RCAdvancedSettingsSectionNFC && indexPath.row == 2) ||
-                      (indexPath.section == RCAdvancedSettingsSectionOptions && indexPath.row == 1);
+                      (indexPath.section == RCAdvancedSettingsSectionOptions && indexPath.row == 1) ||
+                      (indexPath.section == RCAdvancedSettingsSectionButtons);
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:isValueRow ? UITableViewCellStyleValue1 : UITableViewCellStyleDefault reuseIdentifier:nil];
     cell.backgroundColor = [cm tweakColorForKey:@"blockBackground" defaultVal:0.12];
     
@@ -207,6 +213,12 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
             cell.accessoryView = freezeSwitch;
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
         }
+    } else if (indexPath.section == RCAdvancedSettingsSectionButtons) {
+        NSDictionary *row = [self timingRows][indexPath.row];
+        double (^get)(void) = row[@"get"];
+        cell.textLabel.text = row[@"title"];
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%.2f s", get()];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     }
     
     return cell;
@@ -221,7 +233,47 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
         [self chooseNFCWindowFromView:[tableView cellForRowAtIndexPath:indexPath]];
     } else if (indexPath.section == RCAdvancedSettingsSectionOptions && indexPath.row == 1) {
         [self chooseLogLevelFromView:[tableView cellForRowAtIndexPath:indexPath]];
+    } else if (indexPath.section == RCAdvancedSettingsSectionButtons) {
+        NSDictionary *row = [self timingRows][indexPath.row];
+        double (^get)(void) = row[@"get"];
+        void (^set)(double) = row[@"set"];
+        [self chooseTimingNamed:row[@"title"] message:row[@"message"] values:row[@"values"] defaultValue:[row[@"default"] doubleValue]
+                        current:get() from:[tableView cellForRowAtIndexPath:indexPath] apply:set];
     }
+}
+
+#pragma mark - Button Timing
+
+// The Button Timing rows, in order: the click and sequence windows, then the hold times. Home
+// Clicks only on a phone with a Home button.
+- (NSArray<NSDictionary *> *)timingRows {
+    RCConfigManager *cm = [RCConfigManager sharedManager];
+    NSMutableArray *rows = [NSMutableArray array];
+    [rows addObject:@{ @"title": @"Volume Sequence",
+        @"message": @"How soon after a volume press the other volume button completes an Up then Down or Down then Up sequence.",
+        @"values": @[@0.20, @0.25, @0.30, @0.38, @0.45, @0.55, @0.65], @"default": @0.38,
+        @"get": ^double{ return cm.volumeSequenceWindow; }, @"set": ^(double v) { cm.volumeSequenceWindow = v; } }];
+    [rows addObject:@{ @"title": @"Power Clicks",
+        @"message": @"How long a Power press waits for the next click before the clicks count as a double, triple or quadruple click.",
+        @"values": @[@0.10, @0.15, @0.20, @0.25, @0.30, @0.35, @0.40, @0.50, @0.60, @0.70], @"default": @0.40,
+        @"get": ^double{ return cm.powerClickWindow; }, @"set": ^(double v) { cm.powerClickWindow = v; } }];
+    // A phone with a Home button has no safe area at the bottom of the screen
+    UIWindow *window = self.view.window ?: [UIApplication sharedApplication].windows.firstObject;
+    if (window && window.safeAreaInsets.bottom <= 0) {
+        [rows addObject:@{ @"title": @"Home Clicks",
+            @"message": @"How long a Home press waits for the next click before the clicks count as a double, triple or quadruple click.",
+            @"values": @[@0.25, @0.30, @0.35, @0.45, @0.55, @0.65], @"default": @0.35,
+            @"get": ^double{ return cm.homeClickWindow; }, @"set": ^(double v) { cm.homeClickWindow = v; } }];
+    }
+    [rows addObject:@{ @"title": @"Volume Hold",
+        @"message": @"How long a Volume Up or Down press is held before it counts as a hold rather than a tap. Taps wait this long when a hold trigger is set.",
+        @"values": @[@0.20, @0.25, @0.30, @0.35, @0.45, @0.55, @0.70], @"default": @0.35,
+        @"get": ^double{ return cm.volumeHoldTime; }, @"set": ^(double v) { cm.volumeHoldTime = v; } }];
+    [rows addObject:@{ @"title": @"Power Hold",
+        @"message": @"How long a Power press is held before it counts as a long press.",
+        @"values": @[@0.30, @0.40, @0.50, @0.60, @0.75], @"default": @0.50,
+        @"get": ^double{ return cm.powerHoldTime; }, @"set": ^(double v) { cm.powerHoldTime = v; } }];
+    return rows;
 }
 
 #pragma mark - Actions
@@ -263,6 +315,25 @@ typedef NS_ENUM(NSInteger, RCAdvancedSettingsSection) {
         NSString *title = [level isEqualToString:current] ? [NSString stringWithFormat:@"%@ \u2713", [level capitalizedString]] : [level capitalizedString];
         [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
             [RCConfigManager sharedManager].logLevel = level;
+            [self.tableView reloadData];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = sourceView;
+    sheet.popoverPresentationController.sourceRect = sourceView.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+// A list of times in seconds, the current one ticked, for one of the Button Timing rows
+- (void)chooseTimingNamed:(NSString *)name message:(NSString *)message values:(NSArray<NSNumber *> *)values defaultValue:(double)defaultValue
+                  current:(double)current from:(UIView *)sourceView apply:(void (^)(double value))apply {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:name message:message preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSNumber *value in values) {
+        BOOL isCurrent = fabs(value.doubleValue - current) < 0.005;
+        BOOL isDefault = fabs(value.doubleValue - defaultValue) < 0.005;
+        NSString *title = [NSString stringWithFormat:@"%.2f s%@%@", value.doubleValue, isDefault ? @" (Default)" : @"", isCurrent ? @" \u2713" : @""];
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            apply(value.doubleValue);
             [self.tableView reloadData];
         }]];
     }
