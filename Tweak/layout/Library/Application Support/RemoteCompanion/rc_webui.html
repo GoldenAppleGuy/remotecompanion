@@ -957,10 +957,41 @@
     .picker-category-bar .cat-chip { font-size: 13px; padding: 6px 12px; }
 
     /* ── Condition picker option rows (mirror iOS indented options) ── */
-    .cond-option-row { padding-left: 34px !important; }
+    .cond-option-row { padding-left: 60px !important; }
     .cond-option-row .picker-row-text.blue { color: #0a84ff; }
     .cond-option-row .picker-row-text.dim { color: #636366; }
     .cond-check { font-size: 16px; color: #0a84ff; flex-shrink: 0; margin-left: 8px; }
+
+    /* ── Condition picker iOS inset-grouped colors ── */
+    #cond-picker-content { background: transparent; }
+    #cond-picker-content .picker-section-header {
+      background: transparent;
+      position: static;
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 0.05em;
+      color: #8e8e93;
+      padding: 0 18px;
+      margin: 20px 0 6px;
+    }
+    #cond-picker-content .picker-section-header:first-child { margin-top: 6px; }
+    #cond-picker-content .cond-card {
+      margin: 0 2px 8px;
+      background: #1c1c1e;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 0.5px solid rgba(255,255,255,0.08);
+    }
+    #cond-picker-content .picker-row { border-bottom: none; background: transparent; min-height: 52px; position: relative; }
+    #cond-picker-content .picker-row + .picker-row::after {
+      content: ''; position: absolute; left: 60px; right: 0; top: 0; height: 0.5px;
+      background: rgba(255,255,255,0.12);
+    }
+    .cond-row-icon {
+      width: 30px; display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; margin-right: 14px; color: #8e8e93;
+    }
+    .cond-row-icon i { font-size: 22px; }
 
     /* ── Picker action rows ── */
     .picker-section-header {
@@ -1660,7 +1691,7 @@
     <div style="padding:0 14px 10px; display:flex; flex-direction:column; flex:1; min-height:0;">
       <div class="app-picker-search-wrap">
         <i class="f7-icons" style="font-size:16px;color:#8e8e93;flex-shrink:0">search</i>
-        <input class="app-picker-search" type="text" placeholder="Search conditions…" id="cond-picker-search" autocorrect="off" autocapitalize="none" spellcheck="false" oninput="renderCondPicker()">
+        <input class="app-picker-search" type="text" placeholder="Search Conditions" id="cond-picker-search" autocorrect="off" autocapitalize="none" spellcheck="false" oninput="renderCondPicker()">
       </div>
       <div class="app-picker-list" id="cond-picker-content" style="max-height: 48vh; max-height: 48dvh; overflow-y: auto;"></div>
     </div>
@@ -5688,21 +5719,25 @@ function renderCondPicker() {
     hdr.textContent = g.title;
     container.appendChild(hdr);
 
+    const card = document.createElement('div');
+    card.className = 'cond-card';
+    container.appendChild(card);
+
     g.defs.forEach(d => {
       const row = document.createElement('div');
       row.className = 'picker-row';
       row.dataset.condKey = d.key;
       const expanded = d.key === condPickerExpandedKey;
       row.innerHTML = `
-        <div class="picker-row-icon icon-dark">
+        <div class="cond-row-icon">
           <i class="f7-icons">${d.icon || 'question_circle'}</i>
         </div>
         <div class="picker-row-text">${escHtml(d.title)}</div>
         <i class="f7-icons picker-row-chevron">${expanded ? 'chevron_up' : 'chevron_down'}</i>
       `;
       row.onclick = () => selectCond(d.key);
-      container.appendChild(row);
-      if (expanded) condOptionsFor(d, exKey, exValue, exTitle).forEach(r => container.appendChild(r));
+      card.appendChild(row);
+      if (expanded) condOptionsFor(d, exKey, exValue, exTitle).forEach(r => card.appendChild(r));
     });
   });
 }
