@@ -1241,6 +1241,17 @@
     .settings-btn { display: flex; align-items: center; }
     a { color: inherit; text-decoration: none; }
 
+    /* Wrap Long Names (Advanced > Options) — WebUI display preference */
+    body.rc-wrap-names .row-title,
+    body.rc-wrap-names .row-subtitle,
+    body.rc-wrap-names .action-row-text,
+    body.rc-wrap-names .picker-row-text,
+    body.rc-wrap-names .app-picker-name {
+      white-space: normal;
+      overflow: visible;
+      text-overflow: clip;
+    }
+
     /* Day of week pill toggles */
     .day-pill {
       flex: 1; display: flex; flex-direction: column;
@@ -1783,17 +1794,35 @@
         <i class="f7-icons row-chevron" style="color:#8e8e93; font-size:14px;">chevron_right</i>
       </div>
     </div>
+    <div style="color:#8e8e93;font-size:13px;margin:8px 32px 0">Actions that show a banner when a trigger runs them.</div>
     <div class="action-list-header">NFC</div>
     <div class="action-list-card">
       <div class="settings-row">
         <span class="settings-label">NFC Scanning</span>
         <div class="settings-btn">
-          <input type="checkbox" class="ios-toggle" id="setting-nfc" onchange="config.nfcEnabled=this.checked;saveConfig()">
+          <input type="checkbox" class="ios-toggle" id="setting-nfc" onchange="onNFCEnabledChange(this.checked)">
         </div>
       </div>
+      <div class="settings-row">
+        <span class="settings-label">Experimental NFC</span>
+        <div class="settings-btn">
+          <input type="checkbox" class="ios-toggle" id="setting-nfc-bg" onchange="onExperimentalNFCChange(this.checked)">
+        </div>
+      </div>
+      <div class="action-list-row" onclick="showNFCScreenOffSheet()">
+        <div class="action-row-text" style="flex:1">NFC With Screen Off<br><span id="setting-nfc-screenoff" style="font-size:13px;color:#8e8e93;font-weight:400">Off</span></div>
+        <i class="f7-icons row-chevron" style="color:#8e8e93; font-size:14px;">chevron_right</i>
+      </div>
     </div>
+    <div style="color:#8e8e93;font-size:13px;margin:8px 32px 0" id="nfc-footer">NFC scanning options.</div>
     <div class="action-list-header">Options</div>
     <div class="action-list-card">
+      <div class="settings-row">
+        <span class="settings-label">Wrap Long Names</span>
+        <div class="settings-btn">
+          <input type="checkbox" class="ios-toggle" id="setting-wrap-names" onchange="onWrapLongNamesChange(this.checked)">
+        </div>
+      </div>
       <div class="settings-row">
         <span class="settings-label">Logging</span>
         <div class="settings-btn">
@@ -1802,6 +1831,12 @@
             <option value="minimal">Minimal</option>
             <option value="full">Full</option>
           </select>
+        </div>
+      </div>
+      <div class="settings-row">
+        <span class="settings-label">Lock Scrolling During Gestures</span>
+        <div class="settings-btn">
+          <input type="checkbox" class="ios-toggle" id="setting-freeze-lists" onchange="config.freezeListsDuringGestures=this.checked;saveConfig()">
         </div>
       </div>
     </div>
@@ -1838,7 +1873,7 @@
         </div>
       </div>
     </div>
-    <div style="color:#8e8e93;font-size:13px;margin:8px 16px 0">How long a press waits for the next one before it counts. A shorter time responds sooner and needs quicker presses.<br><br>NFC, banners, logging, and display options.</div>
+    <div style="color:#8e8e93;font-size:13px;margin:8px 16px 0">How long a press waits for the next one before it counts. A shorter time responds sooner and needs quicker presses.</div>
   </div>
 </div>
 
@@ -5492,9 +5527,125 @@ function updateIntegrationsStatus() {
 function openAdvancedPanel() {
   document.getElementById('setting-nfc').checked = !!config.nfcEnabled;
   document.getElementById('setting-loglevel').value = ['off','minimal','full'].includes(config.logLevel) ? config.logLevel : 'minimal';
+  const freezeEl = document.getElementById('setting-freeze-lists');
+  if (freezeEl) freezeEl.checked = (config.freezeListsDuringGestures == null) ? true : !!config.freezeListsDuringGestures;
+  const wrapEl = document.getElementById('setting-wrap-names');
+  if (wrapEl) wrapEl.checked = isWrapLongNamesEnabled();
+  syncExperimentalNFCUI();
+  updateNFCScreenOffLabel();
+  updateNFCFooter();
   updateBannersCount();
   populateTimingSelects();
   document.getElementById('advanced-panel').classList.add('active');
+}
+
+// ── Advanced > NFC (parity with iOS RCAdvancedSettingsViewController) ────────
+const RC_NFC_SCREENOFF_DEFAULT = 120.0;
+const RC_NFC_SCREENOFF_CHOICES = [
+  { seconds: 0,   name: 'Off' },
+  { seconds: 30,  name: '30 Seconds' },
+  { seconds: 60,  name: '1 Minute' },
+  { seconds: 120, name: '2 Minutes' },
+  { seconds: 300, name: '5 Minutes' },
+  { seconds: 600, name: '10 Minutes' },
+  { seconds: 1800, name: '30 Minutes' }
+];
+
+function nfcScreenOffSeconds() {
+  const v = parseFloat(config.nfcScreenOffSeconds);
+  return isNaN(v) ? RC_NFC_SCREENOFF_DEFAULT : v;
+}
+
+function nfcScreenOffName(seconds) {
+  if (!(seconds > 0)) return 'Off';
+  if (seconds < 60) return seconds + ' s';
+  const mins = Math.round(seconds / 60);
+  return mins === 1 ? '1 min' : mins + ' min';
+}
+
+function updateNFCScreenOffLabel() {
+  const el = document.getElementById('setting-nfc-screenoff');
+  if (el) el.textContent = nfcScreenOffName(nfcScreenOffSeconds());
+}
+
+function updateNFCFooter() {
+  const el = document.getElementById('nfc-footer');
+  if (!el) return;
+  if (config.nfcBackgroundReading) {
+    el.textContent = 'Enabling Experimental NFC gives control of the NFC sensor back to iOS. This is so that express cards, tags, and passes still work as intended. iOS has an internal NFC cooldown of about 3 seconds. For cards and keys to work while the phone is locked, keep NFC With Screen Off set to Off.';
+  } else {
+    el.textContent = 'NFC scanning options.';
+  }
+}
+
+function syncExperimentalNFCUI() {
+  const bgEl = document.getElementById('setting-nfc-bg');
+  if (bgEl) {
+    bgEl.checked = !!config.nfcBackgroundReading;
+    bgEl.disabled = !config.nfcEnabled;
+    bgEl.style.opacity = bgEl.disabled ? '0.4' : '1';
+  }
+}
+
+function onNFCEnabledChange(enabled) {
+  config.nfcEnabled = enabled;
+  saveConfig();
+  syncExperimentalNFCUI();
+}
+
+function onExperimentalNFCChange(enabled) {
+  config.nfcBackgroundReading = enabled;
+  if (enabled && nfcScreenOffSeconds() > 0) {
+    config.nfcScreenOffSeconds = 0;
+    showConfirm('Experimental NFC',
+      'Enabling Experimental NFC gives control of the NFC sensor back to iOS. This is so that express cards, tags, and passes still work as intended. iOS has an internal NFC cooldown of about 3 seconds. For cards and keys to work while the phone is locked, keep NFC With Screen Off set to Off.',
+      null, 'OK');
+  }
+  saveConfig();
+  syncExperimentalNFCUI();
+  updateNFCScreenOffLabel();
+  updateNFCFooter();
+}
+
+function showNFCScreenOffSheet() {
+  const current = nfcScreenOffSeconds();
+  const buttons = RC_NFC_SCREENOFF_CHOICES.map(c => {
+    const isCur = Math.abs(c.seconds - current) < 1.0;
+    const isDef = Math.abs(c.seconds - RC_NFC_SCREENOFF_DEFAULT) < 1.0;
+    return { label: c.name + (isDef ? ' (Default)' : '') + (isCur ? ' ✓' : ''), action: () => applyNFCScreenOff(c.seconds, c.name) };
+  });
+  buttons.push({ label: 'Cancel', action: () => {} });
+  showSheet('NFC With Screen Off', buttons);
+}
+
+function applyNFCScreenOff(seconds, name) {
+  if (seconds <= RC_NFC_SCREENOFF_DEFAULT) {
+    config.nfcScreenOffSeconds = seconds;
+    saveConfig();
+    updateNFCScreenOffLabel();
+    return;
+  }
+  showConfirm('Longer Scan Window',
+    'The NFC reader stays in use while the screen is off. That costs battery (about 3% an hour on an iPhone 8) and warms the phone, and the system may switch the reader off for a few minutes. A longer window only helps when tags are tapped long after the screen goes dark.',
+    () => {
+      config.nfcScreenOffSeconds = seconds;
+      saveConfig();
+      updateNFCScreenOffLabel();
+    }, 'Use ' + name);
+}
+
+// ── Advanced > Options: Wrap Long Names (WebUI-local display pref) ──────────
+function isWrapLongNamesEnabled() {
+  try { return localStorage.getItem('rc_wrap_long_names') === '1'; } catch(e) { return false; }
+}
+
+function applyWrapLongNames() {
+  document.body.classList.toggle('rc-wrap-names', isWrapLongNamesEnabled());
+}
+
+function onWrapLongNamesChange(enabled) {
+  try { localStorage.setItem('rc_wrap_long_names', enabled ? '1' : '0'); } catch(e) {}
+  applyWrapLongNames();
 }
 
 function openIntegrationsPanel() {
@@ -7050,7 +7201,7 @@ function showToast(msg) {
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', loadData);
+document.addEventListener('DOMContentLoaded', () => { applyWrapLongNames(); loadData(); });
 </script>
 </body>
 </html>
