@@ -1612,7 +1612,7 @@
     <div class="action-list-header">Buttons</div>
     <div class="action-list-card">
       <div class="action-list-row" onclick="openButtonsPanel()">
-        <div class="action-row-icon icon-orange"><i class="f7-icons">hand_tap_fill</i></div>
+        <div class="action-row-icon icon-orange"><i class="f7-icons">timer</i></div>
         <div class="action-row-text">Buttons</div>
         <i class="f7-icons row-chevron" style="color:#8e8e93; font-size:14px;">chevron_right</i>
       </div>
@@ -1621,7 +1621,7 @@
     <div class="action-list-header">Integrations</div>
     <div class="action-list-card">
       <div class="action-list-row" onclick="openIntegrationsPanel()">
-        <div class="action-row-icon icon-indigo"><i class="f7-icons">puzzlepiece_extension_fill</i></div>
+        <div class="action-row-icon icon-indigo"><i class="f7-icons">globe</i></div>
         <div class="action-row-text" style="flex:1">Integrations<br><span id="setting-integrations-status" style="font-size:13px;color:#8e8e93;font-weight:400">Disabled</span></div>
         <i class="f7-icons row-chevron" style="color:#8e8e93; font-size:14px;">chevron_right</i>
       </div>
@@ -1639,7 +1639,7 @@
     <div class="action-list-header">Backup & Diagnostics</div>
     <div class="action-list-card">
       <div class="action-list-row" onclick="openBackupDiagnosticsPanel()">
-        <div class="action-row-icon icon-teal"><i class="f7-icons">externaldrive_fill</i></div>
+        <div class="action-row-icon icon-teal"><i class="f7-icons">archivebox</i></div>
         <div class="action-row-text">Backup & Diagnostics</div>
         <i class="f7-icons row-chevron" style="color:#8e8e93; font-size:14px;">chevron_right</i>
       </div>
@@ -1706,7 +1706,7 @@
   </div>
   <div class="panel-content">
     <div class="action-list-header" style="margin-top:28px">External Services</div>
-    <div class="action-list-card">
+    <div class="action-list-card" style="margin-bottom:12px">
       <div class="settings-row">
         <span class="settings-label">Home Assistant</span>
         <div class="settings-btn">
@@ -1730,8 +1730,10 @@
           <span id="ha-test-status" style="font-size: 13px; color: #8e8e93; margin-left: 12px;"></span>
         </div>
       </div>
+    </div>
 
-      <div class="settings-row" style="border-top: 1px solid rgba(255,255,255,0.08);">
+    <div class="action-list-card" style="margin-bottom:12px">
+      <div class="settings-row">
         <span class="settings-label">Keyboard Maestro</span>
         <div class="settings-btn">
           <input type="checkbox" class="ios-toggle" id="setting-km" onchange="onKMToggleChange(this.checked)">
@@ -1762,8 +1764,10 @@
           <span id="km-test-status" style="font-size: 13px; color: #8e8e93; margin-left: 12px;"></span>
         </div>
       </div>
+    </div>
 
-      <div class="settings-row" style="border-top: 1px solid rgba(255,255,255,0.08);">
+    <div class="action-list-card" style="margin-bottom:12px">
+      <div class="settings-row">
         <span class="settings-label">MQTT</span>
         <div class="settings-btn">
           <input type="checkbox" class="ios-toggle" id="setting-mqtt" onchange="onMQTTToggleChange(this.checked)">
