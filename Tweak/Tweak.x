@@ -14432,6 +14432,21 @@ static void RC_CollectScrollViewsInView(UIView *view, NSMutableArray *out) {
     for (UIView *sub in view.subviews) RC_CollectScrollViewsInView(sub, out);
 }
 
+// A touch that began on a row or button highlights it on touch-down, then
+// the freeze cuts delivery mid-touch, so the view never sees the touch-up
+// that would unhighlight it (stuck light state). Only the transient
+// highlighted flag is cleared here, never selected.
+static void RC_ClearStuckHighlightsInView(UIView *view) {
+    if ([view isKindOfClass:[UITableView class]]) {
+        for (UITableViewCell *cell in [(UITableView *)view visibleCells]) cell.highlighted = NO;
+    } else if ([view isKindOfClass:[UICollectionView class]]) {
+        for (UICollectionViewCell *cell in [(UICollectionView *)view visibleCells]) cell.highlighted = NO;
+    } else if ([view isKindOfClass:[UIControl class]]) {
+        [(UIControl *)view setHighlighted:NO];
+    }
+    for (UIView *sub in view.subviews) RC_ClearStuckHighlightsInView(sub);
+}
+
 static void RC_FreezeGestureScrolling(void) {
     if (g_rcGestureScrollFrozen) return;
     if (!RC_GestureScrollSuppressionWanted()) return;
@@ -14473,6 +14488,7 @@ static void RC_FreezeGestureScrolling(void) {
                     [g_rcFrozenInteractionWindows addObject:w];
                     w.userInteractionEnabled = NO;
                 }
+                RC_ClearStuckHighlightsInView(w);
             }
         } @catch (__unused NSException *e) { }
         notify_post("com.saihgupr.remotecompanion.gesture-scroll-begin");
@@ -14502,6 +14518,9 @@ static void RC_UnfreezeGestureScrolling(void) {
             }
             for (UIWindow *w in g_rcFrozenInteractionWindows) {
                 @try { w.userInteractionEnabled = YES; } @catch (__unused NSException *e) { }
+            }
+            for (UIWindow *w in [UIApplication sharedApplication].windows) {
+                @try { RC_ClearStuckHighlightsInView(w); } @catch (__unused NSException *e) { }
             }
         } @catch (__unused NSException *e) { }
         [g_rcFrozenScrollViews removeAllObjects];
@@ -15758,6 +15777,17 @@ static void RCApp_CollectScrollViewsInView(UIView *view, NSMutableArray *out) {
     for (UIView *sub in view.subviews) RCApp_CollectScrollViewsInView(sub, out);
 }
 
+static void RCApp_ClearStuckHighlightsInView(UIView *view) {
+    if ([view isKindOfClass:[UITableView class]]) {
+        for (UITableViewCell *cell in [(UITableView *)view visibleCells]) cell.highlighted = NO;
+    } else if ([view isKindOfClass:[UICollectionView class]]) {
+        for (UICollectionViewCell *cell in [(UICollectionView *)view visibleCells]) cell.highlighted = NO;
+    } else if ([view isKindOfClass:[UIControl class]]) {
+        [(UIControl *)view setHighlighted:NO];
+    }
+    for (UIView *sub in view.subviews) RCApp_ClearStuckHighlightsInView(sub);
+}
+
 static void RCApp_SetScrollFrozen(BOOL frozen) {
     void (^work)(void) = ^{
         if (frozen == g_appSuppressScroll && frozen) return;
@@ -15789,6 +15819,7 @@ static void RCApp_SetScrollFrozen(BOOL frozen) {
                         [g_appFrozenInteractionWindows addObject:w];
                         w.userInteractionEnabled = NO;
                     }
+                    RCApp_ClearStuckHighlightsInView(w);
                 }
                 g_appFreezeGen++;
                 unsigned gen = g_appFreezeGen;
@@ -15804,6 +15835,9 @@ static void RCApp_SetScrollFrozen(BOOL frozen) {
                 }
                 for (UIWindow *w in g_appFrozenInteractionWindows) {
                     @try { w.userInteractionEnabled = YES; } @catch (__unused NSException *e) { }
+                }
+                for (UIWindow *w in [UIApplication sharedApplication].windows) {
+                    @try { RCApp_ClearStuckHighlightsInView(w); } @catch (__unused NSException *e) { }
                 }
                 [g_appFrozenScrollViews removeAllObjects];
                 [g_appFrozenGestureRecognizers removeAllObjects];
