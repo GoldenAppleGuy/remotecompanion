@@ -4371,32 +4371,59 @@ let g_currentWebUIUrl = '';
 
 function copyWebUIUrl() {
   if (!g_currentWebUIUrl) return;
-  navigator.clipboard.writeText(g_currentWebUIUrl).then(() => {
-    showToast('Web UI URL copied to clipboard');
-  }).catch(() => {
-    showToast(g_currentWebUIUrl);
-  });
+  const done = () => showToast('Web UI URL copied to clipboard');
+  const fallback = () => {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = g_currentWebUIUrl;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      ta.style.top = '-9999px';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      if (document.execCommand('copy')) done();
+      else showToast(g_currentWebUIUrl);
+      document.body.removeChild(ta);
+    } catch (e) {
+      showToast(g_currentWebUIUrl);
+    }
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(g_currentWebUIUrl).then(done).catch(fallback);
+  } else {
+    fallback();
+  }
 }
 
 function triggerRespringAction() {
   showConfirm('Restart SpringBoard?', 'Are you sure you want to respring your iOS device?', () => {
-    fetch('/api/command?cmd=respring').then(() => {
+    fetch('/api/command?cmd=respring').then(r => {
+      if (!r.ok) throw new Error('respring ' + r.status);
       showToast('Respringing SpringBoard…');
+    }).catch(() => {
+      showToast('Failed to respring');
     });
   });
 }
 
 function triggerSafeModeAction() {
   showConfirm('Enter Safe Mode?', 'Are you sure you want to put your iOS device into Safe Mode (restart SpringBoard with tweaks disabled)?', () => {
-    fetch('/api/command?cmd=safemode').then(() => {
+    fetch('/api/command?cmd=safemode').then(r => {
+      if (!r.ok) throw new Error('safemode ' + r.status);
       showToast('Entering Safe Mode…');
+    }).catch(() => {
+      showToast('Failed to enter Safe Mode');
     });
   });
 }
 
 function clearTweakLogFile() {
   showConfirm('Clear Log File?', 'Truncate /tmp/remotecommand.log on disk?', () => {
-    fetch('/api/sysaction/clearlog').then(r => r.json()).then(() => {
+    fetch('/api/sysaction/clearlog').then(r => {
+      if (!r.ok) throw new Error('clearlog ' + r.status);
+      return r.json();
+    }).then(() => {
       showToast('🧹 Tweak log file cleared');
       fetchSysInfo();
     }).catch(() => {
@@ -4406,7 +4433,11 @@ function clearTweakLogFile() {
 }
 
 function triggerActionApi(actionName, successMsg) {
-  fetch(`/api/sysaction/${actionName}`).then(r => r.json()).then(data => {
+  fetch(`/api/sysaction/${actionName}`).then(r => {
+    if (!r.ok) throw new Error(actionName + ' ' + r.status);
+    return r.json();
+  }).then(data => {
+    if (data && data.ok === false) throw new Error(actionName + ' rejected');
     showToast(successMsg || 'Action executed successfully');
   }).catch(() => {
     showToast('Failed to execute action');
@@ -6881,10 +6912,26 @@ function closeSheet() {
 }
 
 // ── Generic Dialog System ──────────────────────────────────────────────────────
+// Confirm dialog without a text field. Reuses #dialog-backdrop; Cancel dismisses,
+// OK runs onOk. Restores the input row next time showDialog is used.
+function showConfirm(title, msg, onOk, okLabel) {
+  document.getElementById('dialog-title').textContent = title;
+  document.getElementById('dialog-msg').textContent = msg;
+  document.getElementById('dialog-input').style.display = 'none';
+  document.getElementById('dialog-autocomplete').style.display = 'none';
+  document.getElementById('dialog-record').style.display = 'none';
+  document.getElementById('dialog-ok').textContent = okLabel || 'OK';
+  dialogCallback = () => { if (onOk) onOk(); };
+  const box = document.querySelector('#dialog-backdrop .dialog-box');
+  if (box) box.classList.remove('wide');
+  document.getElementById('dialog-backdrop').classList.add('visible');
+}
+
 function showDialog(title, msg, defaultVal, okLabel, callback, isNumber = false, showRecordBtn = false, isPassword = false) {
   document.getElementById('dialog-title').textContent = title;
   document.getElementById('dialog-msg').textContent   = msg;
   const input = document.getElementById('dialog-input');
+  input.style.display = '';
   input.value = defaultVal || '';
   input.type  = isPassword ? 'password' : (isNumber ? 'number' : 'text');
   input.placeholder = isPassword ? 'Passcode (optional)' : '';
