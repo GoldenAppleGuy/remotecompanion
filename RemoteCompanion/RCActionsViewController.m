@@ -293,6 +293,14 @@ static id g_actionClipboard = nil;
     [self.tableView reloadData];
 }
 
+- (void)setKeepsDefaultAction:(BOOL)keep {
+    RCConfigManager *config = [RCConfigManager sharedManager];
+    NSMutableDictionary *data = [[config triggerDataForKey:_triggerKey] mutableCopy] ?: [NSMutableDictionary dictionary];
+    if (keep) data[@"keepDefault"] = @YES; else [data removeObjectForKey:@"keepDefault"];
+    [config updateTrigger:_triggerKey withData:data];
+    self.moreButton.menu = [self moreMenu];
+}
+
 - (UIMenu *)moreMenu {
     __weak typeof(self) weakSelf = self;
     NSMutableArray *modes = [NSMutableArray array];
@@ -308,6 +316,20 @@ static id g_actionClipboard = nil;
     UIMenu *whenFired = [UIMenu menuWithTitle:@"When Triggered Again" image:[UIImage systemImageNamed:@"repeat"] identifier:nil options:0 children:modes];
 
     NSMutableArray *menuActions = [NSMutableArray arrayWithObject:whenFired];
+    // Triggers that take over what iOS normally does can keep it as well: the ping sound, and with a
+    // Home button the Accessibility Shortcut, App Switcher, Siri and screenshot, otherwise Siri, the
+    // Accessibility Shortcut, a screenshot and Wallet
+    NSArray *keepsDefault = [RCConfigManager hasHomeButton]
+        ? @[@"trigger_watch_ping", @"trigger_watch_ping_hold", @"trigger_home_triple_click", @"trigger_home_double_click", @"trigger_home_hold", @"trigger_home_power"]
+        : @[@"trigger_watch_ping", @"trigger_watch_ping_hold", @"power_long_press", @"power_triple_click", @"power_volume_up", @"power_double_tap"];
+    if ([keepsDefault containsObject:_triggerKey]) {
+        BOOL keep = [[[RCConfigManager sharedManager] triggerDataForKey:_triggerKey][@"keepDefault"] boolValue];
+        UIAction *sound = [UIAction actionWithTitle:@"Keep Default Action" image:[UIImage systemImageNamed:@"arrow.uturn.backward.circle"] identifier:nil handler:^(__kindof UIAction *a) {
+            [weakSelf setKeepsDefaultAction:!keep];
+        }];
+        sound.state = keep ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [menuActions addObject:sound];
+    }
     [menuActions addObject:[UIAction actionWithTitle:@"Import Actions" image:[UIImage systemImageNamed:@"square.and.arrow.down"] identifier:nil handler:^(__kindof UIAction *a) {
         [weakSelf importActions];
     }]];
