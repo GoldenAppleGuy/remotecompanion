@@ -11871,10 +11871,27 @@ static BOOL RC_VolumePressWasPowerCombo(NSTimeInterval pressTime) {
 // are both swallowed in the singlePress: hook. An earlier version toggled it on
 // every volume press, whose state reset broke the native volume ramp; this only
 // toggles on power presses.
+static BOOL RC_TriggerIsActionable(NSString *key);
+
+// Keep Default Action (a trigger's ... menu, off by default): the trigger runs its actions and iOS
+// still does what the press normally does (Siri, the Accessibility Shortcut, a screenshot, Wallet,
+// the App Switcher)
+static BOOL RC_TriggerKeepsDefault(NSString *key) {
+    id trigger = g_triggerConfig[@"triggers"][key];
+    return [trigger isKindOfClass:[NSDictionary class]] && [trigger[@"keepDefault"] boolValue];
+}
+
+// Whether the trigger takes the press over from iOS: it has actions and Keep Default Action is off
+static BOOL RC_TriggerBlocksDefault(NSString *key) {
+    return RC_TriggerIsActionable(key) && !RC_TriggerKeepsDefault(key);
+}
+
 static __weak UIGestureRecognizer *g_screenshotGestureRecognizer = nil;
 static BOOL g_screenshotRecognizerSuppressed = NO;
 
 static void RC_SetScreenshotRecognizerSuppressed(BOOL suppress) {
+    // Power + Volume Up with Keep Default Action: iOS takes its screenshot as well
+    if (suppress && RC_TriggerKeepsDefault(@"power_volume_up")) return;
     if (suppress == g_screenshotRecognizerSuppressed) return;
     UIGestureRecognizer *recognizer = g_screenshotGestureRecognizer;
     if (!recognizer) {
@@ -12991,14 +13008,14 @@ static id RC_AXGet(id obj, NSString *name) {
 static BOOL RC_AXTriplePressTakenOver(id interaction) {
     id sideButton = RC_AXGet(RC_AXGet([UIApplication sharedApplication], @"lockHardwareButton"), @"buttonActions");
     BOOL side = sideButton && RC_AXGet(sideButton, @"accessibilityButtonInteraction") == interaction;
-    return RC_TriggerIsActionable(side ? @"power_triple_click" : @"trigger_home_triple_click");
+    return RC_TriggerBlocksDefault(side ? @"power_triple_click" : @"trigger_home_triple_click");
 }
 
 // Has iOS read the press settings again (as it does when the shortcut is changed in Settings)
 // once either triple press binding changes. Main thread.
 static void RC_RefreshAXTriplePress(void) {
     static int last = -1;
-    int state = (RC_TriggerIsActionable(@"power_triple_click") ? 1 : 0) | (RC_TriggerIsActionable(@"trigger_home_triple_click") ? 2 : 0);
+    int state = (RC_TriggerBlocksDefault(@"power_triple_click") ? 1 : 0) | (RC_TriggerBlocksDefault(@"trigger_home_triple_click") ? 2 : 0);
     if (state == last) return;
     last = state;
     SEL publish = NSSelectorFromString(@"publishUpdatedParameters:");
@@ -13034,7 +13051,7 @@ static BOOL RC_HoldHomeSwitcher(void) {
     if (RC_TriggerIsActionable(@"trigger_home_double_click")) return YES;
     if (!RC_TriggerIsActionable(@"trigger_home_triple_click") && !RC_TriggerIsActionable(@"trigger_home_quadruple_click")) return NO;
     // Home Triple Click takes the shortcut over, so iOS no longer waits
-    return !RC_AccessibilityShortcutSet() || RC_TriggerIsActionable(@"trigger_home_triple_click");
+    return !RC_AccessibilityShortcutSet() || RC_TriggerBlocksDefault(@"trigger_home_triple_click");
 }
 
 // The end of a click sequence: drops the held App Switcher if a trigger fired or the clicks went
@@ -13043,10 +13060,12 @@ static BOOL RC_HoldHomeSwitcher(void) {
 // Main thread.
 static void RC_FinishHomeActions(int count, BOOL fired) {
     id target = g_homeActionsTarget;
-    BOOL replay = !fired && count <= 2 && g_homeDoubleActionHeld;
+    // Home Double Click with Keep Default Action: the App Switcher opens after its actions
+    BOOL keep = fired && count == 2 && RC_TriggerKeepsDefault(@"trigger_home_double_click");
+    BOOL replay = (!fired || keep) && count <= 2 && g_homeDoubleActionHeld;
     g_homeDoubleActionHeld = NO;
     if (!target || !replay) return;
-    SRLog(@"[Home] No trigger for %d clicks - opening iOS's App Switcher", count);
+    SRLog(@"[Home] %@ - opening iOS's App Switcher", keep ? @"Home Double Click keeps the default action" : [NSString stringWithFormat:@"No trigger for %d clicks", count]);
     g_homeActionReplaying = YES;
     [target performDoublePressDownActions];
     g_homeActionReplaying = NO;
@@ -13229,7 +13248,9 @@ static void RC_CheckAndFirePower() {
         BOOL walletReplayed = NO;
         if (g_walletDoublePressDeferred) {
             g_walletDoublePressDeferred = NO;
-            if (!higherClaimed) {
+            BOOL doubleTapClaimed = claimed && count == 2 && RC_TriggerBlocksDefault(@"power_double_tap");
+            if (doubleTapClaimed) SRLog(@"[Power] Double-Tap claimed the double-press - not opening Wallet");
+            if (!higherClaimed && !doubleTapClaimed) {
                 RC_ReplayWalletDoublePress();
                 walletReplayed = YES;
             }
@@ -13870,8 +13891,11 @@ static void setup_background_hid_listener() {
 
     load_trigger_config();
     BOOL masterEnabled = [g_triggerConfig[@"masterEnabled"] boolValue];
+    // With Keep Default Action the press is left to iOS; the trigger runs when iOS starts Siri
+    // (performLongPressActions)
     BOOL longPressEnabled = masterEnabled && 
-                   [g_triggerConfig[@"triggers"][@"power_long_press"][@"enabled"] boolValue];
+                   [g_triggerConfig[@"triggers"][@"power_long_press"][@"enabled"] boolValue] &&
+                   !RC_TriggerKeepsDefault(@"power_long_press");
 
     SRLog(@"Power Button DOWN (Actions) - enabled=%d", longPressEnabled);
 
@@ -13916,7 +13940,7 @@ static void setup_background_hid_listener() {
     // A press on a sleeping screen with Power Long Press bound is held back, so that holding
     // it fires the trigger without waking the phone. A tap wakes it on release.
     g_powerWakeHeld = NO;
-    if (!(g_powerClickTimer != nil && g_powerClickCount > 0) && !RC_ScreenIsOn() && RC_TriggerIsActionable(@"power_long_press")) {
+    if (!(g_powerClickTimer != nil && g_powerClickCount > 0) && !RC_ScreenIsOn() && RC_TriggerBlocksDefault(@"power_long_press")) {
         g_powerWakeHeld = YES;
         g_powerDeferActive = YES;
         SRLog(@"Holding system power DOWN on a sleeping screen (Power Long Press bound)");
@@ -14117,6 +14141,15 @@ static void setup_background_hid_listener() {
     BOOL longPressEnabled = masterEnabled && 
                    [g_triggerConfig[@"triggers"][@"power_long_press"][@"enabled"] boolValue];
 
+    // Keep Default Action: the actions run and iOS goes on to Siri
+    if (longPressEnabled && RC_TriggerKeepsDefault(@"power_long_press") && !g_lockButtonTriggered) {
+        SRLog(@"Power Long Press Fired, keeping the default action (Siri)");
+        trigger_haptic();
+        RCExecuteTrigger(@"power_long_press");
+        %orig;
+        return;
+    }
+
     if (longPressEnabled) {
         if (!g_lockButtonTriggered) {
             if (g_lockButtonTimer) {
@@ -14188,8 +14221,10 @@ static void setup_background_hid_listener() {
     // Keyed on the count actually running rather than the screen being on:
     // a double-click from screen-off wakes it with the first press, and the
     // old check then deferred a double that no count would ever resolve.
-    if (!excluded && g_powerClickTimer && RC_HigherPowerMultiClickArmed()) {
-        SRLog(@"Deferring native double-press (Wallet) - triple/quad armed");
+    // Double-Tap with actions also holds it back, and drops it (RC_CheckAndFirePower) unless Keep
+    // Default Action is on
+    if (!excluded && g_powerClickTimer && (RC_HigherPowerMultiClickArmed() || RC_TriggerBlocksDefault(@"power_double_tap"))) {
+        SRLog(@"Deferring native double-press (Wallet) - triple/quad armed or Double-Tap bound");
         g_walletDoublePressDeferred = YES;
         return;
     }
