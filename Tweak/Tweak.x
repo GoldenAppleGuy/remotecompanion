@@ -2107,6 +2107,8 @@ static NSString *get_human_name_for_trigger(NSString *key, NSDictionary *trigger
             @"trigger_home_triple_click": @"Home Button (Triple Click)",
             @"trigger_home_quadruple_click": @"Home Button (Quadruple Click)",
             @"trigger_home_double_click": @"Home Button (Double Click)",
+            @"trigger_home_hold": @"Home Button (Hold)",
+            @"trigger_home_power": @"Home + Power",
             @"touchid_hold": @"Touch ID Hold (Rest Finger)",
             @"touchid_tap": @"Touch ID Single Tap",
             @"trigger_edge_left_swipe_up": @"Left Edge Swipe Up",
@@ -11933,6 +11935,21 @@ static BOOL g_powerPressIsHomeChord = NO;
 static BOOL g_homePowerChordOpen = NO;          // both have been down together, not both up yet
 static NSTimeInterval g_homePowerChordTime = 0;
 static NSTimeInterval g_lastIOSScreenshotTime = 0; // iOS recognized its own screenshot gesture
+// The open chord ran the Home + Power trigger, which takes the screenshot over (no Keep Default Action)
+static volatile BOOL g_homePowerChordClaimed = NO;
+
+// Whether a trigger has actions, and whether it keeps iOS's default action (Keep Default Action).
+// Reads the loaded config only, so it's safe on the HID listener's thread.
+static BOOL RC_HomeTriggerArmed(NSString *key, BOOL *keepsDefault) {
+    NSDictionary *config = g_triggerConfig;
+    if (![config[@"masterEnabled"] boolValue]) return NO;
+    id trigger = config[@"triggers"][key];
+    if (![trigger isKindOfClass:[NSDictionary class]] || ![trigger[@"enabled"] boolValue]) return NO;
+    id actions = trigger[@"actions"];
+    if (![actions isKindOfClass:[NSArray class]] || [actions count] == 0) return NO;
+    if (keepsDefault) *keepsDefault = [trigger[@"keepDefault"] boolValue];
+    return YES;
+}
 
 static void RC_NoteHomePowerChord(void) {
     g_powerPressIsHomeChord = YES;
@@ -11940,6 +11957,24 @@ static void RC_NoteHomePowerChord(void) {
     g_homePowerChordOpen = YES;
     g_homePowerChordTime = [[NSDate date] timeIntervalSince1970];
     SRLog(@"[HID] Home + Power together");
+
+    // Home + Power trigger: runs as soon as both are down, instead of the screenshot
+    BOOL keep = NO;
+    if (RC_HomeTriggerArmed(@"trigger_home_power", &keep) && !RC_IsForegroundAppExcluded()) {
+        g_homePowerChordClaimed = !keep;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            SRLog(@"[Home] Home + Power trigger%@", keep ? @" (keeping the screenshot)" : @" - no screenshot");
+            trigger_haptic();
+            RCExecuteTrigger(@"trigger_home_power");
+        });
+    }
+}
+
+// iOS's screenshot for a Home + Power chord the trigger took over
+static BOOL RC_HomePowerScreenshotSkipped(void) {
+    if (!g_homePowerChordClaimed) return NO;
+    SRLog(@"[Screenshot] Home + Power trigger ran - skipping iOS's screenshot");
+    return YES;
 }
 
 // Both released: give iOS a moment to take its screenshot, then take it if it didn't
@@ -11948,6 +11983,10 @@ static void RC_FinishHomePowerChord(void) {
     g_homePowerChordOpen = NO;
     NSTimeInterval chordTime = g_homePowerChordTime;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        // The trigger took the chord over: no screenshot from the tweak either
+        BOOL claimed = g_homePowerChordClaimed;
+        g_homePowerChordClaimed = NO;
+        if (claimed) return;
         load_trigger_config();
         if (!RC_MasterEnabled() || RC_IsForegroundAppExcluded()) return;
         if (g_lastIOSScreenshotTime >= chordTime - 0.1) return;
@@ -13074,6 +13113,7 @@ static NSTimer *g_homeClickTimer = nil;
 // otherwise the App Switcher opens late. (The triple press action, the Accessibility Shortcut, is
 // taken over by Home Triple Click: see RC_AXTriplePressTakenOver.)
 static BOOL g_homeDoubleActionHeld = NO, g_homeActionReplaying = NO;
+static volatile BOOL g_homeHoldFired = NO; // Home Hold ran for the press that's down (not a click)
 static __weak id g_homeActionsTarget = nil;
 
 // Whether an Accessibility Shortcut is set (Settings > Accessibility > Accessibility Shortcut):
@@ -13185,6 +13225,11 @@ static IOHIDEventSystemClientRef g_hidClient = NULL;
 static void RC_CheckAndFire();
 
 static void RC_ProcessHomeClick() {
+    if (g_homeHoldFired) {
+        g_homeHoldFired = NO;
+        SRLog(@"[HID] Home released after Home Hold - not a click");
+        return;
+    }
     if (RC_IsForegroundAppExcluded()) return;
     g_homeClickCount++;
     SRLog(@"[HID] 🔵 CLICK DETECTED (Up)! Count: %d", g_homeClickCount);
@@ -14347,6 +14392,21 @@ static BOOL RC_HomeSinglePressIsPartOfHeldClicks(void) {
     %orig;
 }
 
+// Home Hold: where iOS starts Siri. With actions, they run instead (or as well, with Keep Default
+// Action); the release of this press isn't counted as a Home click.
+- (void)performLongPressActions {
+    BOOL keep = NO;
+    if (!g_homeActionReplaying && RC_HomeTriggerArmed(@"trigger_home_hold", &keep) && !RC_IsForegroundAppExcluded()) {
+        SRLog(@"[Home] Home Hold%@", keep ? @", keeping the default action (Siri)" : @" - no Siri");
+        g_homeHoldFired = YES;
+        trigger_haptic();
+        RCExecuteTrigger(@"trigger_home_hold");
+        if (keep) %orig;
+        return;
+    }
+    %orig;
+}
+
 - (void)performDoublePressDownActions {
     if (!g_homeActionReplaying && RC_HoldHomeSwitcher()) {
         SRLog(@"[Home] iOS's App Switcher held until the click count is known");
@@ -14360,6 +14420,7 @@ static BOOL RC_HomeSinglePressIsPartOfHeldClicks(void) {
 
 %hook SBHomeHardwareButton
 - (void)screenshotRecognizerDidRecognize:(id)recognizer {
+    if (RC_HomePowerScreenshotSkipped()) return;
     g_lastIOSScreenshotTime = [[NSDate date] timeIntervalSince1970];
     %orig;
 }
@@ -14367,6 +14428,7 @@ static BOOL RC_HomeSinglePressIsPartOfHeldClicks(void) {
 
 %hook SBCombinationHardwareButton
 - (void)screenshotGesture:(id)gesture {
+    if (RC_HomePowerScreenshotSkipped()) return;
     g_lastIOSScreenshotTime = [[NSDate date] timeIntervalSince1970];
     %orig;
 }
@@ -16612,6 +16674,16 @@ static NSTimeInterval s_last_camera_launch_notify = 0;
                 BOOL present = class_getInstanceMethod(lockActions, sel_registerName(sels[i])) != NULL;
                 SRLog(@"%@ [Power] -[SBLockHardwareButtonActions %s]",
                       present ? @"✅" : @"❌", sels[i]);
+            }
+        }
+
+        // Home button: where Home Hold (Siri) and the App Switcher hooks bind
+        Class homeActions = objc_getClass("SBHomeHardwareButtonActions");
+        if (homeActions && rc_has_home_button()) {
+            const char *homeSels[] = { "performLongPressActions", "performDoublePressDownActions", "performSinglePressUpActions" };
+            for (size_t i = 0; i < sizeof(homeSels)/sizeof(homeSels[0]); i++) {
+                BOOL present = class_getInstanceMethod(homeActions, sel_registerName(homeSels[i])) != NULL;
+                SRLog(@"%@ [Home] -[SBHomeHardwareButtonActions %s]", present ? @"✅" : @"❌", homeSels[i]);
             }
         }
 
