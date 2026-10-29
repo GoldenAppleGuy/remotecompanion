@@ -7,6 +7,7 @@
 #import "RCTextInputViewController.h"
 #import "RCServerClient.h"
 #import "RCRunningViewController.h"
+#import "RCRunHistoryViewController.h"
 #import "RCScheduledTriggerViewController.h"
 #import "RCNotificationTriggerViewController.h"
 #import "RCWiFiTriggerViewController.h"
@@ -353,6 +354,9 @@ static id g_actionClipboard = nil;
         sound.state = keep ? UIMenuElementStateOn : UIMenuElementStateOff;
         [menuActions addObject:sound];
     }
+    [menuActions addObject:[UIAction actionWithTitle:@"Run History" image:[UIImage systemImageNamed:@"clock.arrow.circlepath"] identifier:nil handler:^(__unused UIAction *a) {
+        [weakSelf.navigationController pushViewController:[[RCRunHistoryViewController alloc] initWithTriggerKey:weakSelf.triggerKey] animated:YES];
+    }]];
     [menuActions addObject:[UIAction actionWithTitle:@"Import Actions" image:[UIImage systemImageNamed:@"square.and.arrow.down"] identifier:nil handler:^(__kindof UIAction *a) {
         [weakSelf importActions];
     }]];
