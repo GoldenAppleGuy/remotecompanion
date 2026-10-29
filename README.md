@@ -517,12 +517,11 @@ If you experience the "Updating Cards" screen or other conflicts with Apple Pay 
 
 This ensures the tweak does not attempt to access the NFC controller on wake, resolving conflicts with system services.
 
-### iOS 14 arm64e (A12+) Compatibility
-The tweak ships as fat `arm64 + arm64e` binaries, and the `arm64e` slice is built for ABI v2, which iOS 14 does not accept. On A12 and newer, dyld skips that slice and runs the `arm64` one instead, so iOS 14 is expected to work (reported working on an iPhone 12 / iOS 14.2 / Taurine rootful, not tested on every 14.x pairing).
-- **Supported**: iOS 14 on A11 and below (iPhone 8/X and older, iPad Air 2, etc.).
-- **Expected to work**: iOS 14 on A12 and newer, running as `arm64`.
-- **Native `arm64e`**: iOS 15 and newer.
-- **If it safe-modes on iOS 14**: check the installed dylib still carries both slices (`lipo -archs "/Library/MobileSubstrate/DynamicLibraries/RemoteCommand.dylib"`, `var/jb/` prefixed on rootless). A self-built `arm64e`-only binary will not load there.
+### iOS 14 Architecture Compatibility
+RemoteCompanion ships as fat universal binaries containing both `arm64` and `arm64e` slices:
+- **A12 and newer (iPhone XS, 11, 12, etc.)**: Runs the native `arm64e` slice across iOS 14, 15, and 16+. On iOS 14, binaries are compiled targeting iOS 14.0 (`TARGET := iphone:clang:latest:14.0`) to match the iOS 14+ `arm64e` ABI v2 standard.
+- **A11 and older (iPhone 8/X, iPad Air 2, etc.)**: Runs the standard `arm64` slice natively on iOS 14–16+.
+- **Troubleshooting**: If compiling from source or experiencing Safe Mode on iOS 14, ensure your Theos target deployment is explicitly set to `14.0` and that the installed dylibs retain both slices (`lipo -archs "/Library/MobileSubstrate/DynamicLibraries/RemoteCommand.dylib"`, prefixed with `/var/jb/` on rootless).
 
 </details>
 

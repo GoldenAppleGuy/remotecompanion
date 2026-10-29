@@ -137,8 +137,8 @@ else
     build_scheme "$SCHEME"
 fi
 
-# Every dylib and helper tool must keep an arm64 slice: the arm64e slice is
-# ABI v2, so iOS 14 arm64e devices only load the arm64 fallback.
+# Every dylib and helper tool must retain an arm64 slice for A11 and older
+# devices, alongside the arm64e slice for A12+ devices.
 verify_arch() {
     echo "🔎 Verifying arch slices..."
     local bad=0 f archs
@@ -147,7 +147,7 @@ verify_arch() {
         archs=$(lipo -archs "$f" 2>/dev/null) || continue
         case " $archs " in
             *" arm64 "*) ;;
-            *) echo "❌ ${f#Tweak/.theos/_/} has no arm64 slice (iOS 14 arm64e fallback lost)"; bad=1 ;;
+            *) echo "❌ ${f#Tweak/.theos/_/} has no arm64 slice (A11 and older support lost)"; bad=1 ;;
         esac
     done < <(find Tweak/.theos/_ -type f \( -name "*.dylib" -o -name "rc-client" \))
     [ "$bad" -eq 0 ] || exit 1
