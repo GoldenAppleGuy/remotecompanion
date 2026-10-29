@@ -18,5 +18,6 @@ done
 killall -9 nfcd 2>/dev/null || /var/jb/usr/bin/killall -9 nfcd 2>/dev/null
 # Same for companionfindlocallyd, which loads RCWatchPing
 killall -9 companionfindlocallyd 2>/dev/null || /var/jb/usr/bin/killall -9 companionfindlocallyd 2>/dev/null
+launchctl kickstart -p system/com.apple.companionfindlocallyd 2>/dev/null || true
 
 exit 0

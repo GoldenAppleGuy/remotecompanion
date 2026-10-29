@@ -2229,7 +2229,7 @@ void RCNFCConfigChanged(void);
 void RCExecuteTrigger(NSString *triggerKey);
 
 static BOOL rc_watch_ping_quiets(NSString *key) {
-    if (![g_triggerConfig[@"masterEnabled"] boolValue]) return NO;
+    if (!RC_MasterEnabled()) return NO;
     NSDictionary *triggers = g_triggerConfig[@"triggers"];
     NSDictionary *trigger = [triggers isKindOfClass:[NSDictionary class]] ? triggers[key] : nil;
     if (![trigger isKindOfClass:[NSDictionary class]] || ![trigger[@"enabled"] boolValue]) return NO;

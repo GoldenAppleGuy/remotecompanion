@@ -4,7 +4,7 @@
 // sound and flash for that ping; the Watch still gets its usual reply. Without actions, or with the
 // trigger's keepDefault set, Ping iPhone works as on a stock iPhone.
 //
-// Every class and method is looked up by name and checked; nothing is called by address.
+// Compatible with iOS 14 through iOS 17+. Every class and method is looked up dynamically.
 
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
@@ -12,12 +12,35 @@
 #import <notify.h>
 #import <os/log.h>
 #import <stdatomic.h>
+#import <fcntl.h>
+#import <unistd.h>
+#import <sys/stat.h>
 
 #define kRCWatchPingArmed "com.pizzaman.rc.watch_ping_armed" // state: 1 tap has actions, 2 hold has actions (set by SpringBoard)
 #define kRCWatchPing      "com.pizzaman.rc.watch_ping"       // posted per ping: state 1 tap, 2 hold
 
 // Sound and flash are skipped until this time (seconds since reference date)
 static _Atomic double g_quietUntil;
+
+static void RCLog(NSString *format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString *msg = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+    os_log(OS_LOG_DEFAULT, "[RemoteCompanion] %{public}@", msg);
+
+    NSString *logLine = [NSString stringWithFormat:@"%@ [WatchPingDaemon] %@\n", [NSDate date], msg];
+    const char *paths[] = { "/var/jb/tmp/remotecommand.log", "/tmp/remotecommand.log", NULL };
+    for (int i = 0; paths[i]; i++) {
+        int fd = open(paths[i], O_WRONLY | O_APPEND | O_CREAT, 0666);
+        if (fd >= 0) {
+            fchmod(fd, 0666);
+            write(fd, logLine.UTF8String, strlen(logLine.UTF8String));
+            close(fd);
+            break;
+        }
+    }
+}
 
 static uint64_t RCArmedState(void) {
     static int token = NOTIFY_TOKEN_INVALID;
@@ -29,6 +52,7 @@ static uint64_t RCArmedState(void) {
 
 // The ping message: field 1 a timestamp (double), field 2 the flash flag (varint), as seen on iOS 17
 static BOOL RCPingWantsFlash(NSData *data) {
+    if (![data isKindOfClass:[NSData class]]) return NO;
     const uint8_t *bytes = data.bytes;
     NSUInteger length = data.length, i = 0;
     while (i < length) {
@@ -67,10 +91,13 @@ static BOOL RCPingWantsFlash(NSData *data) {
     return NO;
 }
 
-static void RCHandlePing(id protobuf) {
-    NSData *data = [protobuf respondsToSelector:@selector(data)] ? ((id (*)(id, SEL))objc_msgSend)(protobuf, @selector(data)) : nil;
-    uint64_t kind = ([data isKindOfClass:[NSData class]] && RCPingWantsFlash(data)) ? 2 : 1;
-    if (RCArmedState() & kind) atomic_store(&g_quietUntil, [NSDate timeIntervalSinceReferenceDate] + 3.0);
+static void RCHandlePingWithKind(uint64_t kind) {
+    uint64_t armed = RCArmedState();
+    RCLog(@"Ping received from Watch: kind=%llu (1=tap, 2=hold), armed=%llu", kind, armed);
+    if (armed & kind) {
+        atomic_store(&g_quietUntil, [NSDate timeIntervalSinceReferenceDate] + 3.0);
+        RCLog(@"Trigger has actions: sound/flash quieted for 3.0s");
+    }
 
     static int token = NOTIFY_TOKEN_INVALID;
     if (token == NOTIFY_TOKEN_INVALID) notify_register_check(kRCWatchPing, &token);
@@ -78,43 +105,91 @@ static void RCHandlePing(id protobuf) {
     notify_post(kRCWatchPing);
 }
 
+static void RCHandlePing(id protobuf) {
+    NSData *data = [protobuf respondsToSelector:@selector(data)] ? ((id (*)(id, SEL))objc_msgSend)(protobuf, @selector(data)) : nil;
+    uint64_t kind = ([data isKindOfClass:[NSData class]] && RCPingWantsFlash(data)) ? 2 : 1;
+    RCHandlePingWithKind(kind);
+}
+
 static BOOL RCQuiet(void) {
     return [NSDate timeIntervalSinceReferenceDate] < atomic_load(&g_quietUntil);
 }
 
-// Replaces a BOOL method with no arguments: returns YES (done) while quiet, otherwise runs as usual
+// Replaces a method to suppress sound/flash while quiet
 static void RCQuietWhenArmed(Class cls, NSString *name) {
+    if (!cls) return;
     SEL selector = NSSelectorFromString(name);
     Method method = class_getInstanceMethod(cls, selector);
-    if (!method || strcmp(method_getTypeEncoding(method) ?: "", "B16@0:8") != 0) return;
-    IMP previous = method_getImplementation(method);
-    method_setImplementation(method, imp_implementationWithBlock(^BOOL(id receiver) {
-        if (RCQuiet()) return YES;
-        return ((BOOL (*)(id, SEL))previous)(receiver, selector);
-    }));
+    if (!method) return;
+    const char *encoding = method_getTypeEncoding(method) ?: "";
+    if (strcmp(encoding, "B16@0:8") == 0) {
+        IMP previous = method_getImplementation(method);
+        method_setImplementation(method, imp_implementationWithBlock(^BOOL(id receiver) {
+            if (RCQuiet()) {
+                RCLog(@"Silenced sound method: %@", name);
+                return YES;
+            }
+            return ((BOOL (*)(id, SEL))previous)(receiver, selector);
+        }));
+    } else if (strcmp(encoding, "v16@0:8") == 0) {
+        IMP previous = method_getImplementation(method);
+        method_setImplementation(method, imp_implementationWithBlock(^(id receiver) {
+            if (RCQuiet()) {
+                RCLog(@"Silenced flash method: %@", name);
+                return;
+            }
+            ((void (*)(id, SEL))previous)(receiver, selector);
+        }));
+    }
 }
 
 __attribute__((constructor)) static void RCWatchPingStart(void) {
     @autoreleasepool {
         Class remote = objc_getClass("NFMRemoteFindLocally");
-        Class player = objc_getClass("NFMPlayCommands");
-        SEL ping = NSSelectorFromString(@"playSound:");
-        Method pingMethod = remote ? class_getInstanceMethod(remote, ping) : NULL;
-        if (!pingMethod || !player || strcmp(method_getTypeEncoding(pingMethod) ?: "", "v24@0:8@16") != 0) {
-            os_log(OS_LOG_DEFAULT, "[RemoteCompanion] companionfindlocallyd: Ping iPhone not found on this iOS");
+        if (!remote) {
+            RCLog(@"companionfindlocallyd: NFMRemoteFindLocally not found on this iOS");
             return;
         }
 
-        // Sound and flash: skipped while quiet, before the ping is handled (it plays on its own queue)
-        for (NSString *name in @[@"playFindLocallySound", @"playSoundAndFlash", @"flashLEDIfAppropriate", @"flashLights"]) {
+        // On iOS 17, sound/flash player was moved to NFMPlayCommands. On iOS 14-15, it is on NFMRemoteFindLocally itself.
+        Class player = objc_getClass("NFMPlayCommands") ?: remote;
+
+        // Sound and flash methods (with/without leading underscore, BOOL or void)
+        for (NSString *name in @[
+            @"playFindLocallySound", @"_playFindLocallySound",
+            @"playSoundAndFlash", @"_playSoundAndFlash",
+            @"flashLEDIfAppropriate", @"flashLights", @"flashLED"
+        ]) {
             RCQuietWhenArmed(player, name);
+            if (player != remote) {
+                RCQuietWhenArmed(remote, name);
+            }
         }
 
-        IMP previous = method_getImplementation(pingMethod);
-        method_setImplementation(pingMethod, imp_implementationWithBlock(^(id receiver, id protobuf) {
-            @try { RCHandlePing(protobuf); } @catch (NSException *e) {}
-            ((void (*)(id, SEL, id))previous)(receiver, ping, protobuf);
-        }));
-        os_log(OS_LOG_DEFAULT, "[RemoteCompanion] companionfindlocallyd: Ping iPhone hooked");
+        // Hook playSound: (tap on all iOS, and hold with protobuf flash flag on iOS 17)
+        SEL ping = NSSelectorFromString(@"playSound:");
+        Method pingMethod = class_getInstanceMethod(remote, ping);
+        if (pingMethod) {
+            IMP previous = method_getImplementation(pingMethod);
+            method_setImplementation(pingMethod, imp_implementationWithBlock(^(id receiver, id protobuf) {
+                @try { RCHandlePing(protobuf); } @catch (NSException *e) {}
+                ((void (*)(id, SEL, id))previous)(receiver, ping, protobuf);
+            }));
+            RCLog(@"companionfindlocallyd: playSound: hooked");
+        }
+
+        // Hook playSoundAndFlash: (hold on iOS 14-15)
+        SEL pingFlash = NSSelectorFromString(@"playSoundAndFlash:");
+        Method pingFlashMethod = class_getInstanceMethod(remote, pingFlash);
+        if (pingFlashMethod) {
+            IMP previousFlash = method_getImplementation(pingFlashMethod);
+            method_setImplementation(pingFlashMethod, imp_implementationWithBlock(^(id receiver, id protobuf) {
+                @try { RCHandlePingWithKind(2); } @catch (NSException *e) {}
+                ((void (*)(id, SEL, id))previousFlash)(receiver, pingFlash, protobuf);
+            }));
+            RCLog(@"companionfindlocallyd: playSoundAndFlash: hooked");
+        }
+
+        RCLog(@"companionfindlocallyd: Ping iPhone hooks installed successfully");
     }
 }
