@@ -498,10 +498,11 @@ If you experience the "Updating Cards" screen or other conflicts with Apple Pay 
 This ensures the tweak does not attempt to access the NFC controller on wake, resolving conflicts with system services.
 
 ### iOS 14 arm64e (A12+) Compatibility
-Due to Pointer Authentication Code (PAC) changes in modern toolchains, iOS 14 on **arm64e (A12 and newer)** devices is currently unsupported and may cause a Safe Mode loop.
-- **Supported**: iOS 14 on A11 and below (iPhone 8/X and older, iPad Air 2, etc.)
-- **Supported**: iOS 15+ on all devices.
-- **Workaround**: If you are on iOS 14 with a newer device, you may need to compile the tweak using **Xcode 15.4** or earlier to ensure correct PAC signatures.
+The tweak ships as fat `arm64 + arm64e` binaries, and the `arm64e` slice is built for ABI v2, which iOS 14 does not accept. On A12 and newer, dyld skips that slice and runs the `arm64` one instead, so iOS 14 is expected to work (reported working on an iPhone 12 / iOS 14.2 / Taurine rootful, not tested on every 14.x pairing).
+- **Supported**: iOS 14 on A11 and below (iPhone 8/X and older, iPad Air 2, etc.).
+- **Expected to work**: iOS 14 on A12 and newer, running as `arm64`.
+- **Native `arm64e`**: iOS 15 and newer.
+- **If it safe-modes on iOS 14**: check the installed dylib still carries both slices (`lipo -archs "/Library/MobileSubstrate/DynamicLibraries/RemoteCommand.dylib"`, `var/jb/` prefixed on rootless). A self-built `arm64e`-only binary will not load there.
 
 </details>
 

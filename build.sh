@@ -137,6 +137,24 @@ else
     build_scheme "$SCHEME"
 fi
 
+# Every dylib and helper tool must keep an arm64 slice: the arm64e slice is
+# ABI v2, so iOS 14 arm64e devices only load the arm64 fallback.
+verify_arch() {
+    echo "🔎 Verifying arch slices..."
+    local bad=0 f archs
+    while IFS= read -r f; do
+        case "$f" in */RemoteCompanion.app/RemoteCompanion|*/rc-root) continue;; esac
+        archs=$(lipo -archs "$f" 2>/dev/null) || continue
+        case " $archs " in
+            *" arm64 "*) ;;
+            *) echo "❌ ${f#Tweak/.theos/_/} has no arm64 slice (iOS 14 arm64e fallback lost)"; bad=1 ;;
+        esac
+    done < <(find Tweak/.theos/_ -type f \( -name "*.dylib" -o -name "rc-client" \))
+    [ "$bad" -eq 0 ] || exit 1
+}
+
+verify_arch
+
 echo ""
 echo "✅ Build Complete! Packages are located in Tweak/packages/:"
 ls -lh Tweak/packages/*"${VERSION}"*.deb 2>/dev/null || ls -lh Tweak/packages/*.deb 2>/dev/null || echo "No .deb files found in Tweak/packages/"

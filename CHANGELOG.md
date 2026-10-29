@@ -20,6 +20,7 @@ All notable changes to this project will be documented in this file.
 - **Unlock Device security**: Removed hardcoded fallback PIN, redacted passcodes from command logs, hex dumps, and HTTP API responses, masked passcodes in iOS action list and edit dialogs (`RCActionsViewController`), masked passcodes in the Web UI trigger lists and action sequences (`rc_webui.html`), added secure passcode configuration with wake fallback, and prevented lockout attempts when no passcode is configured (#41).
 
 ### Changed
+- **iOS 14 arm64e docs corrected**: the troubleshooting section and package description no longer claim iOS 14 on A12+ is unsupported. The `arm64e` slice is ABI v2 (iOS 15+), so iOS 14 runs the `arm64` slice, which is what makes A12 and newer work there. `build.sh` now fails if a packaged dylib or `rc-client` loses its `arm64` slice, so that fallback can't silently regress.
 - **Settings reorganization**: slim root (General, Buttons, Integrations, Advanced Settings, Backup & Diagnostics) with button timing in Buttons, NFC/Banners/Wrap Long Names/Web UI/Logging in Advanced Settings, and Export/Import/Test Kit in Backup & Diagnostics.
 - **Backup & Diagnostics dissolved into Settings root**: the sub-panel is gone on iOS and Web UI. Diagnostics (Test Kit on iOS, Device Diagnostics & Health on Web) is its own section, and Backup (Export/Import Configuration) sits at the bottom of the main Settings screen.
 
