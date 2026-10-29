@@ -1030,6 +1030,10 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"nfc scanner resume": @"NFC Scanner Resume",
         @"nfc scanner pause": @"NFC Scanner Pause",
         @"nfc scanner toggle": @"NFC Scanner Toggle",
+        @"button triggers pause 15": @"Button Triggers Pause 15 Minutes",
+        @"button triggers pause 60": @"Button Triggers Pause 1 Hour",
+        @"button triggers pause": @"Button Triggers Pause Until Resumed",
+        @"button triggers resume": @"Button Triggers Resume",
         @"location status": @"Location Services Status",
         @"gps on": @"Location Services On",
         @"gps off": @"Location Services Off",
@@ -1556,6 +1560,10 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
         @"nfc scanner resume": @"wave.3.right",
         @"nfc scanner pause": @"wave.3.right",
         @"nfc scanner toggle": @"wave.3.right",
+        @"button triggers pause 15": @"pause.circle",
+        @"button triggers pause 60": @"pause.circle",
+        @"button triggers pause": @"pause.circle",
+        @"button triggers resume": @"play.circle",
         @"location status": @"location.circle",
         @"gps on": @"location.fill",
         @"gps off": @"location.slash",
@@ -1840,6 +1848,15 @@ NSString *const RCConfigChangedNotification = @"RCConfigChangedNotification";
             @"prefixes": @[@"nfc scanner "],
             @"suffixes": @[@"resume", @"pause", @"toggle"],
             @"displaySuffixes": @[@"Resume", @"Pause", @"Toggle"]
+        },
+        @{
+            // No toggle: while paused, a button can't run the resume
+            @"key": @"buttontriggers",
+            @"name": @"Button Triggers",
+            @"icon": @"pause.circle",
+            @"prefixes": @[@"button triggers "],
+            @"suffixes": @[@"pause 15", @"pause 60", @"pause", @"resume"],
+            @"displaySuffixes": @[@"Pause 15 Minutes", @"Pause 1 Hour", @"Pause Until Resumed", @"Resume"]
         },
         @{
             @"key": @"appearance",

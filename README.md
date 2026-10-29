@@ -476,6 +476,26 @@ Execution URLs for your specific triggers:
 
 </details>
 
+<details>
+<summary><b>Pausing Button Triggers</b></summary>
+
+The **Button Triggers** action pauses the hardware button, Touch ID, ringer switch and screen gesture triggers for 15 minutes, an hour, or until resumed. While paused those buttons and gestures work as without RemoteCompanion; event triggers (NFC tags, Wi-Fi, Bluetooth, schedules, notifications, apps) still run. The app shows the pause above its title, with Resume. A paused button can't resume itself, so resume from the app, an NFC tag or another event trigger, the Web UI or a shortcut (`button triggers resume`).
+
+Commands: `button triggers pause [minutes]`, `button triggers resume`, and `button triggers` for the state.
+
+A tweak that needs the buttons to itself for a while (an alarm, for one) can pause them the same way by setting the state of the Darwin notification `com.pizzaman.rc.pause_triggers` to 1, and back to 0 when it's done:
+
+```objc
+int token;
+notify_register_check("com.pizzaman.rc.pause_triggers", &token);
+notify_set_state(token, 1);   // pause; 0 resumes
+notify_post("com.pizzaman.rc.pause_triggers");
+```
+
+A pause from a tweak left on for 4 hours ends by itself.
+
+</details>
+
 ---
 
 ## Security
