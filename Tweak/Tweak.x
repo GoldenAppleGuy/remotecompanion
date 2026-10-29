@@ -2118,6 +2118,8 @@ static NSString *get_human_name_for_trigger(NSString *key, NSDictionary *trigger
             @"trigger_ringer_mute": @"Ringer Muted",
             @"trigger_ringer_unmute": @"Ringer Unmuted",
             @"trigger_ringer_toggle": @"Ringer Toggled",
+            @"trigger_watch_ping": @"Ping iPhone",
+            @"trigger_watch_ping_hold": @"Ping iPhone (Hold)",
             @"trigger_bottombar_swipe_left": @"Bottom Bar Swipe Left",
             @"trigger_bottombar_swipe_right": @"Bottom Bar Swipe Right",
             @"trigger_bottom_swipe_up_left": @"Bottom Swipe Up (Left)",
@@ -2217,6 +2219,44 @@ static void start_mqtt_subscriber();
 static void stop_mqtt_subscriber();
 
 void RCNFCConfigChanged(void);
+
+// Watch Ping triggers: Ping iPhone on a paired Apple Watch, tap or press and hold (see RCWatchPing.m,
+// loaded into companionfindlocallyd). The armed state tells it which ping has actions, so the phone
+// skips the sound and flash for that one; without actions, or with the trigger's keepDefault set,
+// Ping iPhone works as usual.
+#define kRCWatchPingArmed "com.pizzaman.rc.watch_ping_armed"
+#define kRCWatchPing      "com.pizzaman.rc.watch_ping"
+void RCExecuteTrigger(NSString *triggerKey);
+
+static BOOL rc_watch_ping_quiets(NSString *key) {
+    if (![g_triggerConfig[@"masterEnabled"] boolValue]) return NO;
+    NSDictionary *triggers = g_triggerConfig[@"triggers"];
+    NSDictionary *trigger = [triggers isKindOfClass:[NSDictionary class]] ? triggers[key] : nil;
+    if (![trigger isKindOfClass:[NSDictionary class]] || ![trigger[@"enabled"] boolValue]) return NO;
+    if ([trigger[@"keepDefault"] boolValue]) return NO; // keepDefault (Keep Default Action): the phone pings as usual
+    NSArray *actions = trigger[@"actions"];
+    return [actions isKindOfClass:[NSArray class]] && actions.count > 0;
+}
+
+static void RCWatchPingConfigChanged(void) {
+    static int token = NOTIFY_TOKEN_INVALID;
+    if (token == NOTIFY_TOKEN_INVALID && notify_register_check(kRCWatchPingArmed, &token) != NOTIFY_STATUS_OK) return;
+    uint64_t armed = (rc_watch_ping_quiets(@"trigger_watch_ping") ? 1 : 0) |
+                     (rc_watch_ping_quiets(@"trigger_watch_ping_hold") ? 2 : 0);
+    notify_set_state(token, armed);
+}
+
+static void rc_watch_ping_received(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    static int token = NOTIFY_TOKEN_INVALID;
+    if (token == NOTIFY_TOKEN_INVALID && notify_register_check(kRCWatchPing, &token) != NOTIFY_STATUS_OK) return;
+    uint64_t kind = 0;
+    notify_get_state(token, &kind);
+    NSString *key = kind == 2 ? @"trigger_watch_ping_hold" : @"trigger_watch_ping";
+    dispatch_async(dispatch_get_main_queue(), ^{
+        SRLog(@"[WatchPing] %@ from the Apple Watch", kind == 2 ? @"Press and hold" : @"Tap");
+        RCExecuteTrigger(key);
+    });
+}
 NSString *RCNFCScannerCommand(NSString *what);
 
 static void config_changed_callback(CFNotificationCenterRef center, void *observer,
@@ -2233,6 +2273,7 @@ static void config_changed_callback(CFNotificationCenterRef center, void *observ
             SRLog(@"Simulation observers updated. Updating edge gestures...");
             update_edge_gestures(); 
             RCNFCConfigChanged();
+            RCWatchPingConfigChanged();
             SRLog(@"Edge gestures updated. Checking schedule timer...");
             start_schedule_timer();
             SRLog(@"Checking MQTT subscriber...");
@@ -4416,6 +4457,12 @@ static void register_system_event_observers() {
                                     CFSTR("com.apple.springboard.hasBlankedScreen"),
                                     NULL,
                                     CFNotificationSuspensionBehaviorDeliverImmediately);
+
+    // Watch Ping triggers (see RCWatchPingConfigChanged)
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, rc_watch_ping_received,
+                                    CFSTR(kRCWatchPing), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+    if (!g_triggerConfig) load_trigger_config();
+    RCWatchPingConfigChanged();
 
     // Media State changes (Darwin Notifications)
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), 

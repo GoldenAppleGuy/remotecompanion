@@ -19,7 +19,7 @@ THEOS_PACKAGE_SCHEME ?= rootless
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = RemoteCommand RCShortcutsHelper RCNFCReader
+TWEAK_NAME = RemoteCommand RCShortcutsHelper RCNFCReader RCWatchPing
 
 # Lua source files
 LUA_FILES = $(wildcard lua/*.c)
@@ -39,6 +39,11 @@ RCShortcutsHelper_CFLAGS = -fno-objc-arc
 # see RCNFCReader.m)
 RCNFCReader_FILES = RCNFCReader.m
 RCNFCReader_CFLAGS = -fobjc-arc
+
+# Loaded into companionfindlocallyd, where it passes Ping iPhone from an Apple Watch to SpringBoard
+# (Watch Ping triggers, see RCWatchPing.m)
+RCWatchPing_FILES = RCWatchPing.m
+RCWatchPing_CFLAGS = -fobjc-arc
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 

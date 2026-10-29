@@ -56,6 +56,10 @@
     if ([triggerKey containsString:@"statusbar"]) return @"hand.draw"; // Status bar / screen gestures
     if ([triggerKey containsString:@"home"]) return @"circle.circle"; // Home button
     if ([triggerKey containsString:@"ringer"]) return @"bell.fill";
+    if ([triggerKey hasPrefix:@"trigger_watch_ping"]) {
+        if (@available(iOS 14.0, *)) return @"applewatch.radiowaves.left.and.right";
+        return @"bell.fill";
+    }
     if ([triggerKey containsString:@"edge"]) {
         if (@available(iOS 14.2, *)) return @"iphone.homebutton.radiowaves.left.and.right";
         return @"hand.draw";
@@ -339,6 +343,7 @@
         addSection(@[@"trigger_home_double_click", @"trigger_home_triple_click", @"trigger_home_quadruple_click", @"trigger_home_hold", @"trigger_home_power", @"touchid_tap", @"touchid_hold"], @"Home Button", NO);
     }
     addSection(@[@"trigger_ringer_mute", @"trigger_ringer_unmute", @"trigger_ringer_toggle"], @"Ringer Switch", NO);
+    addSection(@[@"trigger_watch_ping", @"trigger_watch_ping_hold"], @"Apple Watch", NO);
     // Device State Section (Only show if configured, hide if empty)
     NSMutableArray *deviceStateKeys = [NSMutableArray array];
     NSArray *configuredKeys = [[RCConfigManager sharedManager] allConfiguredTriggerKeys];
