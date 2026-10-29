@@ -317,10 +317,10 @@ static id g_actionClipboard = nil;
 
     NSMutableArray *menuActions = [NSMutableArray arrayWithObject:whenFired];
     // Triggers that take over what iOS normally does can keep it as well: the ping sound, and with a
-    // Home button the Accessibility Shortcut and App Switcher, otherwise Siri, the Accessibility
-    // Shortcut, a screenshot and Wallet
+    // Home button the Accessibility Shortcut, App Switcher, Siri and screenshot, otherwise Siri, the
+    // Accessibility Shortcut, a screenshot and Wallet
     NSArray *keepsDefault = [RCConfigManager hasHomeButton]
-        ? @[@"trigger_watch_ping", @"trigger_watch_ping_hold", @"trigger_home_triple_click", @"trigger_home_double_click"]
+        ? @[@"trigger_watch_ping", @"trigger_watch_ping_hold", @"trigger_home_triple_click", @"trigger_home_double_click", @"trigger_home_hold", @"trigger_home_power"]
         : @[@"trigger_watch_ping", @"trigger_watch_ping_hold", @"power_long_press", @"power_triple_click", @"power_volume_up", @"power_double_tap"];
     if ([keepsDefault containsObject:_triggerKey]) {
         BOOL keep = [[[RCConfigManager sharedManager] triggerDataForKey:_triggerKey][@"keepDefault"] boolValue];
