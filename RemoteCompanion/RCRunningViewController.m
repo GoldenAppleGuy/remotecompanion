@@ -13,6 +13,8 @@
 @property (nonatomic, assign) int notifyToken;
 @property (nonatomic, copy) NSString *filterKey;
 @property (nonatomic, strong) UIBarButtonItem *stopAllItem;
+@property (nonatomic, assign) BOOL swiping; // a row's swipe actions are open: no redraw until it closes
+@property (nonatomic, assign) BOOL redrawPending;
 @property (nonatomic, strong) NSArray<NSDictionary *> *recentRuns; // the last runs that ended, from Run History
 @end
 
@@ -96,9 +98,25 @@ static const NSInteger kRCRecentRunsShown = 5;
             strongSelf.runs = all;
             // Stop All only while there's something to stop (not a greyed button that can still be tapped)
             strongSelf.navigationItem.rightBarButtonItem = strongSelf.runs.count ? strongSelf.stopAllItem : nil;
-            [strongSelf.tableView reloadData];
+            [strongSelf redraw];
         });
     }];
+}
+
+// The once-a-second redraw would close a swiped-open row (its Stop or Delete), so it waits
+- (void)redraw {
+    if (self.swiping) { self.redrawPending = YES; return; }
+    self.redrawPending = NO;
+    [self.tableView reloadData];
+}
+
+- (void)tableView:(UITableView *)tableView willBeginEditingRowAtIndexPath:(NSIndexPath *)indexPath {
+    self.swiping = YES;
+}
+
+- (void)tableView:(UITableView *)tableView didEndEditingRowAtIndexPath:(NSIndexPath *)indexPath {
+    self.swiping = NO;
+    if (self.redrawPending) [self redraw];
 }
 
 // The last runs that ended (this trigger's, on its own page), newest first
@@ -114,7 +132,7 @@ static const NSInteger kRCRecentRunsShown = 5;
             NSArray *recent = [runs isKindOfClass:[NSArray class]] ? runs : @[];
             if ((NSInteger)recent.count > kRCRecentRunsShown) recent = [recent subarrayWithRange:NSMakeRange(0, kRCRecentRunsShown)];
             strongSelf.recentRuns = recent;
-            [strongSelf.tableView reloadData];
+            [strongSelf redraw];
         });
     }];
 }
@@ -282,7 +300,20 @@ static const NSInteger kRCRecentRunsShown = 5;
 }
 
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section != RCRunningSectionNow || self.runs.count == 0) return [UISwipeActionsConfiguration configurationWithActions:@[]];
+    if (indexPath.section == RCRunningSectionRecent) {
+        // A recent run: Delete takes it out of Run History
+        if (indexPath.row >= (NSInteger)self.recentRuns.count) return [UISwipeActionsConfiguration configurationWithActions:@[]];
+        NSMutableDictionary *recent = [self.recentRuns[indexPath.row] mutableCopy];
+        if (!recent[@"key"] && self.filterKey) recent[@"key"] = self.filterKey;
+        __weak typeof(self) weakSelf = self;
+        UIContextualAction *delete = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive title:@"Delete" handler:^(UIContextualAction *action, UIView *view, void (^done)(BOOL)) {
+            done(YES);
+            [RCRunHistoryViewController deleteRun:recent completion:^{ [weakSelf refreshRecent]; }];
+        }];
+        delete.image = [UIImage systemImageNamed:@"trash.fill"];
+        return [UISwipeActionsConfiguration configurationWithActions:@[delete]];
+    }
+    if (self.runs.count == 0) return [UISwipeActionsConfiguration configurationWithActions:@[]];
     NSDictionary *run = self.runs[indexPath.row];
     UIContextualAction *stop = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive title:@"Stop" handler:^(UIContextualAction *action, UIView *view, void (^done)(BOOL)) {
         [self stopRun:run];

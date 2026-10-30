@@ -268,6 +268,15 @@
     return detail;
 }
 
++ (void)deleteRun:(NSDictionary *)run completion:(void (^)(void))done {
+    NSString *key = [run[@"key"] isKindOfClass:[NSString class]] ? run[@"key"] : nil;
+    if (!key.length) { if (done) done(); return; }
+    NSString *command = [NSString stringWithFormat:@"delete run history %.6f %@", [run[@"started"] doubleValue], key];
+    [[RCServerClient sharedClient] executeCommand:command completion:^(NSString *output, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{ if (done) done(); });
+    }];
+}
+
 #pragma mark - Rows
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
@@ -319,6 +328,27 @@
 
 - (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
     return self.runs.count > 0;
+}
+
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (!self.runs.count || indexPath.row >= (NSInteger)self.runs.count) return [UISwipeActionsConfiguration configurationWithActions:@[]];
+    NSMutableDictionary *run = [self.runs[indexPath.row] mutableCopy];
+    if (!run[@"key"] && self.triggerKey) run[@"key"] = self.triggerKey;
+    __weak typeof(self) weakSelf = self;
+    UIContextualAction *delete = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive title:@"Delete" handler:^(UIContextualAction *action, UIView *view, void (^done)(BOOL)) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) { done(NO); return; }
+        // Off the list at once; the history catches up
+        NSMutableArray *runs = [strongSelf.runs mutableCopy];
+        [runs removeObjectAtIndex:indexPath.row];
+        strongSelf.runs = runs;
+        if (runs.count) [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
+        else [tableView reloadData];
+        done(YES);
+        [RCRunHistoryViewController deleteRun:run completion:nil];
+    }];
+    delete.image = [UIImage systemImageNamed:@"trash.fill"];
+    return [UISwipeActionsConfiguration configurationWithActions:@[delete]];
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
