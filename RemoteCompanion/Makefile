@@ -25,7 +25,7 @@ RemoteCompanion_FILES += RCCategoryBar.m
 RemoteCompanion_FILES += RCFocusPickerViewController.m
 RemoteCompanion_FILES += RCRunningViewController.m
 RemoteCompanion_FILES += RCRunHistoryViewController.m
-RemoteCompanion_FILES += RCVariablesViewController.m
+RemoteCompanion_FILES += RCVariablesViewController.m RCSetVariableViewController.m
 
 # Reorganized Settings submenus
 RemoteCompanion_FILES += RCAdvancedSettingsViewController.m
