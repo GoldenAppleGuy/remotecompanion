@@ -2119,7 +2119,7 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
 - (void)presentRepeatCountForIndex:(NSInteger)existingIndex {
     BOOL editing = existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)self.actions.count;
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Repeat"
-                                                                   message:@"Runs the actions inside this many times (up to 1,000)."
+                                                                   message:@"Runs the actions inside this many times (up to 1,000). In their text, {round} becomes the round number."
                                                             preferredStyle:UIAlertControllerStyleAlert];
     NSString *current = editing ? [self.actions[existingIndex][@"count"] description] : @"3";
     [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
