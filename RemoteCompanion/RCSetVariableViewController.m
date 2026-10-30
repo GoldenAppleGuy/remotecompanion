@@ -430,7 +430,7 @@ static BOOL RCSetVariableNameValid(NSString *name) {
         if (runItems.count) [children addObject:[UIMenu menuWithTitle:@"This Run" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:runItems]];
         if (savedItems.count) [children addObject:[UIMenu menuWithTitle:@"Saved" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:savedItems]];
         [children addObject:[UIMenu menuWithTitle:@"Repeat" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[item(@"round")]]];
-        ((UIButton *)field.rightView).menu = [UIMenu menuWithTitle:@"Insert Variable" children:children];
+        ((UIButton *)field.rightView).menu = [UIMenu menuWithTitle:@"" children:children];
     }
 }
 
