@@ -188,6 +188,7 @@
     }
     if ([entry[@"cap"] boolValue]) [parts addObject:@"Stopped at the 1,000-round limit"];
     if (entry[@"exit"]) [parts addObject:[entry[@"exit"] integerValue] == 1 ? @"Left the loop" : [NSString stringWithFormat:@"Left the loop %@×", entry[@"exit"]]];
+    if (entry[@"problem"]) [parts addObject:[NSString stringWithFormat:@"Not changed: %@", entry[@"problem"]]];
     if (entry[@"value"]) {
         NSInteger sets = [entry[@"sets"] integerValue];
         NSString *value = [entry[@"value"] description];

@@ -161,6 +161,8 @@ static UIImage *RCGrabberImage(void) {
     return [UIImage systemImageNamed:@"line.3.horizontal"] ?: [UIImage systemImageNamed:@"line.horizontal.3"];
 }
 
+static id RCNumberOrVariable(NSString *text, BOOL decimals);
+
 @implementation RCActionsViewController
 
 static id g_actionClipboard = nil;
@@ -627,7 +629,7 @@ static void RCSetRunWatching(BOOL watching) {
     NSString *prompt = [NSString stringWithFormat:@"%@ for %ld s", [run[@"test"] boolValue] ? @"Testing" : @"Running", (long)seconds];
     NSDictionary *loop = [run[@"loop"] isKindOfClass:[NSDictionary class]] ? run[@"loop"] : nil;
     if (loop) {
-        NSInteger count = [loop[@"repeat"] isKindOfClass:[NSDictionary class]] ? [loop[@"repeat"][@"count"] integerValue] : 0;
+        NSInteger count = loop[@"count"] ? [loop[@"count"] integerValue] : [loop[@"repeat"] isKindOfClass:[NSDictionary class]] ? [loop[@"repeat"][@"count"] integerValue] : 0;
         prompt = count > 0 ? [prompt stringByAppendingFormat:@" · Round %ld of %ld", (long)[loop[@"round"] integerValue], (long)count]
                            : [prompt stringByAppendingFormat:@" · Round %ld", (long)[loop[@"round"] integerValue]];
     }
@@ -1226,12 +1228,12 @@ static void RCSetRunWatching(BOOL watching) {
         } else if ([action isEqualToString:@"__DELAY__"]) {
             // Show alert for delay
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Add Delay" 
-                message:@"Enter delay in seconds" 
+                message:@"Enter delay in seconds, or a variable like {wait}" 
                 preferredStyle:UIAlertControllerStyleAlert];
                 
             [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
                 textField.placeholder = @"1.0";
-                textField.keyboardType = UIKeyboardTypeDecimalPad;
+                textField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
             }];
             
             [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
@@ -1971,17 +1973,20 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         for (NSString *word in @[@"Above", @"Below"]) {
             [direction addAction:[UIAlertAction actionWithTitle:word style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
                 UIAlertController *amount = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"%@ %@", condition[@"title"], word.lowercaseString]
-                                                                                message:@"Percentage (0-100)"
+                                                                                message:@"Percentage (0-100), or a variable like {limit}"
                                                                          preferredStyle:UIAlertControllerStyleAlert];
                 [amount addTextFieldWithConfigurationHandler:^(UITextField *textField) {
                     textField.placeholder = @"50";
-                    textField.keyboardType = UIKeyboardTypeNumberPad;
+                    textField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
                 }];
                 [amount addAction:[UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
-                    NSInteger value = MAX(0, MIN(100, [amount.textFields[0].text integerValue]));
+                    id typed = RCNumberOrVariable(amount.textFields[0].text, NO);
+                    if (!typed) return;
+                    // A variable stays as typed ("ABOVE {limit}"); the tweak fills it in when it checks
+                    NSString *value = [typed isKindOfClass:[NSNumber class]] ? [NSString stringWithFormat:@"%ld", (long)MAX(0, MIN(100, [typed integerValue]))] : typed;
                     [weakSelf applyIfAction:@{ @"type": actionType, @"conditionKey": condition[@"key"], @"conditionTitle": condition[@"title"],
-                                               @"expectedValue": [NSString stringWithFormat:@"%@ %ld", word.uppercaseString, (long)value],
-                                               @"expectedTitle": [NSString stringWithFormat:@"%@ %ld%%", word.lowercaseString, (long)value] }
+                                               @"expectedValue": [NSString stringWithFormat:@"%@ %@", word.uppercaseString, value],
+                                               @"expectedTitle": [NSString stringWithFormat:@"%@ %@%%", word.lowercaseString, value] }
                               existingIndex:existingIndex insertIndex:insertIndex];
                 }]];
                 [amount addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
@@ -2134,21 +2139,22 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
 // Wait Until's time limit, in seconds: for a new Wait Until (then added) or the one at existingIndex
 - (void)presentWaitLimitForAction:(NSDictionary *)waitAction existingIndex:(NSInteger)existingIndex insertIndex:(NSInteger)insertIndex {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Time Limit"
-                                                                   message:@"Seconds to wait at most before the actions go on anyway (up to a day)."
+                                                                   message:@"Seconds to wait at most before the actions go on anyway (up to a day), or a variable like {limit}."
                                                             preferredStyle:UIAlertControllerStyleAlert];
     NSString *current = [waitAction[@"timeout"] description] ?: @"60";
     [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
         textField.placeholder = @"60";
         textField.text = current;
-        textField.keyboardType = UIKeyboardTypeNumberPad;
+        textField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
     }];
     __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
-        NSInteger seconds = MAX(1, MIN(86400, [alert.textFields[0].text integerValue] ?: 60));
+        id seconds = RCNumberOrVariable(alert.textFields[0].text, NO) ?: @60;
+        if ([seconds isKindOfClass:[NSNumber class]]) seconds = @(MAX(1, MIN(86400, [seconds integerValue] ?: 60)));
         NSMutableDictionary *item = [waitAction mutableCopy];
-        item[@"timeout"] = @(seconds);
+        item[@"timeout"] = seconds;
         if (existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)strongSelf.actions.count) {
             strongSelf.actions[existingIndex] = item;
         } else if (insertIndex != NSNotFound && insertIndex >= 0 && insertIndex <= (NSInteger)strongSelf.actions.count) {
@@ -2234,12 +2240,55 @@ static BOOL RCVariableNameIsValid(NSString *name) {
     [self presentViewController:menu animated:YES completion:nil];
 }
 
-// Set Variable: its name and value, kept for every trigger or only for this run. Edits the one at
-// existingIndex, or adds one at the end. draft holds what was typed when a name was refused.
+// Set Variable's kinds: code, menu title, and the fields after the name (placeholder, key in the action)
+static NSArray<NSDictionary *> *RCSetVariableKinds(void) {
+    return @[
+        @{ @"op": @"set", @"title": @"Text or Number", @"fields": @[@[@"Value", @"value"]],
+           @"message": @"The value can include other variables and {round}." },
+        @{ @"op": @"add", @"title": @"Add", @"fields": @[@[@"Number or {variable}", @"value"]],
+           @"message": @"Adds to the variable's number (0 when it isn't set)." },
+        @{ @"op": @"subtract", @"title": @"Subtract", @"fields": @[@[@"Number or {variable}", @"value"]],
+           @"message": @"Subtracts from the variable's number (0 when it isn't set)." },
+        @{ @"op": @"multiply", @"title": @"Multiply", @"fields": @[@[@"Number or {variable}", @"value"]],
+           @"message": @"Multiplies the variable's number." },
+        @{ @"op": @"divide", @"title": @"Divide", @"fields": @[@[@"Number or {variable}", @"value"]],
+           @"message": @"Divides the variable's number. Dividing by 0 leaves it as it is." },
+        @{ @"op": @"round", @"title": @"Round", @"fields": @[@[@"Decimals (0 if empty)", @"value"]],
+           @"message": @"Rounds the variable's number." },
+        @{ @"op": @"random", @"title": @"Random Number", @"fields": @[@[@"From", @"min"], @[@"To", @"max"]],
+           @"message": @"A whole number from From to To, both included. Either can be a {variable}." },
+        @{ @"op": @"command", @"title": @"RC Command Output", @"fields": @[@[@"Command", @"value"]],
+           @"message": @"Keeps the text an RC command returns, e.g. \"wifi status\" gives \"WiFi ON\"." },
+        @{ @"op": @"command_number", @"title": @"Number from RC Command", @"fields": @[@[@"Command", @"value"]],
+           @"message": @"Keeps the first number an RC command returns, e.g. \"volume\" gives 100." },
+    ];
+}
+
+// Set Variable: first its kind, then its fields. Edits the one at existingIndex, or adds one at the end.
 - (void)presentSetVariable:(NSDictionary *)draft existingIndex:(NSInteger)existingIndex {
+    NSString *currentOp = [[draft[@"op"] description] lowercaseString] ?: @"set";
+    UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Set Variable"
+                                                                  message:@"In an action's text, {name} becomes the variable's value."
+                                                           preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    for (NSDictionary *kind in RCSetVariableKinds()) {
+        NSString *title = draft && [kind[@"op"] isEqualToString:currentOp] ? [kind[@"title"] stringByAppendingString:@" ✓"] : kind[@"title"];
+        [menu addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            [weakSelf presentSetVariableFields:draft kind:kind existingIndex:existingIndex];
+        }]];
+    }
+    [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [self configurePopoverSourceForAlert:menu];
+    [self presentViewController:menu animated:YES completion:nil];
+}
+
+// The name and the kind's fields, then Save (kept for all triggers) or This Run Only
+- (void)presentSetVariableFields:(NSDictionary *)draft kind:(NSDictionary *)kind existingIndex:(NSInteger)existingIndex {
     BOOL editing = existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)self.actions.count;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Set Variable"
-                                                                   message:@"In an action's text, {name} becomes the value. A value can include other variables and {round}.\n\nSaved: kept for all triggers.\nThis Run Only: forgotten when the run ends."
+    BOOL sameKind = [[[draft[@"op"] description] lowercaseString] ?: @"set" isEqualToString:kind[@"op"]];
+    NSArray<NSArray<NSString *> *> *fields = kind[@"fields"];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"Set Variable: %@", kind[@"title"]]
+                                                                   message:[kind[@"message"] stringByAppendingString:@"\n\nSave keeps it for all triggers; This Run Only forgets it when the run ends."]
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
         textField.placeholder = @"Name";
@@ -2248,27 +2297,42 @@ static BOOL RCVariableNameIsValid(NSString *name) {
         textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
         textField.spellCheckingType = UITextSpellCheckingTypeNo;
     }];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-        textField.placeholder = @"Value";
-        textField.text = [draft[@"value"] description];
-        textField.autocorrectionType = UITextAutocorrectionTypeNo;
-        textField.spellCheckingType = UITextSpellCheckingTypeNo;
-    }];
+    for (NSArray<NSString *> *field in fields) {
+        [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+            textField.placeholder = field[0];
+            textField.text = sameKind ? [draft[field[1]] description] : nil;
+            textField.autocorrectionType = UITextAutocorrectionTypeNo;
+            textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+            textField.spellCheckingType = UITextSpellCheckingTypeNo;
+            if (![kind[@"op"] isEqualToString:@"set"] && ![kind[@"op"] hasPrefix:@"command"]) textField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+        }];
+    }
     __weak typeof(self) weakSelf = self;
     void (^save)(BOOL) = ^(BOOL runOnly) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
         NSString *name = [alert.textFields[0].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        NSString *value = alert.textFields[1].text ?: @"";
         if (name.length == 0) return; // nothing typed: nothing added or changed
-        NSMutableDictionary *item = [@{ @"type": @"set_variable", @"name": name, @"value": value } mutableCopy];
+        NSMutableDictionary *item = [@{ @"type": @"set_variable", @"name": name, @"value": @"" } mutableCopy];
+        if (![kind[@"op"] isEqualToString:@"set"]) item[@"op"] = kind[@"op"];
+        [fields enumerateObjectsUsingBlock:^(NSArray<NSString *> *field, NSUInteger i, __unused BOOL *stop) {
+            NSString *text = alert.textFields[i + 1].text ?: @"";
+            if (![kind[@"op"] isEqualToString:@"set"]) text = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            item[field[1]] = text;
+        }];
         if (runOnly) item[@"scope"] = @"run";
+        NSString *refusal = nil;
         if (!RCVariableNameIsValid(name)) {
-            UIAlertController *refused = [UIAlertController alertControllerWithTitle:@"Name Not Allowed"
-                                                                             message:@"Use letters, digits and _, without spaces, not starting with a digit. \"round\" is reserved."
-                                                                      preferredStyle:UIAlertControllerStyleAlert];
+            refusal = @"Use letters, digits and _, without spaces, not starting with a digit. \"round\" is reserved.";
+        } else if ([kind[@"op"] isEqualToString:@"random"] && (![item[@"min"] length] || ![item[@"max"] length])) {
+            refusal = @"Enter both From and To.";
+        } else if (fields.count == 1 && ![kind[@"op"] isEqualToString:@"set"] && ![kind[@"op"] isEqualToString:@"round"] && ![item[@"value"] length]) {
+            refusal = [NSString stringWithFormat:@"Enter the %@.", [fields[0][0] lowercaseString]];
+        }
+        if (refusal) {
+            UIAlertController *refused = [UIAlertController alertControllerWithTitle:@"Not Saved" message:refusal preferredStyle:UIAlertControllerStyleAlert];
             [refused addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:^(__unused UIAlertAction *a) {
-                [weakSelf presentSetVariable:item existingIndex:existingIndex];
+                [weakSelf presentSetVariableFields:item kind:kind existingIndex:existingIndex];
             }]];
             [strongSelf presentViewController:refused animated:YES completion:nil];
             return;
@@ -2293,23 +2357,40 @@ static BOOL RCVariableNameIsValid(NSString *name) {
     [self presentViewController:alert animated:YES completion:nil];
 }
 
+// A number typed for a setting, or one variable in braces ("{times}"): what to store, or nil.
+// Whole numbers are stored as numbers, as before.
+static id RCNumberOrVariable(NSString *text, BOOL decimals) {
+    text = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([text hasPrefix:@"{"] && [text hasSuffix:@"}"] && text.length > 2) {
+        return RCVariableNameIsValid([text substringWithRange:NSMakeRange(1, text.length - 2)]) ? text : nil;
+    }
+    NSScanner *scanner = [NSScanner scannerWithString:text];
+    double number = 0;
+    if (![scanner scanDouble:&number] || !scanner.isAtEnd) return nil;
+    return decimals ? @(number) : @((NSInteger)number);
+}
+
 // Repeat: how many times. Edits the Repeat at existingIndex, or adds a Repeat block at the end.
 - (void)presentRepeatCountForIndex:(NSInteger)existingIndex {
     BOOL editing = existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)self.actions.count;
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Repeat"
-                                                                   message:@"Runs the actions inside this many times (up to 1,000). In their text, {round} becomes the round number."
+                                                                   message:@"Runs the actions inside this many times (up to 1,000), or as many as a variable says, like {times}. In their text, {round} becomes the round number."
                                                             preferredStyle:UIAlertControllerStyleAlert];
     NSString *current = editing ? [self.actions[existingIndex][@"count"] description] : @"";
     [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
         textField.placeholder = @"Times";
         textField.text = current;
-        textField.keyboardType = UIKeyboardTypeNumberPad;
+        textField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
     }];
     __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        if ([alert.textFields[0].text integerValue] <= 0) return; // left empty: nothing added or changed
-        NSInteger count = MIN(1000, [alert.textFields[0].text integerValue]);
-        NSDictionary *repeat = @{ @"type": @"repeat", @"count": @(count) };
+        id count = RCNumberOrVariable(alert.textFields[0].text, NO);
+        if (!count) return; // left empty or not a number: nothing added or changed
+        if ([count isKindOfClass:[NSNumber class]]) {
+            if ([count integerValue] <= 0) return;
+            count = @(MIN(1000, [count integerValue]));
+        }
+        NSDictionary *repeat = @{ @"type": @"repeat", @"count": count };
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
         if (editing) {
@@ -2788,13 +2869,13 @@ static BOOL RCVariableNameIsValid(NSString *name) {
         // Edit Delay
         NSString *currentDelay = [currentAction substringFromIndex:6];
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Edit Delay"
-            message:@"Update delay in seconds"
+            message:@"Update delay in seconds, or a variable like {wait}"
             preferredStyle:UIAlertControllerStyleAlert];
 
         [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
             textField.text = currentDelay;
             textField.placeholder = @"1.0";
-            textField.keyboardType = UIKeyboardTypeDecimalPad;
+            textField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
         }];
 
         [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];

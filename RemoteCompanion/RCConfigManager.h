@@ -119,3 +119,7 @@
 extern NSString *const RCConfigChangedNotification;
 
 @end
+
+@interface RCConfigManager (SetVariableText)
++ (NSString *)setVariableText:(NSDictionary *)dict;
+@end

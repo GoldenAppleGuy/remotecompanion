@@ -2853,6 +2853,24 @@ static BOOL rc_number_from_text(NSString *text, double *number) {
     return [scanner scanDouble:number] && scanner.isAtEnd;
 }
 
+// A number for a setting that can be typed as a number or hold variables ("{times}"): a Repeat's
+// count, a Wait Until's time limit. NO when it isn't a number once the variables are filled in.
+static BOOL rc_number_from_setting(id raw, double *number) {
+    if ([raw isKindOfClass:[NSNumber class]]) { *number = [raw doubleValue]; return YES; }
+    if (![raw isKindOfClass:[NSString class]]) return NO;
+    return rc_number_from_text(rc_fill_placeholders(raw), number);
+}
+
+// A result as text: whole numbers without a decimal point, others without trailing zeros
+static NSString *rc_number_text(double number) {
+    if (isnan(number) || isinf(number)) return @"0";
+    if (fabs(number) < 1e15 && number == floor(number)) return [NSString stringWithFormat:@"%lld", (long long)number];
+    NSString *text = [NSString stringWithFormat:@"%.10f", number];
+    while ([text hasSuffix:@"0"]) text = [text substringToIndex:text.length - 1];
+    if ([text hasSuffix:@"."]) text = [text substringToIndex:text.length - 1];
+    return text;
+}
+
 // The Variable condition: { conditionKey: "variable", variable, comparison, expectedValue }.
 // comparison: is (the default), is_not, contains, above, below, empty (not set or no text),
 // not_empty. Text compares without regard to case; two numbers compare as numbers ("5" is "5.0").
@@ -2883,6 +2901,15 @@ static NSString *rc_condition_log_text(NSDictionary *condition) {
 static BOOL rc_evaluate_if_condition(NSDictionary *ifAction) {
     if (![ifAction isKindOfClass:[NSDictionary class]]) return NO;
     if ([[ifAction[@"conditionKey"] description] isEqualToString:@"variable"]) return rc_variable_condition_matches(ifAction);
+    // Variables in any other condition's value: Battery Level above {limit}, Wi-Fi Network {home}
+    for (NSString *field in @[@"expectedValue", @"expected", @"expectedLabel"]) {
+        id raw = ifAction[field];
+        if ([raw isKindOfClass:[NSString class]] && [raw rangeOfString:@"{"].location != NSNotFound) {
+            NSMutableDictionary *filled = [ifAction mutableCopy];
+            filled[field] = rc_fill_placeholders(raw);
+            ifAction = filled;
+        }
+    }
     
     NSString *conditionKey = ifAction[@"conditionKey"] ?: ifAction[@"conditionName"];
     NSString *expectedValue = rc_trimmed_uppercase_string(ifAction[@"expectedValue"] ?: ifAction[@"expected"] ?: ifAction[@"expectedLabel"]);
@@ -3523,6 +3550,53 @@ static BOOL rc_run_wait(double seconds) {
 
 static BOOL rc_evaluate_if_condition(NSDictionary *ifAction);
 
+// Set Variable's kinds ("op"): the new value, or nil with *problem saying why it's left as it was.
+//   set (the default): value as typed.  add, subtract, multiply, divide: the variable's number
+//   (0 when not set) with value.  round: to value decimal places (0 if empty).  random: a whole
+//   number from min to max, both included.  command: what the RC command in value returns;
+//   command_number: the first number in it.
+static NSString *rc_variable_operation(NSString *op, NSString *name, NSString *value, NSDictionary *action, NSString **problem) {
+    if ([op isEqualToString:@"set"] || op.length == 0) return value;
+    if ([op isEqualToString:@"command"] || [op isEqualToString:@"command_number"]) {
+        if (!value.length) { *problem = @"no command"; return nil; }
+        NSString *output = [handle_command(value) stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] ?: @"";
+        if ([op isEqualToString:@"command"]) return output;
+        // command_number: the first number in it ("Volume: 100%" -> 100)
+        NSRange number = [output rangeOfString:@"-?[0-9]+(\\.[0-9]+)?" options:NSRegularExpressionSearch];
+        if (number.location == NSNotFound) { *problem = [NSString stringWithFormat:@"no number in '%@'", output]; return nil; }
+        return [output substringWithRange:number];
+    }
+    if ([op isEqualToString:@"random"]) {
+        double low = 0, high = 0;
+        if (!rc_number_from_setting(action[@"min"], &low) || !rc_number_from_setting(action[@"max"], &high)) { *problem = @"From or To isn't a number"; return nil; }
+        long long a = (long long)ceil(MIN(low, high)), b = (long long)floor(MAX(low, high));
+        if (b < a) { *problem = @"no whole number in that range"; return nil; }
+        unsigned long long span = (unsigned long long)(b - a) + 1;
+        unsigned long long pick = span > UINT32_MAX ? (((unsigned long long)arc4random() << 32) | arc4random()) % span : arc4random_uniform((uint32_t)span);
+        return [NSString stringWithFormat:@"%lld", a + (long long)pick];
+    }
+    double current = 0;
+    NSString *now = rc_variable_get(name);
+    if (now.length && !rc_number_from_text(now, &current)) { *problem = [NSString stringWithFormat:@"its value '%@' isn't a number", now]; return nil; }
+    if ([op isEqualToString:@"round"]) {
+        double places = 0;
+        if (value.length && !rc_number_from_text(value, &places)) { *problem = @"decimal places isn't a number"; return nil; }
+        double scale = pow(10, MAX(0, MIN(10, floor(places))));
+        return rc_number_text(round(current * scale) / scale);
+    }
+    double amount = 0;
+    if (!rc_number_from_text(value, &amount)) { *problem = [NSString stringWithFormat:@"'%@' isn't a number", value]; return nil; }
+    if ([op isEqualToString:@"add"]) return rc_number_text(current + amount);
+    if ([op isEqualToString:@"subtract"]) return rc_number_text(current - amount);
+    if ([op isEqualToString:@"multiply"]) return rc_number_text(current * amount);
+    if ([op isEqualToString:@"divide"]) {
+        if (amount == 0) { *problem = @"division by zero"; return nil; }
+        return rc_number_text(current / amount);
+    }
+    *problem = [NSString stringWithFormat:@"unknown kind '%@'", op];
+    return nil;
+}
+
 static void rc_execute_action_sequence_body(NSArray *actions, NSString *triggerKey, BOOL simulationMode, NSMutableArray<NSMutableDictionary *> *loops);
 
 // Runs actions on this thread. The thread holds the loops going (for {round}) and the run's own
@@ -3558,7 +3632,7 @@ static void rc_execute_action_sequence_body(NSArray *actions, NSString *triggerK
         }
         if (!rc_is_end_repeat_action_item(actionItem) && !rc_is_repeat_action_item(actionItem)) {
             NSDictionary *loop = loops.lastObject;
-            rc_run_note_step(actionItem, idx, loop ? @{ @"repeat": actions[[loop[@"start"] integerValue]], @"round": loop[@"rounds"] } : nil);
+            rc_run_note_step(actionItem, idx, loop ? @{ @"repeat": actions[[loop[@"start"] integerValue]], @"round": loop[@"rounds"], @"count": loop[@"count"] ?: @0 } : nil);
         }
         
         if ([actionItem isKindOfClass:[NSString class]]) {
@@ -3647,12 +3721,20 @@ static void rc_execute_action_sequence_body(NSArray *actions, NSString *triggerK
         } else if ([type isEqualToString:@"repeat"] || [type isEqualToString:@"repeat_while"]) {
             BOOL isWhile = [type isEqualToString:@"repeat_while"];
             BOOL enter;
+            NSInteger count = 0;
             if (isWhile) {
                 enter = rc_evaluate_if_condition(dictAction);
                 SRLogMin(@"[%@] Repeat While %@ -> %@", triggerKey, rc_condition_log_text(dictAction), enter ? @"TRUE" : @"FALSE");
             } else {
-                enter = [dictAction[@"count"] integerValue] > 0;
-                SRLogMin(@"[%@] Repeat %ld times", triggerKey, (long)[dictAction[@"count"] integerValue]);
+                // The count can be a variable ("{times}"), read when the loop starts
+                double number = 0;
+                if (!rc_number_from_setting(dictAction[@"count"], &number)) {
+                    SRLogMin(@"[%@] Repeat count '%@' isn't a number - the loop is skipped", triggerKey, dictAction[@"count"]);
+                    number = 0;
+                }
+                count = (NSInteger)MAX(0, MIN(RC_REPEAT_MAX_ROUNDS, floor(number)));
+                enter = count > 0;
+                SRLogMin(@"[%@] Repeat %ld times", triggerKey, (long)count);
             }
             if (!enter) {
                 rc_run_trace(idx, @"rounds", @0);
@@ -3664,8 +3746,8 @@ static void rc_execute_action_sequence_body(NSArray *actions, NSString *triggerK
                 idx = end;
                 continue;
             }
-            [loops addObject:[@{ @"start": @(idx), @"rounds": @1, @"roundStart": @(CFAbsoluteTimeGetCurrent()) } mutableCopy]];
-            rc_run_note_step(dictAction, idx, @{ @"repeat": dictAction, @"round": @1 });
+            [loops addObject:[@{ @"start": @(idx), @"rounds": @1, @"roundStart": @(CFAbsoluteTimeGetCurrent()), @"count": @(count) } mutableCopy]];
+            rc_run_note_step(dictAction, idx, @{ @"repeat": dictAction, @"round": @1, @"count": @(count) });
         } else if ([type isEqualToString:@"exit_repeat"]) {
             // Exit Repeat: leave the innermost loop now, after its End Repeat
             NSMutableDictionary *loop = loops.lastObject;
@@ -3684,8 +3766,8 @@ static void rc_execute_action_sequence_body(NSArray *actions, NSString *triggerK
         } else if ([type isEqualToString:@"wait_until"]) {
             // Wait Until: until the condition (as for If) is true, checked twice a second, for at most
             // its time limit; then the actions go on either way
-            double limit = [dictAction[@"timeout"] doubleValue];
-            if (limit <= 0) limit = 60;
+            double limit = 0;
+            if (!rc_number_from_setting(dictAction[@"timeout"], &limit) || limit <= 0) limit = 60; // can be a variable
             limit = MIN(limit, 24 * 3600);
             CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
             BOOL met = rc_evaluate_if_condition(dictAction);
@@ -3708,6 +3790,14 @@ static void rc_execute_action_sequence_body(NSArray *actions, NSString *triggerK
             }
             NSString *value = rc_fill_placeholders([dictAction[@"value"] description] ?: @"");
             BOOL runOnly = [[dictAction[@"scope"] description] isEqualToString:@"run"];
+            NSString *op = [[dictAction[@"op"] description] lowercaseString] ?: @"set";
+            NSString *problem = nil;
+            value = rc_variable_operation(op, name, value, dictAction, &problem);
+            if (!value) {
+                SRLogMin(@"[%@] Set Variable %@ (%@): %@ - unchanged", triggerKey, name, op, problem);
+                rc_run_trace(idx, @"problem", problem);
+                continue;
+            }
             rc_variable_set(name, value, runOnly);
             rc_run_trace(idx, @"sets", nil);
             rc_run_trace(idx, @"value", value.length > 200 ? [[value substringToIndex:200] stringByAppendingString:@"…"] : value);
@@ -3719,7 +3809,7 @@ static void rc_execute_action_sequence_body(NSArray *actions, NSString *triggerK
             NSDictionary *repeat = actions[start];
             NSInteger rounds = [loop[@"rounds"] integerValue];
             BOOL isWhile = [[[repeat[@"type"] description] lowercaseString] isEqualToString:@"repeat_while"];
-            BOOL again = isWhile ? YES : rounds < [repeat[@"count"] integerValue];
+            BOOL again = isWhile ? YES : rounds < [loop[@"count"] integerValue];
             if (again && rounds >= RC_REPEAT_MAX_ROUNDS) {
                 SRLogMin(@"[%@] Repeat stopped after %d rounds (the most a loop runs)", triggerKey, RC_REPEAT_MAX_ROUNDS);
                 rc_run_trace(start, @"cap", @YES);
@@ -3735,7 +3825,7 @@ static void rc_execute_action_sequence_body(NSArray *actions, NSString *triggerK
                 loop[@"rounds"] = @(rounds + 1);
                 loop[@"roundStart"] = @(CFAbsoluteTimeGetCurrent());
                 idx = start; // the loop's next step is the block's first action
-                rc_run_note_step(repeat, start, @{ @"repeat": repeat, @"round": @(rounds + 1) });
+                rc_run_note_step(repeat, start, @{ @"repeat": repeat, @"round": @(rounds + 1), @"count": loop[@"count"] ?: @0 });
             } else {
                 SRLogMin(@"[%@] %@ ended after %ld round%@", triggerKey, isWhile ? @"Repeat While" : @"Repeat", (long)rounds, rounds == 1 ? @"" : @"s");
                 rc_run_trace(start, @"rounds", @(rounds));
@@ -10717,7 +10807,7 @@ static NSString *handle_command(NSString *cmd) {
         return rc_handle_snapper(arg);
     } else if ([cleanCmd isEqualToString:@"var"] || [cleanCmd hasPrefix:@"var "]) {
         // Variables: "var list" (JSON of the saved ones), "var get <name>", "var set <name> <text>",
-        // "var delete <name>", "var clear"
+        // "var add <name> <number>", "var delete <name>", "var clear"
         NSString *rest = cleanCmd.length > 4 ? [[cleanCmd substringFromIndex:4] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] : @"";
         NSRange space = [rest rangeOfString:@" "];
         NSString *verb = (space.location == NSNotFound ? rest : [rest substringToIndex:space.location]).lowercaseString;
@@ -10737,6 +10827,14 @@ static NSString *handle_command(NSString *cmd) {
             NSString *value = argSpace.location == NSNotFound ? @"" : [args substringFromIndex:argSpace.location + 1];
             rc_variable_set(name, value, NO);
             return [NSString stringWithFormat:@"%@ = %@\n", name, value];
+        } else if ([verb isEqualToString:@"add"]) {
+            // "var add count 1" (or -1): a number added to the variable's (0 when not set)
+            if (!rc_variable_name_valid(name)) return @"Usage: var add <name> <number>\n";
+            NSString *problem = nil;
+            NSString *value = rc_variable_operation(@"add", name, argSpace.location == NSNotFound ? @"" : [args substringFromIndex:argSpace.location + 1], nil, &problem);
+            if (!value) return [NSString stringWithFormat:@"Not changed: %@\n", problem];
+            rc_variable_set(name, value, NO);
+            return [NSString stringWithFormat:@"%@ = %@\n", name, value];
         } else if ([verb isEqualToString:@"delete"]) {
             return rc_variable_delete(name) ? @"Variable deleted\n" : @"No such variable\n";
         } else if ([verb isEqualToString:@"clear"]) {
@@ -10744,7 +10842,7 @@ static NSString *handle_command(NSString *cmd) {
             rc_variables_save_soon();
             return @"Variables cleared\n";
         }
-        return @"Usage: var list | get <name> | set <name> <text> | delete <name> | clear\n";
+        return @"Usage: var list | get <name> | set <name> <text> | add <name> <number> | delete <name> | clear\n";
     } else if ([cleanCmd isEqualToString:@"run history"] || [cleanCmd isEqualToString:@"run history all"] || [cleanCmd hasPrefix:@"run history all "]) {
         // Every trigger's runs, newest first ("run history all 50" for at most 50)
         NSInteger limit = [cleanCmd hasPrefix:@"run history all "] ? [[cleanCmd substringFromIndex:16] integerValue] : 0;
