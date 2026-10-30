@@ -3226,6 +3226,20 @@ static NSString *rc_run_history_all_json(NSInteger limit) {
     return [[NSString alloc] initWithData:data ?: [NSData data] encoding:NSUTF8StringEncoding] ?: @"[]";
 }
 
+// One run ("delete run history <started> <key>"), by the time it started; returns whether it was there
+static BOOL rc_run_history_delete(NSString *key, double started) {
+    BOOL found = NO;
+    @synchronized (rc_run_lock()) {
+        NSMutableArray *runs = rc_run_history_locked()[key];
+        for (NSInteger i = (NSInteger)runs.count - 1; i >= 0; i--) {
+            if (fabs([runs[i][@"started"] doubleValue] - started) < 0.001) { [runs removeObjectAtIndex:i]; found = YES; }
+        }
+        if (runs && !runs.count) [rc_run_history_locked() removeObjectForKey:key];
+    }
+    if (found) rc_run_history_save_soon();
+    return found;
+}
+
 // One trigger's ("clear run history <key>") or every trigger's ("clear run history")
 static void rc_run_history_clear(NSString *key) {
     @synchronized (rc_run_lock()) {
@@ -10504,6 +10518,14 @@ static NSString *handle_command(NSString *cmd) {
         // Every trigger's runs, newest first ("run history all 50" for at most 50)
         NSInteger limit = [cleanCmd hasPrefix:@"run history all "] ? [[cleanCmd substringFromIndex:16] integerValue] : 0;
         return [rc_run_history_all_json(limit) stringByAppendingString:@"\n"];
+    } else if ([cleanCmd hasPrefix:@"delete run history "]) {
+        // The start time first: a trigger's key can have spaces
+        NSString *rest = [[cleanCmd substringFromIndex:19] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        NSRange space = [rest rangeOfString:@" "];
+        if (space.location == NSNotFound) return @"Usage: delete run history <started> <key>\n";
+        NSString *key = [[rest substringFromIndex:space.location + 1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        BOOL found = rc_run_history_delete(key, [[rest substringToIndex:space.location] doubleValue]);
+        return found ? @"Run deleted\n" : @"Run not found\n";
     } else if ([cleanCmd isEqualToString:@"clear run history"]) {
         rc_run_history_clear(nil);
         return @"Run history cleared\n";

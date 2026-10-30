@@ -3605,6 +3605,12 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         contextualActionWithStyle:UIContextualActionStyleDestructive
         title:isBlockDelete ? @"Delete Block" : @"Delete"
         handler:^(UIContextualAction * _Nonnull action, __kindof UIView * _Nonnull sourceView, void (^ _Nonnull completionHandler)(BOOL)) {
+            // A block with actions in it: delete them too, or keep them where they are
+            NSInteger inside = isBlockDelete ? [self actionCountInsideBlockRange:rangeToDelete] : 0;
+            if (inside > 0 && NSMaxRange(rangeToDelete) <= self.actions.count) {
+                [self confirmDeleteBlockRange:rangeToDelete actionCount:inside from:sourceView completion:completionHandler];
+                return;
+            }
             if (rangeToDelete.location != NSNotFound && rangeToDelete.length > 0 && NSMaxRange(rangeToDelete) <= self.actions.count) {
                 [self.actions removeObjectsInRange:rangeToDelete];
             } else if (indexPath.row < self.actions.count) {
@@ -3617,6 +3623,62 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
 
     deleteAction.image = [UIImage systemImageNamed:@"trash.fill"];
     return [UISwipeActionsConfiguration configurationWithActions:@[deleteAction]];
+}
+
+// The actions inside a block (nested blocks' rows counted as theirs), not its Else and Else If rows
+- (NSInteger)actionCountInsideBlockRange:(NSRange)range {
+    NSInteger count = 0;
+    for (NSUInteger i = range.location + 1; i + 1 < NSMaxRange(range); i++) {
+        id item = self.actions[i];
+        if ([self isElseActionItem:item] || [self isElseIfActionItem:item] || [self isBlockEndItem:item]) continue;
+        count++;
+    }
+    return count;
+}
+
+- (void)confirmDeleteBlockRange:(NSRange)range actionCount:(NSInteger)count from:(UIView *)sourceView completion:(void (^)(BOOL))completion {
+    NSString *message = count == 1 ? @"This block contains 1 action." : [NSString stringWithFormat:@"This block contains %ld actions.", (long)count];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Delete Block" message:message preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Keep Actions" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+        [weakSelf unwrapBlockRange:range];
+        completion(YES);
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Delete All" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *a) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (strongSelf && NSMaxRange(range) <= strongSelf.actions.count) {
+            [strongSelf.actions removeObjectsInRange:range];
+            [strongSelf saveActions];
+            [strongSelf.tableView reloadData];
+        }
+        completion(YES);
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(__unused UIAlertAction *a) {
+        completion(NO);
+    }]];
+    if (sheet.popoverPresentationController) {
+        sheet.popoverPresentationController.sourceView = sourceView ?: self.view;
+        sheet.popoverPresentationController.sourceRect = sourceView ? sourceView.bounds : CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1, 1);
+    }
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+// Keep Actions: the block's own rows go (its start, its end, and its Else and Else If rows), and
+// everything inside stays in order, nested blocks included
+- (void)unwrapBlockRange:(NSRange)range {
+    if (NSMaxRange(range) > self.actions.count || range.length < 2) return;
+    NSMutableIndexSet *remove = [NSMutableIndexSet indexSetWithIndex:range.location];
+    [remove addIndex:NSMaxRange(range) - 1];
+    NSInteger depth = 0;
+    for (NSUInteger i = range.location + 1; i + 1 < NSMaxRange(range); i++) {
+        id item = self.actions[i];
+        if ([self isBlockStartItem:item]) depth++;
+        else if ([self isBlockEndItem:item]) depth--;
+        else if (depth == 0 && ([self isElseActionItem:item] || [self isElseIfActionItem:item])) [remove addIndex:i];
+    }
+    [self.actions removeObjectsAtIndexes:remove];
+    [self saveActions];
+    [self.tableView reloadData];
 }
 
 // Reordering (legacy but kept for logic reference, though drag/drop is primary now)

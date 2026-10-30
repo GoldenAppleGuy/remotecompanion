@@ -12,4 +12,6 @@
 + (NSString *)durationText:(double)seconds;
 + (NSString *)summaryForRun:(NSDictionary *)run;
 + (UIViewController *)detailForRun:(NSDictionary *)run;
+// Deletes one run from the history; done runs on the main queue
++ (void)deleteRun:(NSDictionary *)run completion:(void (^)(void))done;
 @end
