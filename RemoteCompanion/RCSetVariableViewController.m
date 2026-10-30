@@ -244,7 +244,7 @@ static BOOL RCSetVariableNameValid(NSString *name) {
     return [self currentKind][@"fields"];
 }
 
-// The name field shows for New Value kinds, and for a Change kind given a new name
+// The name field shows for Set Value kinds, and for a Change kind given a new name
 - (BOOL)showsNameField {
     return !self.isChange || self.typingNewName;
 }
@@ -307,6 +307,15 @@ static BOOL RCSetVariableNameValid(NSString *name) {
     self.nameField.font = [UIFont monospacedSystemFontOfSize:[UIFont preferredFontForTextStyle:UIFontTextStyleBody].pointSize weight:UIFontWeightRegular];
     self.nameField.returnKeyType = UIReturnKeyNext;
     self.valueFields = @[[self makeField], [self makeField]];
+    for (UITextField *field in self.valueFields) {
+        UIButton *insert = [UIButton buttonWithType:UIButtonTypeSystem];
+        [insert setImage:[UIImage systemImageNamed:@"plus.circle"] forState:UIControlStateNormal];
+        insert.frame = CGRectMake(0, 0, 36, 36);
+        insert.showsMenuAsPrimaryAction = YES;
+        insert.accessibilityLabel = @"Insert Variable";
+        field.rightView = insert;
+        field.rightViewMode = UITextFieldViewModeAlways;
+    }
 
     self.runOnlySwitch = [[UISwitch alloc] init];
     self.runOnlySwitch.on = [[self.original[@"scope"] description] isEqualToString:@"run"];
@@ -316,7 +325,11 @@ static BOOL RCSetVariableNameValid(NSString *name) {
 
     self.variableButton = [UIButton buttonWithType:UIButtonTypeSystem];
     self.variableButton.titleLabel.font = [UIFont monospacedSystemFontOfSize:[UIFont preferredFontForTextStyle:UIFontTextStyleBody].pointSize weight:UIFontWeightRegular];
-    self.variableButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentRight;
+    // Left-aligned like the text fields, the arrow after the name with a gap.
+    // Right-to-left puts the image after the title; the insets are in absolute left/right.
+    self.variableButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+    self.variableButton.imageEdgeInsets = UIEdgeInsetsMake(0, 10, 0, -10);
+    self.variableButton.contentEdgeInsets = UIEdgeInsetsMake(0, 0, 0, 10);
     self.variableButton.semanticContentAttribute = UISemanticContentAttributeForceRightToLeft;
     [self.variableButton setImage:[UIImage systemImageNamed:@"chevron.up.chevron.down"] forState:UIControlStateNormal];
     self.variableButton.showsMenuAsPrimaryAction = YES;
@@ -396,7 +409,45 @@ static BOOL RCSetVariableNameValid(NSString *name) {
     [children addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[newName]]];
     self.variableButton.menu = [UIMenu menuWithTitle:@"" children:children];
     NSString *title = self.typingNewName ? @"New Name" : (self.pickedName ?: @"Choose");
-    [self.variableButton setTitle:[title stringByAppendingString:@" "] forState:UIControlStateNormal];
+    [self.variableButton setTitle:title forState:UIControlStateNormal];
+    [self rebuildInsertMenus];
+}
+
+// The + in each value field: a menu of known variables (and {round}) to put in the field
+- (void)rebuildInsertMenus {
+    __weak typeof(self) weakSelf = self;
+    for (UITextField *field in self.valueFields) {
+        __weak UITextField *weakField = field;
+        UIAction *(^item)(NSString *) = ^UIAction *(NSString *name) {
+            return [UIAction actionWithTitle:name image:nil identifier:nil handler:^(__unused UIAction *a) {
+                [weakSelf insertVariable:name intoField:weakField];
+            }];
+        };
+        NSMutableArray *children = [NSMutableArray array];
+        NSMutableArray *runItems = [NSMutableArray array], *savedItems = [NSMutableArray array];
+        for (NSString *name in self.runNames) [runItems addObject:item(name)];
+        for (NSString *name in self.savedNames) [savedItems addObject:item(name)];
+        if (runItems.count) [children addObject:[UIMenu menuWithTitle:@"This Run" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:runItems]];
+        if (savedItems.count) [children addObject:[UIMenu menuWithTitle:@"Saved" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:savedItems]];
+        [children addObject:[UIMenu menuWithTitle:@"Repeat" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[item(@"round")]]];
+        ((UIButton *)field.rightView).menu = [UIMenu menuWithTitle:@"Insert Variable" children:children];
+    }
+}
+
+// Text values get {name} at the cursor; number values take one variable, so it replaces the field
+- (void)insertVariable:(NSString *)name intoField:(UITextField *)field {
+    if (!field) return;
+    NSString *token = [NSString stringWithFormat:@"{%@}", name];
+    BOOL textValue = [self.op isEqualToString:@"set"] || [self.op isEqualToString:@"command"];
+    if (!textValue) {
+        field.text = token;
+    } else if (field.isFirstResponder && field.selectedTextRange) {
+        [field replaceRange:field.selectedTextRange withText:token];
+    } else {
+        field.text = [(field.text ?: @"") stringByAppendingString:token];
+    }
+    [self storeTyped];
+    [self updateState];
 }
 
 - (void)pickVariable:(NSString *)name runOnly:(BOOL)runOnly {
@@ -626,7 +677,7 @@ static BOOL RCSetVariableNameValid(NSString *name) {
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     switch (section) {
-        case RCSetVariableSectionNewValue: return @"New Value";
+        case RCSetVariableSectionNewValue: return @"Set Value";
         case RCSetVariableSectionChange: return @"Change Value";
         default: return nil;
     }
