@@ -18,28 +18,30 @@ static NSArray<NSDictionary *> *RCSetVariableKindList(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         NSString *numberHint = @"Number or {variable}";
-        NSString *unsetHint = @"A variable without a value counts as 0.";
         kinds = @[
             @{ @"op": @"set", @"title": @"Text or Number", @"icon": @"textformat",
-               @"message": @"It can include {variable} and {round}.",
+               @"message": @"Stores this text or number, replacing the current value. {name} inserts another variable's value; {round} inserts the repeat round.",
                @"fields": @[@[@"Value", @"value", @"Text, number or {variable}"]] },
             @{ @"op": @"random", @"title": @"Random Number", @"icon": @"dice", @"fallbackIcon": @"shuffle",
-               @"message": @"A whole number in the range, both ends included.",
+               @"message": @"Stores a random whole number from From to To, both included. Each can be a number or a {variable}.",
                @"fields": @[@[@"From", @"min", numberHint], @[@"To", @"max", numberHint]] },
             @{ @"op": @"command", @"title": @"RC Command", @"icon": @"terminal",
-               @"message": @"The command's answer, such as \"WiFi ON\" for wifi status.",
-               @"numberMessage": @"The first number in the command's answer, such as 100 for volume.",
+               @"message": @"Runs an RC command and stores its answer. For example, wifi status stores \"WiFi ON\".",
+               @"numberMessage": @"Runs an RC command and stores the first number in its answer. For example, volume answers \"Volume: 100%\" and stores 100.",
                @"fields": @[@[@"Command", @"value", @"volume"]] },
             @{ @"op": @"add", @"title": @"Add", @"icon": @"plus", @"change": @YES,
-               @"message": unsetHint, @"fields": @[@[@"Amount", @"value", numberHint]] },
+               @"message": @"Adds the amount to the variable. A variable without a value starts at 0, so Add 1 works as a counter.",
+               @"fields": @[@[@"Amount", @"value", numberHint]] },
             @{ @"op": @"subtract", @"title": @"Subtract", @"icon": @"minus", @"change": @YES,
-               @"message": unsetHint, @"fields": @[@[@"Amount", @"value", numberHint]] },
+               @"message": @"Subtracts the amount from the variable. A variable without a value starts at 0.",
+               @"fields": @[@[@"Amount", @"value", numberHint]] },
             @{ @"op": @"multiply", @"title": @"Multiply", @"icon": @"multiply", @"change": @YES,
-               @"message": unsetHint, @"fields": @[@[@"By", @"value", numberHint]] },
+               @"message": @"Multiplies the variable by this number.",
+               @"fields": @[@[@"By", @"value", numberHint]] },
             @{ @"op": @"divide", @"title": @"Divide", @"icon": @"divide", @"change": @YES,
-               @"message": @"Dividing by 0 leaves the value unchanged.", @"fields": @[@[@"By", @"value", numberHint]] },
+               @"message": @"Divides the variable by this number. Dividing by 0 leaves it unchanged.", @"fields": @[@[@"By", @"value", numberHint]] },
             @{ @"op": @"round", @"title": @"Round", @"icon": @"number", @"change": @YES,
-               @"message": @"Empty rounds to a whole number.", @"fields": @[@[@"Decimals", @"value", @"0"]] },
+               @"message": @"Rounds the variable to this many decimal places; empty rounds to a whole number. For example, 2 turns 3.14159 into 3.14.", @"fields": @[@[@"Decimals", @"value", @"0"]] },
         ];
     });
     return kinds;
@@ -314,7 +316,7 @@ static BOOL RCSetVariableNameValid(NSString *name) {
 
     self.variableButton = [UIButton buttonWithType:UIButtonTypeSystem];
     self.variableButton.titleLabel.font = [UIFont monospacedSystemFontOfSize:[UIFont preferredFontForTextStyle:UIFontTextStyleBody].pointSize weight:UIFontWeightRegular];
-    self.variableButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentTrailing;
+    self.variableButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentRight;
     self.variableButton.semanticContentAttribute = UISemanticContentAttributeForceRightToLeft;
     [self.variableButton setImage:[UIImage systemImageNamed:@"chevron.up.chevron.down"] forState:UIControlStateNormal];
     self.variableButton.showsMenuAsPrimaryAction = YES;
@@ -485,11 +487,12 @@ static BOOL RCSetVariableNameValid(NSString *name) {
         text = [typedName isEqualToString:@"round"] ? @"\"round\" is reserved." : @"Letters, digits and _ only, not starting with a digit.";
         color = [UIColor systemRedColor];
     } else if (self.isChange && !self.typingNewName) {
-        text = !self.pickedName ? @"The variable to change." : (self.pickedRunOnly ? @"Changes this run's value." : @"Changes the saved value.");
+        text = !self.pickedName ? @"Choose the variable to change. Its value must be a number; otherwise it stays unchanged and Run History shows why."
+             : (self.pickedRunOnly ? @"Changes the value this run set. It is forgotten when the run ends." : @"Changes the saved value, which every trigger can use.");
     } else if (self.isChange) {
         text = @"A new variable starts at 0.";
     } else {
-        text = @"In an action's text, {name} becomes the value.";
+        text = @"Letters, digits and _. Write {name} in any action's text to insert the value.";
     }
     [self setFooter:self.variableFooter text:text color:color];
 
@@ -636,7 +639,7 @@ static BOOL RCSetVariableNameValid(NSString *name) {
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == RCSetVariableSectionScope && self.showsNameField) return @"Forgets the value when the run ends.";
+    if (section == RCSetVariableSectionScope && self.showsNameField) return @"Off: the value is saved for every trigger. On: it is forgotten when this run ends.";
     return nil;
 }
 
