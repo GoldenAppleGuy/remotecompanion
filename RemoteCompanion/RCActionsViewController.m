@@ -1289,6 +1289,10 @@ static void RCSetRunWatching(BOOL watching) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 [self presentIfConditionPickerForIndex:NSNotFound insertIndex:NSNotFound type:@"wait_until"];
             });
+        } else if ([action isEqualToString:@"__SET_VARIABLE__"]) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [self presentSetVariable:nil existingIndex:NSNotFound];
+            });
         } else if ([action isEqualToString:@"__REPEAT_WHILE__"]) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 [self presentIfConditionPickerForIndex:NSNotFound insertIndex:NSNotFound type:@"repeat_while"];
@@ -1846,6 +1850,15 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
                 @{ @"value": @"OFF", @"title": @"Off" }
             ]
         }
+   ,
+        @{
+            // A variable from Set Variable: name, comparison and value (the editor's prompts)
+            @"key": @"variable",
+            @"title": @"Variable",
+            @"icon": @"x.squareroot",
+            @"section": @"Variables",
+            @"input": @"variable"
+        }
     ]);
 }
 
@@ -1940,6 +1953,12 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
         [self configurePopoverSourceForAlert:alert];
         [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+
+    // Variable: how to compare, then the name (and the value to compare with)
+    if ([condition[@"input"] isEqualToString:@"variable"]) {
+        [self presentVariableConditionForType:actionType existingIndex:existingIndex insertIndex:insertIndex];
         return;
     }
 
@@ -2146,6 +2165,132 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [weakSelf presentViewController:alert animated:YES completion:nil];
     });
+}
+
+// Names a variable can have: letters, digits and _, not starting with a digit, and not "round"
+static BOOL RCVariableNameIsValid(NSString *name) {
+    if (name.length == 0 || name.length > 40 || [name isEqualToString:@"round"]) return NO;
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"];
+    if ([name rangeOfCharacterFromSet:allowed.invertedSet].location != NSNotFound) return NO;
+    return ![[NSCharacterSet decimalDigitCharacterSet] characterIsMember:[name characterAtIndex:0]];
+}
+
+// The Variable condition for an If, Else If, Repeat While or Wait Until: a comparison from a menu,
+// then the variable's name and the value to compare with
+- (void)presentVariableConditionForType:(NSString *)actionType existingIndex:(NSInteger)existingIndex insertIndex:(NSInteger)insertIndex {
+    NSDictionary *existing = nil;
+    if (existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)self.actions.count) {
+        id item = self.actions[existingIndex];
+        if ([item isKindOfClass:[NSDictionary class]] && [[item[@"conditionKey"] description] isEqualToString:@"variable"]) existing = item;
+    }
+    NSArray<NSArray<NSString *> *> *comparisons = @[
+        @[@"is", @"Is"], @[@"is_not", @"Is Not"], @[@"contains", @"Contains"],
+        @[@"above", @"Is Above"], @[@"below", @"Is Below"],
+        @[@"not_empty", @"Has Any Value"], @[@"empty", @"Has No Value"]
+    ];
+    UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Variable"
+                                                                  message:@"Text compares without regard to case. Is Above and Is Below compare numbers."
+                                                           preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    for (NSArray<NSString *> *comparison in comparisons) {
+        NSString *code = comparison[0], *title = comparison[1];
+        BOOL needsValue = ![code isEqualToString:@"empty"] && ![code isEqualToString:@"not_empty"];
+        [menu addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"Variable %@", title]
+                                                                           message:needsValue ? @"The value can include other variables, like {limit}." : nil
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+                textField.placeholder = @"Name";
+                textField.text = [existing[@"variable"] description];
+                textField.autocorrectionType = UITextAutocorrectionTypeNo;
+                textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+                textField.spellCheckingType = UITextSpellCheckingTypeNo;
+            }];
+            if (needsValue) {
+                [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+                    textField.placeholder = @"Value";
+                    textField.text = [existing[@"expectedValue"] description];
+                    textField.autocorrectionType = UITextAutocorrectionTypeNo;
+                    textField.spellCheckingType = UITextSpellCheckingTypeNo;
+                    if ([code isEqualToString:@"above"] || [code isEqualToString:@"below"]) textField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+                }];
+            }
+            [alert addAction:[UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *s) {
+                NSString *name = [alert.textFields[0].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                if (!RCVariableNameIsValid(name)) return;
+                NSString *value = needsValue ? [alert.textFields[1].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] : @"";
+                NSString *phrase = needsValue ? [NSString stringWithFormat:@"%@ %@", title.lowercaseString, value] : title.lowercaseString;
+                [weakSelf applyIfAction:@{ @"type": actionType, @"conditionKey": @"variable", @"conditionTitle": name,
+                                           @"variable": name, @"comparison": code, @"expectedValue": value, @"expectedTitle": phrase }
+                          existingIndex:existingIndex insertIndex:insertIndex];
+            }]];
+            [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+            [weakSelf configurePopoverSourceForAlert:alert];
+            [weakSelf presentViewController:alert animated:YES completion:nil];
+        }]];
+    }
+    [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [self configurePopoverSourceForAlert:menu];
+    [self presentViewController:menu animated:YES completion:nil];
+}
+
+// Set Variable: its name and value, kept for every trigger or only for this run. Edits the one at
+// existingIndex, or adds one at the end. draft holds what was typed when a name was refused.
+- (void)presentSetVariable:(NSDictionary *)draft existingIndex:(NSInteger)existingIndex {
+    BOOL editing = existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)self.actions.count;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Set Variable"
+                                                                   message:@"In an action's text, {name} becomes the value. A value can include other variables and {round}.\n\nSaved: kept for all triggers.\nThis Run Only: forgotten when the run ends."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.placeholder = @"Name";
+        textField.text = [draft[@"name"] description];
+        textField.autocorrectionType = UITextAutocorrectionTypeNo;
+        textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        textField.spellCheckingType = UITextSpellCheckingTypeNo;
+    }];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.placeholder = @"Value";
+        textField.text = [draft[@"value"] description];
+        textField.autocorrectionType = UITextAutocorrectionTypeNo;
+        textField.spellCheckingType = UITextSpellCheckingTypeNo;
+    }];
+    __weak typeof(self) weakSelf = self;
+    void (^save)(BOOL) = ^(BOOL runOnly) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSString *name = [alert.textFields[0].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        NSString *value = alert.textFields[1].text ?: @"";
+        if (name.length == 0) return; // nothing typed: nothing added or changed
+        NSMutableDictionary *item = [@{ @"type": @"set_variable", @"name": name, @"value": value } mutableCopy];
+        if (runOnly) item[@"scope"] = @"run";
+        if (!RCVariableNameIsValid(name)) {
+            UIAlertController *refused = [UIAlertController alertControllerWithTitle:@"Name Not Allowed"
+                                                                             message:@"Use letters, digits and _, without spaces, not starting with a digit. \"round\" is reserved."
+                                                                      preferredStyle:UIAlertControllerStyleAlert];
+            [refused addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:^(__unused UIAlertAction *a) {
+                [weakSelf presentSetVariable:item existingIndex:existingIndex];
+            }]];
+            [strongSelf presentViewController:refused animated:YES completion:nil];
+            return;
+        }
+        if (editing) {
+            id old = strongSelf.actions[existingIndex];
+            if ([old isKindOfClass:[NSDictionary class]] && old[@"disabled"]) item[@"disabled"] = old[@"disabled"];
+            strongSelf.actions[existingIndex] = item;
+        } else {
+            [strongSelf.actions addObject:item];
+        }
+        [strongSelf saveActions];
+        [strongSelf.tableView reloadData];
+    };
+    UIAlertAction *saved = [UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { save(NO); }];
+    UIAlertAction *runOnly = [UIAlertAction actionWithTitle:@"This Run Only" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { save(YES); }];
+    [alert addAction:saved];
+    [alert addAction:runOnly];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    alert.preferredAction = [[draft[@"scope"] description] isEqualToString:@"run"] ? runOnly : saved;
+    [self configurePopoverSourceForAlert:alert];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 // Repeat: how many times. Edits the Repeat at existingIndex, or adds a Repeat block at the end.
@@ -2494,6 +2639,8 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
                 [self presentIfConditionPickerForIndex:indexPath.row];
             } else if ([self isRepeatActionItem:actionData]) {
                 [self presentRepeatCountForIndex:indexPath.row];
+            } else if ([[self actionTypeForItem:actionData] isEqualToString:@"set_variable"]) {
+                [self presentSetVariable:actionData existingIndex:indexPath.row];
             }
             return;
         }

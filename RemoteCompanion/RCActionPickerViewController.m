@@ -320,6 +320,7 @@
             @{ @"name": @"Repeat While...", @"command": @"__REPEAT_WHILE__", @"icon": @"repeat" },
             @{ @"name": @"Exit Repeat", @"command": @"__EXIT_REPEAT__", @"icon": @"arrow.right.to.line" },
             @{ @"name": @"Wait Until...", @"command": @"__WAIT_UNTIL__", @"icon": @"hourglass" },
+            @{ @"name": @"Set Variable...", @"command": @"__SET_VARIABLE__", @"icon": @"x.squareroot" },
             @{ @"name": @"Delay", @"command": @"__DELAY__", @"icon": @"hourglass" },
             @{ @"name": @"Stop Trigger...", @"command": @"__STOP_TRIGGER__", @"icon": @"stop.circle" },
             @{ @"name": @"Terminal Command", @"command": @"__CUSTOM__", @"icon": @"terminal.fill" },
@@ -523,6 +524,7 @@
         [cmd isEqualToString:@"__REPEAT_WHILE__"] ||
         [cmd isEqualToString:@"__EXIT_REPEAT__"] ||
         [cmd isEqualToString:@"__WAIT_UNTIL__"] ||
+        [cmd isEqualToString:@"__SET_VARIABLE__"] ||
         [cmd isEqualToString:@"__DELAY__"] ||
         [cmd isEqualToString:@"__STOP_TRIGGER__"] ||
         [cmd isEqualToString:@"__CUSTOM__"] ||

@@ -3127,6 +3127,25 @@ function buildShortcutAction(name, silent, input) {
   return action;
 }
 
+// The Variable condition's comparisons: code, menu title, words in an action's name
+const VARIABLE_COMPARISONS = [
+  ['is', 'Is', 'is'], ['is_not', 'Is Not', 'is not'], ['contains', 'Contains', 'contains'],
+  ['above', 'Is Above', 'is above'], ['below', 'Is Below', 'is below'],
+  ['not_empty', 'Has Any Value', 'has any value'], ['empty', 'Has No Value', 'has no value'],
+];
+
+// "count is above 5": a Variable condition (If, Repeat While, Wait Until) in words
+function variableConditionText(cmd) {
+  const c = VARIABLE_COMPARISONS.find(x => x[0] === (cmd.comparison || 'is')) || VARIABLE_COMPARISONS[0];
+  const needsValue = c[0] !== 'empty' && c[0] !== 'not_empty';
+  return `${cmd.variable || 'Variable'} ${c[2]}${needsValue ? ' ' + (cmd.expectedValue || '') : ''}`;
+}
+
+// Variable names: letters, digits and _, not starting with a digit; "round" is taken
+function variableNameValid(name) {
+  return /^[A-Za-z_][A-Za-z0-9_]{0,39}$/.test(name || '') && name !== 'round';
+}
+
 function nameForCmd(cmd) {
   if (!cmd) return 'Unknown';
   if (typeof cmd === 'object') {
@@ -3135,6 +3154,13 @@ function nameForCmd(cmd) {
     }
     const t = (cmd.type||'').toLowerCase();
     const isTime = (cmd.conditionKey === 'time_between' || cmd.conditionName === 'time_between' || (cmd.conditionTitle||'').toLowerCase().includes('time'));
+    if (cmd.conditionKey === 'variable' && ['if', 'else_if', 'repeat_while'].includes(t)) {
+      return `${t === 'if' ? 'If' : t === 'else_if' ? 'Else If' : 'Repeat While'} ${variableConditionText(cmd)}`;
+    }
+    if (t === 'set_variable') {
+      const text = `Set ${cmd.name || 'Variable'} to ${cmd.value ? cmd.value : 'nothing'}`;
+      return cmd.scope === 'run' ? `${text} (this run)` : text;
+    }
     if (t === 'if') return isTime ? `If Time is Between ${cmd.expectedTitle||cmd.expectedValue||'Time Range'}` : `If ${cmd.conditionTitle||'Condition'} is ${cmd.expectedTitle||'Value'}`;
     if (t === 'else_if') return isTime ? `Else If Time is Between ${cmd.expectedTitle||cmd.expectedValue||'Time Range'}` : `Else If ${cmd.conditionTitle||'Condition'} is ${cmd.expectedTitle||'Value'}`;
     if (t === 'else') return 'Else';
@@ -3146,6 +3172,7 @@ function nameForCmd(cmd) {
     if (t === 'wait_until') {
       const lim = parseInt(cmd.timeout, 10) > 0 ? parseInt(cmd.timeout, 10) : 60;
       const limText = (lim >= 60 && lim % 60 === 0) ? `${lim / 60} min` : `${lim} s`;
+      if (cmd.conditionKey === 'variable') return `Wait Until ${variableConditionText(cmd)} (up to ${limText})`;
       return (cmd.conditionKey === 'time_between') ? `Wait Until Time is Between ${cmd.expectedTitle||cmd.expectedValue||''} (up to ${limText})` : `Wait Until ${cmd.conditionTitle||'Condition'} is ${cmd.expectedTitle||'Value'} (up to ${limText})`;
     }
     return 'Block';
@@ -3327,6 +3354,7 @@ function iconForCmd(cmd) {
     if (t === 'end_repeat') return { icon:'arrow_turn_up_left', cls:'icon-green' };
     if (t === 'exit_repeat') return { icon:'arrow_right_to_line', cls:'icon-green' };
     if (t === 'wait_until') return { icon:'hourglass', cls:'icon-orange' };
+    if (t === 'set_variable') return { icon:'function', cls:'icon-orange' };
     return { icon:'repeat', cls:'icon-green' };
   }
   const map = {
@@ -3496,6 +3524,7 @@ const ACTION_SECTIONS = [
     { name:'Repeat While…',     cmd:'__REPEAT_WHILE__',icon:'repeat', needs_input:true },
     { name:'Exit Repeat',       cmd:'__EXIT_REPEAT__', icon:'arrow_right_to_line', needs_input:true },
     { name:'Wait Until…',       cmd:'__WAIT_UNTIL__',  icon:'hourglass', needs_input:true },
+    { name:'Set Variable…',     cmd:'__SET_VARIABLE__', icon:'function', needs_input:true },
     { name:'Delay…',            cmd:'__DELAY__',     icon:'hourglass', needs_input:true },
     { name:'Terminal Command…', cmd:'__CUSTOM__',    icon:'chevron_right_square_fill', needs_input:true },
     { name:'Lua Script…',       cmd:'__LUA_SCRIPT__',icon:'doc_text_fill', needs_input:true },
@@ -3533,6 +3562,7 @@ const CONDITION_DEFS = [
   { key:'wifi',       title:'Wi-Fi',        icon:'wifi', section:'Connectivity', values:[{value:'ON',title:'On'},{value:'OFF',title:'Off'}] },
   { key:'wifi_network', title:'Wi-Fi Network', icon:'wifi', section:'Connectivity', freeText:true, hint:'Network name:' },
   { key:'bluetooth',  title:'Bluetooth',    icon:'bolt_horizontal_fill', section:'Connectivity', values:[{value:'ON',title:'On'},{value:'OFF',title:'Off'}] },
+  { key:'variable', title:'Variable', icon:'function', section:'Variables' },
   { key:'bt_device', title:'Bluetooth Device Connected', icon:'headphones', section:'Connectivity', freeText:true, hint:'Device name:' },
   { key:'carplay',    title:'CarPlay', icon:'car_fill', section:'Connectivity', values:[{value:'CONNECTED',title:'Connected'},{value:'NOT_CONNECTED',title:'Not Connected'}] },
   { key:'cellular',   title:'Cellular Data', icon:'antenna_radiowaves_left_right', section:'Connectivity', values:[{value:'ON',title:'On'},{value:'OFF',title:'Off'}] },
@@ -5183,6 +5213,9 @@ function editAction(idx) {
         saveConfig(); renderActionList();
       }, true);
     }
+    else if (type === 'set_variable') {
+      promptSetVariable(idx);
+    }
     else if (type === 'repeat') {
       showDialog('Repeat', 'Runs the actions inside this many times (up to 1,000). In their text, {round} becomes the round number:', String(act.count||1), 'Save', val => {
         if (!val) return;
@@ -5552,6 +5585,8 @@ function selectPickerAction(act) {
   } else if (c === '__WAIT_UNTIL__') {
     condPickerNewType = 'wait_until';
     openCondPicker(null);
+  } else if (c === '__SET_VARIABLE__') {
+    promptSetVariable(null);
   } else if (c === '__REPEAT__') {
     showDialog('Repeat', 'Runs the actions inside this many times (up to 1,000). In their text, {round} becomes the round number:', '', 'Add', val => {
       if (!val || !(parseInt(val, 10) > 0)) return;
@@ -5709,7 +5744,7 @@ function saveTimeCondDialog() {
 
 // ── Condition picker (mirrors iOS RCConditionPickerViewController: grouped, ──
 // searchable sections; tapping a condition expands its options inline beneath it)
-const COND_SECTION_ORDER = ['Time', 'Device', 'Power', 'Sound', 'Connectivity', 'Other'];
+const COND_SECTION_ORDER = ['Time', 'Device', 'Power', 'Sound', 'Connectivity', 'Variables', 'Other'];
 const COND_DAY_CODES = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
 const COND_DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 let condPickerEditIdx = null;
@@ -5844,6 +5879,51 @@ function promptCondThreshold(def, direction) {
   });
 }
 
+// The Variable condition: the name, then (unless it's Has Any / No Value) the value to compare with
+function promptVariableCondition(code, title) {
+  const ex = condPickerExisting();
+  const same = ex && ex.conditionKey === 'variable';
+  const editIdx = condPickerEditIdx;
+  const def = CONDITION_DEFS.find(d => d.key === 'variable');
+  const needsValue = code !== 'empty' && code !== 'not_empty';
+  closeCondPicker();
+  showDialog(`Variable ${title}`, 'Variable name:', same ? String(ex.variable || '') : '', needsValue ? 'Next' : 'Save', name => {
+    name = (name || '').trim();
+    if (!variableNameValid(name)) { if (name) showToast('Names use letters, digits and _'); return; }
+    const finish = value => finishIfCondition(def, value, needsValue ? `${title.toLowerCase()} ${value}` : title.toLowerCase(), editIdx,
+      { conditionTitle: name, variable: name, comparison: code });
+    if (!needsValue) { finish(''); return; }
+    showDialog(`Variable ${title}`, 'Value (can include other variables, like {limit}). Text compares without regard to case; Is Above and Is Below compare numbers:',
+      same ? String(ex.expectedValue || '') : '', 'Save', value => finish((value || '').trim()));
+  });
+}
+
+// Set Variable: name, value, then saved (all triggers) or this run only. Edits the one at idx, or adds one.
+function promptSetVariable(idx) {
+  const actions = triggerData(currentKey).actions || [];
+  const ex = (idx !== null && actions[idx] && typeof actions[idx] === 'object') ? actions[idx] : null;
+  showDialog('Set Variable', 'Name (letters, digits and _). In an action\'s text, {name} becomes the value:', ex ? String(ex.name || '') : '', 'Next', name => {
+    name = (name || '').trim();
+    if (!name) return;
+    if (!variableNameValid(name)) { showToast('Names use letters, digits and _, not starting with a digit'); return; }
+    showDialog(`Set ${name}`, 'Value (can include other variables and {round}):', ex ? String(ex.value || '') : '', 'Next', value => {
+      const save = runOnly => {
+        const item = { type: 'set_variable', name, value: value || '' };
+        if (runOnly) item.scope = 'run';
+        if (ex && ex.disabled) item.disabled = ex.disabled;
+        if (ex) actions[idx] = item; else actions.push(item);
+        triggerData(currentKey).actions = actions;
+        saveConfig();
+        renderActionList();
+      };
+      showSheet(`Keep ${name}`, [
+        { label: 'Saved (All Triggers)', action() { save(false); } },
+        { label: 'This Run Only', action() { save(true); } },
+      ]);
+    });
+  });
+}
+
 function promptCondText(def) {
   const ex = condPickerExisting();
   const same = ex && (ex.conditionKey || ex.conditionName) === def.key;
@@ -5912,6 +5992,14 @@ function condOptionsFor(d, exKey, exValue, exTitle) {
     rows.push(condValueRow(d, { value: 'OFF', title: 'Off' }, exKey, exValue));
     rows.push(condValueRow(d, { value: 'ON', title: 'Any Focus' }, exKey, exValue));
     rows.push(condOptionRow('Other Name…', 'blue', '', () => promptCondText({ key: d.key, title: d.title, hint: 'Focus name, Off, or On for any Focus:' })));
+    return rows;
+  }
+  if (d.key === 'variable') {
+    VARIABLE_COMPARISONS.forEach(([code, title]) => {
+      const ex = condPickerExisting();
+      const now = (exKey === 'variable' && ex && (ex.comparison || 'is') === code) ? ` (now: ${variableConditionText(ex)})` : '';
+      rows.push(condOptionRow(`${title}…${now}`, 'blue', '', () => promptVariableCondition(code, title)));
+    });
     return rows;
   }
   if (d.key === 'time_between') {
@@ -5995,7 +6083,7 @@ function renderCondPicker() {
 // The kind of block a new condition makes: 'if', or 'repeat_while' (Repeat While)
 let condPickerNewType = 'if';
 
-function finishIfCondition(def, value, valueTitle, editIdx) {
+function finishIfCondition(def, value, valueTitle, editIdx, extra) {
   const actions = triggerData(currentKey).actions || [];
   let existingType = editIdx === null ? condPickerNewType : 'if';
   if (editIdx !== null && actions[editIdx] && actions[editIdx].type) {
@@ -6011,6 +6099,7 @@ function finishIfCondition(def, value, valueTitle, editIdx) {
     expectedLabel: value,
     expectedTitle: valueTitle
   };
+  if (extra) Object.assign(item, extra);
 
   if (existingType === 'wait_until') {
     // Wait Until: one row, no End; a new one asks for its time limit, an edited one keeps it
@@ -7032,7 +7121,7 @@ function promptManualHAEntity() {
 // toggle, match, exclude }. "match"/"exclude" patterns ending in " ", ":" or "-"
 // are prefixes; anything else must equal the (lowercased) command.
 // Not offered: entries that don't run an action of their own, and Set Flashlight (covered by Flashlight)
-const BANNER_SKIP = new Set(['__IF_CONDITION__', '__REPEAT__', '__REPEAT_WHILE__', '__EXIT_REPEAT__', '__WAIT_UNTIL__', '__DELAY__', '__TOAST__', '__SET_FLASHLIGHT__']);
+const BANNER_SKIP = new Set(['__IF_CONDITION__', '__REPEAT__', '__REPEAT_WHILE__', '__EXIT_REPEAT__', '__WAIT_UNTIL__', '__SET_VARIABLE__', '__DELAY__', '__TOAST__', '__SET_FLASHLIGHT__']);
 // The app's names for the same actions, so both UIs share one setting
 const BANNER_ID_ALIASES = { '__SHORTCUT__': '__SHORTCUT_PICKER__', 'queuealbum': 'queue album', 'queueartist': 'queue artist',
   'shuffleall': 'shuffle all songs', 'deletesong': 'delete current song' };
