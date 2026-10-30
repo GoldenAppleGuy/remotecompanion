@@ -511,10 +511,12 @@ static BOOL RCSetVariableNameValid(NSString *name) {
     self.op = tile.op;
     BOOL groupChanged = wasChange != self.isChange;
     if (groupChanged && self.isChange) {
-        // A typed name carries over: picked when it's a known variable, otherwise kept as a new name
+        // A typed name carries over: picked when it's a known variable (or the one picked before),
+        // otherwise kept as a new name
         NSString *typedName = [self trimmed:self.nameField.text];
         if ([self.runNames containsObject:typedName]) { self.pickedName = typedName; self.pickedRunOnly = YES; self.typingNewName = NO; }
         else if ([self.savedNames containsObject:typedName]) { self.pickedName = typedName; self.pickedRunOnly = NO; self.typingNewName = NO; }
+        else if (self.pickedName && [typedName isEqualToString:self.pickedName]) { self.pickedRunOnly = self.runOnlySwitch.isOn; self.typingNewName = NO; }
         else self.typingNewName = typedName.length > 0;
     } else if (groupChanged) {
         if (!self.typingNewName && self.pickedName) {
@@ -683,6 +685,31 @@ static BOOL RCSetVariableNameValid(NSString *name) {
     return cell;
 }
 
+// A row with a switch. The switch goes in the content view rather than accessoryView: these
+// switches are kept across reloads, and a cell on its way out would keep taking an accessory
+// back from the new cell during layout, freezing the screen.
+- (UITableViewCell *)switchCell:(NSString *)labelText control:(UISwitch *)control {
+    UITableViewCell *cell = [self plainCell];
+    [control removeFromSuperview];
+    control.translatesAutoresizingMaskIntoConstraints = NO;
+    UILabel *label = [[UILabel alloc] init];
+    label.text = labelText;
+    label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    [cell.contentView addSubview:label];
+    [cell.contentView addSubview:control];
+    UILayoutGuide *margins = cell.contentView.layoutMarginsGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [label.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor],
+        [label.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+        [label.trailingAnchor constraintLessThanOrEqualToAnchor:control.leadingAnchor constant:-12],
+        [control.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor],
+        [control.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+        [cell.contentView.heightAnchor constraintGreaterThanOrEqualToConstant:48],
+    ]];
+    return cell;
+}
+
 - (UITableViewCell *)gridCell:(UIView *)grid {
     UITableViewCell *cell = [self plainCell];
     cell.backgroundColor = [UIColor clearColor];
@@ -713,16 +740,10 @@ static BOOL RCSetVariableNameValid(NSString *name) {
             if (indexPath.row < (NSInteger)fields.count) {
                 return [self cellWithLabel:fields[indexPath.row][0] control:self.valueFields[indexPath.row]];
             }
-            UITableViewCell *cell = [self plainCell];
-            cell.textLabel.text = @"Number Only";
-            cell.accessoryView = self.numberOnlySwitch;
-            return cell;
+            return [self switchCell:@"Number Only" control:self.numberOnlySwitch];
         }
         default: {
-            UITableViewCell *cell = [self plainCell];
-            cell.textLabel.text = @"This Run Only";
-            cell.accessoryView = self.runOnlySwitch;
-            return cell;
+            return [self switchCell:@"This Run Only" control:self.runOnlySwitch];
         }
     }
 }
