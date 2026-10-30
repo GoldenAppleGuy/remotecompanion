@@ -2244,7 +2244,9 @@ static BOOL RCVariableNameIsValid(NSString *name) {
 // Set Variable: its own screen. Edits the one at existingIndex, or adds one at the end.
 - (void)presentSetVariable:(NSDictionary *)draft existingIndex:(NSInteger)existingIndex {
     BOOL editing = existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)self.actions.count;
-    RCSetVariableViewController *editor = [[RCSetVariableViewController alloc] initWithAction:editing ? draft : nil];
+    NSMutableArray *others = [self.actions mutableCopy];
+    if (editing) [others removeObjectAtIndex:existingIndex];
+    RCSetVariableViewController *editor = [[RCSetVariableViewController alloc] initWithAction:editing ? draft : nil otherActions:others];
     __weak typeof(self) weakSelf = self;
     editor.onSave = ^(NSDictionary *item) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
