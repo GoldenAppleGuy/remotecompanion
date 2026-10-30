@@ -6,6 +6,7 @@
 #import "RCConditionPickerViewController.h"
 #import "RCTextInputViewController.h"
 #import "RCSetVariableViewController.h"
+#import "RCVariableConditionViewController.h"
 #import "RCServerClient.h"
 #import "RCRunningViewController.h"
 #import "RCRunHistoryViewController.h"
@@ -2182,63 +2183,27 @@ static BOOL RCVariableNameIsValid(NSString *name) {
     return ![[NSCharacterSet decimalDigitCharacterSet] characterIsMember:[name characterAtIndex:0]];
 }
 
-// The Variable condition for an If, Else If, Repeat While or Wait Until: a comparison from a menu,
-// then the variable's name and the value to compare with
+// The Variable condition for an If, Else If, Repeat While or Wait Until: its own screen
 - (void)presentVariableConditionForType:(NSString *)actionType existingIndex:(NSInteger)existingIndex insertIndex:(NSInteger)insertIndex {
     NSDictionary *existing = nil;
     if (existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)self.actions.count) {
         id item = self.actions[existingIndex];
         if ([item isKindOfClass:[NSDictionary class]] && [[item[@"conditionKey"] description] isEqualToString:@"variable"]) existing = item;
     }
-    NSArray<NSArray<NSString *> *> *comparisons = @[
-        @[@"is", @"Is"], @[@"is_not", @"Is Not"], @[@"contains", @"Contains"],
-        @[@"above", @"Is Above"], @[@"below", @"Is Below"],
-        @[@"not_empty", @"Has Any Value"], @[@"empty", @"Has No Value"]
-    ];
-    UIAlertController *menu = [UIAlertController alertControllerWithTitle:@"Variable"
-                                                                  message:@"Text compares without regard to case. Is Above and Is Below compare numbers."
-                                                           preferredStyle:UIAlertControllerStyleActionSheet];
+    RCVariableConditionViewController *editor = [[RCVariableConditionViewController alloc] initWithCondition:existing otherActions:self.actions];
     __weak typeof(self) weakSelf = self;
-    for (NSArray<NSString *> *comparison in comparisons) {
-        NSString *code = comparison[0], *title = comparison[1];
-        BOOL needsValue = ![code isEqualToString:@"empty"] && ![code isEqualToString:@"not_empty"];
-        [menu addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"Variable %@", title]
-                                                                           message:needsValue ? @"The value can include other variables, like {limit}." : nil
-                                                                    preferredStyle:UIAlertControllerStyleAlert];
-            [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-                textField.placeholder = @"Name";
-                textField.text = [existing[@"variable"] description];
-                textField.autocorrectionType = UITextAutocorrectionTypeNo;
-                textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
-                textField.spellCheckingType = UITextSpellCheckingTypeNo;
-            }];
-            if (needsValue) {
-                [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-                    textField.placeholder = @"Value";
-                    textField.text = [existing[@"expectedValue"] description];
-                    textField.autocorrectionType = UITextAutocorrectionTypeNo;
-                    textField.spellCheckingType = UITextSpellCheckingTypeNo;
-                    if ([code isEqualToString:@"above"] || [code isEqualToString:@"below"]) textField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
-                }];
-            }
-            [alert addAction:[UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *s) {
-                NSString *name = [alert.textFields[0].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                if (!RCVariableNameIsValid(name)) return;
-                NSString *value = needsValue ? [alert.textFields[1].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] : @"";
-                NSString *phrase = needsValue ? [NSString stringWithFormat:@"%@ %@", title.lowercaseString, value] : title.lowercaseString;
-                [weakSelf applyIfAction:@{ @"type": actionType, @"conditionKey": @"variable", @"conditionTitle": name,
-                                           @"variable": name, @"comparison": code, @"expectedValue": value, @"expectedTitle": phrase }
-                          existingIndex:existingIndex insertIndex:insertIndex];
-            }]];
-            [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-            [weakSelf configurePopoverSourceForAlert:alert];
-            [weakSelf presentViewController:alert animated:YES completion:nil];
-        }]];
-    }
-    [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [self configurePopoverSourceForAlert:menu];
-    [self presentViewController:menu animated:YES completion:nil];
+    editor.onSave = ^(NSString *name, NSString *comparison, NSString *value) {
+        NSString *title = [RCVariableConditionViewController titleForComparison:comparison].lowercaseString;
+        NSString *phrase = value.length ? [NSString stringWithFormat:@"%@ %@", title, value] : title;
+        [weakSelf applyIfAction:@{ @"type": actionType, @"conditionKey": @"variable", @"conditionTitle": name,
+                                   @"variable": name, @"comparison": comparison, @"expectedValue": value, @"expectedTitle": phrase }
+                  existingIndex:existingIndex insertIndex:insertIndex];
+    };
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:editor];
+    // After the condition picker has closed (it may still be going back)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [weakSelf presentViewController:nav animated:YES completion:nil];
+    });
 }
 
 // Set Variable: its own screen. Edits the one at existingIndex, or adds one at the end.

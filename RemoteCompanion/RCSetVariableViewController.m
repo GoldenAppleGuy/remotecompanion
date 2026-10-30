@@ -1,6 +1,7 @@
 #import "RCSetVariableViewController.h"
 #import "RCConfigManager.h"
 #import "RCServerClient.h"
+#import "RCVariableEditorParts.h"
 
 typedef NS_ENUM(NSInteger, RCSetVariableSection) {
     RCSetVariableSectionNewValue = 0,
@@ -47,17 +48,29 @@ static NSArray<NSDictionary *> *RCSetVariableKindList(void) {
     return kinds;
 }
 
-static BOOL RCSetVariableNameValid(NSString *name) {
+BOOL RCSetVariableNameValid(NSString *name) {
     if (name.length == 0 || name.length > 40 || [name isEqualToString:@"round"]) return NO;
     NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"];
     if ([name rangeOfCharacterFromSet:allowed.invertedSet].location != NSNotFound) return NO;
     return ![[NSCharacterSet decimalDigitCharacterSet] characterIsMember:[name characterAtIndex:0]];
 }
 
-// A footer whose text can change while a field in its section is being typed in
-@interface RCSetVariableFooter : UITableViewHeaderFooterView
-@property (nonatomic, strong) UILabel *label;
-@end
+UIMenu *RCVariableInsertMenu(NSArray<NSString *> *runNames, NSArray<NSString *> *savedNames, void (^insert)(NSString *name)) {
+    UIAction *(^item)(NSString *) = ^UIAction *(NSString *name) {
+        return [UIAction actionWithTitle:name image:nil identifier:nil handler:^(__unused UIAction *a) { insert(name); }];
+    };
+    NSMutableArray *children = [NSMutableArray array];
+    NSMutableArray *runItems = [NSMutableArray array], *savedItems = [NSMutableArray array];
+    for (NSString *name in runNames) [runItems addObject:item(name)];
+    for (NSString *name in savedNames) [savedItems addObject:item(name)];
+    if (runItems.count) [children addObject:[UIMenu menuWithTitle:@"This Run" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:runItems]];
+    if (savedItems.count) [children addObject:[UIMenu menuWithTitle:@"Saved" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:savedItems]];
+    // {round} isn't a variable that's set: it's the pass a Repeat is on
+    UIAction *round = [UIAction actionWithTitle:@"Repeat Round" image:[UIImage systemImageNamed:@"repeat"] identifier:nil handler:^(__unused UIAction *a) { insert(@"round"); }];
+    if (@available(iOS 15.0, *)) round.subtitle = @"The current pass of a Repeat: 1, 2, 3…";
+    [children addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[round]]];
+    return [UIMenu menuWithTitle:@"" children:children];
+}
 
 @implementation RCSetVariableFooter
 - (instancetype)initWithReuseIdentifier:(NSString *)reuseIdentifier {
@@ -81,12 +94,6 @@ static BOOL RCSetVariableNameValid(NSString *name) {
 }
 @end
 
-// One tile of a kind grid
-@interface RCSetVariableTile : UIControl
-@property (nonatomic, strong) UIImageView *iconView;
-@property (nonatomic, strong) UILabel *titleLabel;
-@property (nonatomic, copy) NSString *op;
-@end
 
 @implementation RCSetVariableTile
 - (instancetype)initWithKind:(NSDictionary *)kind compact:(BOOL)compact {
@@ -418,19 +425,9 @@ static BOOL RCSetVariableNameValid(NSString *name) {
     __weak typeof(self) weakSelf = self;
     for (UITextField *field in self.valueFields) {
         __weak UITextField *weakField = field;
-        UIAction *(^item)(NSString *) = ^UIAction *(NSString *name) {
-            return [UIAction actionWithTitle:name image:nil identifier:nil handler:^(__unused UIAction *a) {
-                [weakSelf insertVariable:name intoField:weakField];
-            }];
-        };
-        NSMutableArray *children = [NSMutableArray array];
-        NSMutableArray *runItems = [NSMutableArray array], *savedItems = [NSMutableArray array];
-        for (NSString *name in self.runNames) [runItems addObject:item(name)];
-        for (NSString *name in self.savedNames) [savedItems addObject:item(name)];
-        if (runItems.count) [children addObject:[UIMenu menuWithTitle:@"This Run" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:runItems]];
-        if (savedItems.count) [children addObject:[UIMenu menuWithTitle:@"Saved" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:savedItems]];
-        [children addObject:[UIMenu menuWithTitle:@"Repeat" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[item(@"round")]]];
-        ((UIButton *)field.rightView).menu = [UIMenu menuWithTitle:@"" children:children];
+        ((UIButton *)field.rightView).menu = RCVariableInsertMenu(self.runNames, self.savedNames, ^(NSString *name) {
+            [weakSelf insertVariable:name intoField:weakField];
+        });
     }
 }
 
