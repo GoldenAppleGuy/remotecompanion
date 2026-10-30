@@ -144,6 +144,11 @@ static void rc_parse_km_cmd(NSString *cmd, NSString **outMacro, NSString **outPa
 @property (nonatomic, weak) UILabel *stripLabel;
 @end
 
+// The drag handle: line.3.horizontal is iOS 15 and later; iOS 14 has the older name
+static UIImage *RCGrabberImage(void) {
+    return [UIImage systemImageNamed:@"line.3.horizontal"] ?: [UIImage systemImageNamed:@"line.horizontal.3"];
+}
+
 @implementation RCActionsViewController
 
 static id g_actionClipboard = nil;
@@ -851,6 +856,25 @@ static void RCSetRunWatching(BOOL watching) {
             [self applyTweaks];
         }
     }
+}
+
+// iOS 14 draws a dragged row as if in Light mode, so its dynamic text colours turned black and
+// vanished on the dark card. There the row's colours are fixed to what they are now.
+- (void)fixColorsForDragOnCell:(UITableViewCell *)cell {
+    if (@available(iOS 15.0, *)) return;
+    UITraitCollection *traits = self.traitCollection;
+    for (UILabel *label in @[cell.textLabel ?: [UILabel new], cell.detailTextLabel ?: [UILabel new]]) {
+        if (label.attributedText.length) {
+            NSMutableAttributedString *text = [label.attributedText mutableCopy];
+            [text enumerateAttribute:NSForegroundColorAttributeName inRange:NSMakeRange(0, text.length) options:0 usingBlock:^(UIColor *color, NSRange range, BOOL *stop) {
+                if (color) [text addAttribute:NSForegroundColorAttributeName value:[color resolvedColorWithTraitCollection:traits] range:range];
+            }];
+            label.attributedText = text;
+        }
+        if (label.textColor) label.textColor = [label.textColor resolvedColorWithTraitCollection:traits];
+    }
+    if (cell.imageView.tintColor) cell.imageView.tintColor = [cell.imageView.tintColor resolvedColorWithTraitCollection:traits];
+    if (cell.accessoryView.tintColor) cell.accessoryView.tintColor = [cell.accessoryView.tintColor resolvedColorWithTraitCollection:traits];
 }
 
 - (void)runSequence {
@@ -2121,15 +2145,16 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Repeat"
                                                                    message:@"Runs the actions inside this many times (up to 1,000). In their text, {round} becomes the round number."
                                                             preferredStyle:UIAlertControllerStyleAlert];
-    NSString *current = editing ? [self.actions[existingIndex][@"count"] description] : @"3";
+    NSString *current = editing ? [self.actions[existingIndex][@"count"] description] : @"";
     [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-        textField.placeholder = @"3";
+        textField.placeholder = @"Times";
         textField.text = current;
         textField.keyboardType = UIKeyboardTypeNumberPad;
     }];
     __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        NSInteger count = MAX(1, MIN(1000, [alert.textFields[0].text integerValue]));
+        if ([alert.textFields[0].text integerValue] <= 0) return; // left empty: nothing added or changed
+        NSInteger count = MIN(1000, [alert.textFields[0].text integerValue]);
         NSDictionary *repeat = @{ @"type": @"repeat", @"count": @(count) };
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
@@ -3368,7 +3393,7 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         cell.imageView.image = [UIImage systemImageNamed:[self iconForCommand:actionItem]];
         cell.imageView.tintColor = isControl ? [UIColor tertiaryLabelColor] : [UIColor systemGrayColor];
         
-        UIImageView *handleView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"line.3.horizontal"]];
+        UIImageView *handleView = [[UIImageView alloc] initWithImage:RCGrabberImage()];
         handleView.tintColor = [UIColor systemGray3Color];
         cell.accessoryView = handleView;
         [self applySectionCardStyleToCell:cell atIndexPath:indexPath];
@@ -3404,6 +3429,10 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         subtitle = nil;
     } else {
         cell.textLabel.attributedText = nil; // Clear any attributed text
+        // The plain style first: a reused cell keeps the font of the row it last showed (a Terminal
+        // Command's monospace, say), and once text is set attributedText is never nil to check
+        cell.textLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
+        cell.textLabel.textColor = [UIColor labelColor];
         
         NSAttributedString *paramAttrStr = [self attributedDisplayNameForCommand:action];
         if (paramAttrStr) {
@@ -3458,11 +3487,6 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         }
     }
 
-    if (cell.textLabel.attributedText == nil) {
-        cell.textLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
-        cell.textLabel.textColor = [UIColor labelColor];
-    }
-
     if (subtitle) {
         cell.detailTextLabel.text = subtitle;
         cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
@@ -3499,7 +3523,7 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     }
 
     // Custom reorder handle (since editing = NO)
-    UIImageView *handleView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"line.3.horizontal"]];
+    UIImageView *handleView = [[UIImageView alloc] initWithImage:RCGrabberImage()];
     handleView.tintColor = [UIColor systemGray3Color];
     cell.accessoryView = handleView;
     [self applySectionCardStyleToCell:cell atIndexPath:indexPath];
@@ -3550,6 +3574,7 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     else cell.accessoryView.hidden = NO;
     NSInteger level = [self indentationLevelForRow:indexPath.row];
     [self applyIndentGuidesToCell:cell level:level];
+    [self fixColorsForDragOnCell:cell];
 }
 
 #pragma mark - UITableViewDragDelegate
@@ -3561,6 +3586,15 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     UIDragItem *dragItem = [[UIDragItem alloc] initWithItemProvider:itemProvider];
     dragItem.localObject = action;
     return @[dragItem];
+}
+
+// The row as it's dragged: its card colour (the cell itself is clear, which iOS 14 drew as black)
+- (UIDragPreviewParameters *)tableView:(UITableView *)tableView dragPreviewParametersForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UIDragPreviewParameters *parameters = [[UIDragPreviewParameters alloc] init];
+    parameters.backgroundColor = [[RCConfigManager sharedManager] tweakColorForKey:@"blockBackground" defaultVal:0.12];
+    UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+    if (cell) parameters.visiblePath = [UIBezierPath bezierPathWithRoundedRect:cell.bounds cornerRadius:12];
+    return parameters;
 }
 
 #pragma mark - UITableViewDropDelegate
