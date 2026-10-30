@@ -2884,12 +2884,66 @@ function updateRunningButton(runs) {
   if (btn) btn.style.color = (runs && runs.length) ? '#30d158' : '';
 }
 
+// The last runs that ended, from Run History: fetched on opening and when a run starts or ends
+let recentRuns = [];
+let recentRunCount = -1;
+
+async function refreshRecent() {
+  try {
+    const res = await fetch('/api/history', { cache: 'no-store' });
+    if (!res.ok) return;
+    const runs = await res.json();
+    recentRuns = Array.isArray(runs) ? runs : [];
+  } catch (e) {}
+  renderRunning();
+}
+
+function runWhenText(started) {
+  const d = new Date((started || 0) * 1000);
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+  const today = new Date();
+  if (d.toDateString() === today.toDateString()) return `Today ${time}`;
+  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return `Yesterday ${time}`;
+  return d.toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+}
+
+function runDurationText(seconds) {
+  const s = seconds || 0;
+  return s < 10 ? `${s.toFixed(1)} s` : runElapsedText(Math.round(s));
+}
+
+function renderRecent(box) {
+  if (!recentRuns.length) return;
+  const head = document.createElement('div');
+  head.style.cssText = 'padding:14px 4px 6px;font-size:13px;font-weight:600;color:#8e8e93;text-transform:uppercase';
+  head.textContent = 'Recent';
+  box.appendChild(head);
+  recentRuns.forEach(run => {
+    const stopped = run.outcome === 'stopped';
+    const row = document.createElement('div');
+    row.className = 'app-picker-row';
+    row.style.cursor = 'default';
+    row.innerHTML = `
+      <div class="app-picker-row-inner" style="display:flex; align-items:center; gap:10px;">
+        <i class="f7-icons" style="font-size:22px;flex-shrink:0;color:${stopped ? '#ff9f0a' : '#30d158'}">${stopped ? 'stop_circle' : 'checkmark_circle'}</i>
+        <div style="min-width:0; flex:1;">
+          <div class="app-picker-name">${escHtml(nameForKey(run.key || ''))}</div>
+          <div class="app-picker-bid">${escHtml(runWhenText(run.started))} · ${runDurationText(run.seconds)} · ${run.test ? 'Test · ' : ''}${stopped ? 'Stopped' : 'Finished'}</div>
+        </div>
+      </div>
+    `;
+    box.appendChild(row);
+  });
+}
+
 function renderRunning() {
   const box = document.getElementById('running-content');
   if (!box) return;
   document.getElementById('running-stop-all').disabled = !runningRuns.length;
   if (!runningRuns.length) {
     box.innerHTML = '<div style="padding:22px 16px;color:#8e8e93;text-align:center">No triggers are running</div>';
+    renderRecent(box);
     return;
   }
   box.innerHTML = '';
@@ -2911,6 +2965,7 @@ function renderRunning() {
     row.querySelector('button').onclick = () => stopRun(run.id);
     box.appendChild(row);
   });
+  renderRecent(box);
 }
 
 async function refreshRunning() {
@@ -2919,10 +2974,16 @@ async function refreshRunning() {
   runningRuns = runs;
   updateRunningButton(runs);
   renderRunning();
+  // A run started or ended: Recent may have a new one
+  if (runs.length !== recentRunCount) {
+    recentRunCount = runs.length;
+    refreshRecent();
+  }
 }
 
 function openRunning() {
   runningRuns = [];
+  recentRunCount = -1;
   renderRunning();
   document.getElementById('running-dialog-backdrop').classList.add('visible');
   refreshRunning();

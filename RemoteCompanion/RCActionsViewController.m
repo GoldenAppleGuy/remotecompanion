@@ -325,7 +325,8 @@ static id g_actionClipboard = nil;
     [self setRunMode:@"restart"];
 }
 
-- (UIMenu *)moreMenu {
+// When Triggered Again: in the ••• menu, and on the banner above the sequence
+- (UIMenu *)runModeMenu {
     __weak typeof(self) weakSelf = self;
     NSMutableArray *modes = [NSMutableArray array];
     NSString *current = [self runMode];
@@ -337,9 +338,12 @@ static id g_actionClipboard = nil;
         action.state = [current isEqualToString:choice[0]] ? UIMenuElementStateOn : UIMenuElementStateOff;
         [modes addObject:action];
     }
-    UIMenu *whenFired = [UIMenu menuWithTitle:@"When Triggered Again" image:[UIImage systemImageNamed:@"repeat"] identifier:nil options:0 children:modes];
+    return [UIMenu menuWithTitle:@"When Triggered Again" image:[UIImage systemImageNamed:@"repeat"] identifier:nil options:0 children:modes];
+}
 
-    NSMutableArray *menuActions = [NSMutableArray arrayWithObject:whenFired];
+- (UIMenu *)moreMenu {
+    __weak typeof(self) weakSelf = self;
+    NSMutableArray *menuActions = [NSMutableArray arrayWithObject:[self runModeMenu]];
     // Triggers that take over what iOS normally does can keep it as well: the ping sound, and with a
     // Home button the Accessibility Shortcut, App Switcher, Siri and screenshot, otherwise Siri, the
     // Accessibility Shortcut, a screenshot and Wallet
@@ -3228,13 +3232,27 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     NSString *mode = [self runMode];
     if ([mode isEqualToString:@"restart"]) return @"If triggered again while running, this sequence will start over.";
     if ([mode isEqualToString:@"single"]) return @"If triggered again while running, the new trigger will be ignored.";
+    // Run Alongside, the default: shown only where a run lasts long enough for it to matter
+    if ([self sequenceTakesTime]) return @"If triggered again while running, another run will start alongside.";
     return nil;
+}
+
+// Whether a run can last a while: a delay, a loop or a Wait Until
+- (BOOL)sequenceTakesTime {
+    for (id item in _actions) {
+        if ([item isKindOfClass:[NSString class]] && [[(NSString *)item lowercaseString] hasPrefix:@"delay "]) return YES;
+        if ([item isKindOfClass:[NSDictionary class]]) {
+            NSString *type = [item[@"type"] isKindOfClass:[NSString class]] ? item[@"type"] : @"";
+            if ([@[@"repeat", @"repeat_while", @"wait_until"] containsObject:type]) return YES;
+        }
+    }
+    return NO;
 }
 
 - (CGFloat)runModeBannerHeightForWidth:(CGFloat)width {
     NSString *text = [self runModeBannerText];
     if (!text) return 0;
-    CGFloat textWidth = width - self.tableView.layoutMargins.left - self.tableView.layoutMargins.right - 56; // margins, icon, padding
+    CGFloat textWidth = width - self.tableView.layoutMargins.left - self.tableView.layoutMargins.right - 78; // margins, icon, chevron, padding
     CGRect bounds = [text boundingRectWithSize:CGSizeMake(textWidth, CGFLOAT_MAX) options:NSStringDrawingUsesLineFragmentOrigin
                                     attributes:@{ NSFontAttributeName: [UIFont systemFontOfSize:13] } context:nil];
     return MAX(40, ceil(bounds.size.height) + 20);
@@ -3254,17 +3272,34 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     if (bannerHeight > 0) {
         // Lined up with the action cards (the table's margins), and kept so as the header is resized
         CGFloat left = tableView.layoutMargins.left, right = tableView.layoutMargins.right;
-        UIView *banner = [[UIView alloc] initWithFrame:CGRectMake(left, 10 + stripHeight, width - left - right, bannerHeight)];
+        // Tapping it changes When Triggered Again, as the ••• menu does
+        UIButton *banner = [UIButton buttonWithType:UIButtonTypeCustom];
+        banner.frame = CGRectMake(left, 10 + stripHeight, width - left - right, bannerHeight);
         banner.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         banner.backgroundColor = [UIColor tertiarySystemFillColor];
         banner.layer.cornerRadius = 10;
-        BOOL restart = [[self runMode] isEqualToString:@"restart"];
-        UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:restart ? @"arrow.counterclockwise" : @"nosign"]];
+        banner.menu = [self runModeMenu];
+        banner.showsMenuAsPrimaryAction = YES;
+        banner.enabled = ![self runShown]; // the debugger view is read-only
+        banner.accessibilityLabel = [self runModeBannerText];
+        banner.accessibilityHint = @"Changes what happens when triggered again";
+        UIImageView *chevron = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.up.chevron.down" withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:12 weight:UIImageSymbolWeightSemibold]]];
+        chevron.tintColor = [UIColor tertiaryLabelColor];
+        chevron.contentMode = UIViewContentModeCenter;
+        chevron.frame = CGRectMake(banner.bounds.size.width - 30, 0, 20, bannerHeight);
+        chevron.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+        chevron.userInteractionEnabled = NO;
+        chevron.hidden = [self runShown];
+        [banner addSubview:chevron];
+        NSString *mode = [self runMode];
+        NSString *iconName = [mode isEqualToString:@"restart"] ? @"arrow.counterclockwise" : [mode isEqualToString:@"single"] ? @"nosign" : @"square.stack";
+        UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:iconName]];
         icon.tintColor = [UIColor secondaryLabelColor];
         icon.contentMode = UIViewContentModeCenter;
         icon.frame = CGRectMake(12, 0, 22, bannerHeight);
+        icon.userInteractionEnabled = NO;
         [banner addSubview:icon];
-        UILabel *text = [[UILabel alloc] initWithFrame:CGRectMake(44, 0, banner.bounds.size.width - 56, bannerHeight)];
+        UILabel *text = [[UILabel alloc] initWithFrame:CGRectMake(44, 0, banner.bounds.size.width - 78, bannerHeight)];
         text.text = [self runModeBannerText];
         text.font = [UIFont systemFontOfSize:13];
         text.textColor = [UIColor secondaryLabelColor];

@@ -3178,6 +3178,12 @@ static void rc_run_history_add(NSDictionary *info, BOOL stopped) {
             record[@"outcome"] = stopped ? @"stopped" : @"finished";
             if (info[@"test"]) record[@"test"] = @YES;
             if ([info[@"trace"] count] && [NSJSONSerialization isValidJSONObject:info[@"trace"]]) record[@"trace"] = [info[@"trace"] copy];
+            // The actions as they were for this run, so the record still reads right after the
+            // trigger is edited; the trigger, for the Running page's list of every trigger's runs;
+            // and the step a stopped run was on
+            record[@"key"] = key;
+            if ([info[@"actions"] isKindOfClass:[NSArray class]] && [NSJSONSerialization isValidJSONObject:info[@"actions"]]) record[@"actions"] = info[@"actions"];
+            if (stopped && info[@"index"]) record[@"index"] = info[@"index"];
             NSMutableArray *runs = history[key] ?: [NSMutableArray array];
             [runs insertObject:record atIndex:0];
             while ((NSInteger)runs.count > keep) [runs removeLastObject];
@@ -3200,8 +3206,32 @@ static NSString *rc_run_history_json(NSString *key) {
     return [[NSString alloc] initWithData:data ?: [NSData data] encoding:NSUTF8StringEncoding] ?: @"[]";
 }
 
+// "run history" alone: every trigger's runs together, newest first, at most limit of them
+static NSString *rc_run_history_all_json(NSInteger limit) {
+    NSMutableArray *runs = [NSMutableArray array];
+    @synchronized (rc_run_lock()) {
+        NSDictionary *history = rc_run_history_locked();
+        for (NSString *key in history) {
+            for (NSDictionary *run in history[key]) {
+                if (run[@"key"]) { [runs addObject:run]; continue; }
+                NSMutableDictionary *withKey = [run mutableCopy]; // a record from before records kept their trigger
+                withKey[@"key"] = key;
+                [runs addObject:withKey];
+            }
+        }
+    }
+    [runs sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [b[@"started"] compare:a[@"started"]]; }];
+    if (limit > 0 && (NSInteger)runs.count > limit) [runs removeObjectsInRange:NSMakeRange(limit, runs.count - limit)];
+    NSData *data = [NSJSONSerialization dataWithJSONObject:runs options:0 error:nil];
+    return [[NSString alloc] initWithData:data ?: [NSData data] encoding:NSUTF8StringEncoding] ?: @"[]";
+}
+
+// One trigger's ("clear run history <key>") or every trigger's ("clear run history")
 static void rc_run_history_clear(NSString *key) {
-    @synchronized (rc_run_lock()) { [rc_run_history_locked() removeObjectForKey:key]; }
+    @synchronized (rc_run_lock()) {
+        if (key.length) [rc_run_history_locked() removeObjectForKey:key];
+        else [rc_run_history_locked() removeAllObjects];
+    }
     rc_run_history_save_soon();
 }
 
@@ -3532,7 +3562,7 @@ static void execute_actions_for_simulation(NSString *triggerKey) {
     NSMutableDictionary *thread = [NSThread currentThread].threadDictionary;
     dispatch_semaphore_t wait = dispatch_semaphore_create(0);
     NSString *runID = [NSUUID UUID].UUIDString;
-    NSMutableDictionary *info = [@{ @"id": runID, @"key": triggerKey, @"started": @([[NSDate date] timeIntervalSince1970]), @"test": @YES } mutableCopy];
+    NSMutableDictionary *info = [@{ @"id": runID, @"key": triggerKey, @"started": @([[NSDate date] timeIntervalSince1970]), @"test": @YES, @"actions": [actions copy] } mutableCopy];
     NSNumber *generation;
     @synchronized (rc_run_lock()) {
         generation = g_runGeneration[triggerKey] ?: @0;
@@ -3731,7 +3761,7 @@ void RCExecuteTrigger(NSString *triggerKey) {
             [g_runWaits[triggerKey] addObject:wait];
         }
         NSString *runID = [NSUUID UUID].UUIDString;
-        NSMutableDictionary *info = [@{ @"id": runID, @"key": triggerKey, @"started": @([[NSDate date] timeIntervalSince1970]) } mutableCopy];
+        NSMutableDictionary *info = [@{ @"id": runID, @"key": triggerKey, @"started": @([[NSDate date] timeIntervalSince1970]), @"actions": [actions copy] } mutableCopy];
         @synchronized (rc_run_lock()) { g_runInfo[runID] = info; }
         rc_run_register_id(runID, wait);
         notify_post(kRCRunsChangedNotification);
@@ -10470,6 +10500,13 @@ static NSString *handle_command(NSString *cmd) {
             arg = [[cleanCmd substringFromIndex:8] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         }
         return rc_handle_snapper(arg);
+    } else if ([cleanCmd isEqualToString:@"run history"] || [cleanCmd isEqualToString:@"run history all"] || [cleanCmd hasPrefix:@"run history all "]) {
+        // Every trigger's runs, newest first ("run history all 50" for at most 50)
+        NSInteger limit = [cleanCmd hasPrefix:@"run history all "] ? [[cleanCmd substringFromIndex:16] integerValue] : 0;
+        return [rc_run_history_all_json(limit) stringByAppendingString:@"\n"];
+    } else if ([cleanCmd isEqualToString:@"clear run history"]) {
+        rc_run_history_clear(nil);
+        return @"Run history cleared\n";
     } else if ([cleanCmd hasPrefix:@"run history "]) {
         NSString *key = [[cleanCmd substringFromIndex:12] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         return [rc_run_history_json(key) stringByAppendingString:@"\n"];
@@ -11833,6 +11870,15 @@ static void start_web_server() {
                                     responseString = [NSString stringWithFormat:@"HTTP/1.1 403 Forbidden\r\n%@Content-Length: 17\r\n\r\nWeb UI is disabled", cors];
                                 } else {
                                     NSString *jsonStr = rc_running_runs_json();
+                                    responseString = [NSString stringWithFormat:@"HTTP/1.1 200 OK\r\n%@Content-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: %lu\r\n\r\n%@", cors, (unsigned long)[jsonStr lengthOfBytesUsingEncoding:NSUTF8StringEncoding], jsonStr];
+                                }
+                            } else if ([path isEqualToString:@"/api/history"] && [method isEqualToString:@"GET"]) {
+                                // The last runs that ended, every trigger's, newest first (the Running sheet's Recent)
+                                load_trigger_config();
+                                if (![g_triggerConfig[@"webUIEnabled"] boolValue]) {
+                                    responseString = [NSString stringWithFormat:@"HTTP/1.1 403 Forbidden\r\n%@Content-Length: 17\r\n\r\nWeb UI is disabled", cors];
+                                } else {
+                                    NSString *jsonStr = rc_run_history_all_json(10);
                                     responseString = [NSString stringWithFormat:@"HTTP/1.1 200 OK\r\n%@Content-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: %lu\r\n\r\n%@", cors, (unsigned long)[jsonStr lengthOfBytesUsingEncoding:NSUTF8StringEncoding], jsonStr];
                                 }
                             } else if ([path isEqualToString:@"/api/taprecordstatus"] && ([method isEqualToString:@"GET"] || [method isEqualToString:@"POST"])) {
