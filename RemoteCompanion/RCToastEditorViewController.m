@@ -2,13 +2,13 @@
 #import "RCConfigManager.h"
 #import "RCServerClient.h"
 #import "RCVariableEditorParts.h"
+#import "RCSymbolPickerViewController.h"
 
 @interface RCToastEditorViewController () <UITextFieldDelegate>
 @property (nonatomic, copy) NSString *original;
 @property (nonatomic, strong) UITextField *titleField;
 @property (nonatomic, strong) UITextField *subtitleField;
-@property (nonatomic, strong) UITextField *iconField;
-@property (nonatomic, strong) UIImageView *iconPreview;
+@property (nonatomic, copy) NSString *iconName;
 @property (nonatomic, strong) NSArray<NSString *> *runNames;
 @property (nonatomic, strong) NSArray<NSString *> *savedNames;
 @property (nonatomic, strong) NSArray<NSString *> *triggerSavedNames;
@@ -109,13 +109,8 @@ static NSArray<NSString *> *RCToastParts(NSString *command) {
     self.titleField.autocapitalizationType = UITextAutocapitalizationTypeSentences;
     self.subtitleField = [self makeFieldWithPlaceholder:@"Optional" text:parts[1] insertButton:YES];
     self.subtitleField.autocapitalizationType = UITextAutocapitalizationTypeSentences;
-    self.iconField = [self makeFieldWithPlaceholder:@"bell.fill" text:parts[2] insertButton:NO];
-    self.iconField.autocapitalizationType = UITextAutocapitalizationTypeNone;
-    self.iconField.returnKeyType = UIReturnKeyDone;
-    self.iconPreview = [[UIImageView alloc] init];
-    self.iconPreview.contentMode = UIViewContentModeScaleAspectFit;
-    self.iconPreview.tintColor = [UIColor systemBlueColor];
-    self.iconPreview.translatesAutoresizingMaskIntoConstraints = NO;
+    self.iconName = parts[2];
+    self.subtitleField.returnKeyType = UIReturnKeyDone;
 
     [self rebuildMenus];
     [self updateState];
@@ -165,13 +160,10 @@ static NSArray<NSString *> *RCToastParts(NSString *command) {
 
 - (void)updateState {
     self.navigationItem.rightBarButtonItem.enabled = [self trimmed:self.titleField.text].length > 0;
-    NSString *icon = [self trimmed:self.iconField.text];
-    self.iconPreview.image = [UIImage systemImageNamed:icon.length ? icon : @"text.bubble"];
 }
 
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {
     if (textField == self.titleField) [self.subtitleField becomeFirstResponder];
-    else if (textField == self.subtitleField) [self.iconField becomeFirstResponder];
     else [textField resignFirstResponder];
     return NO;
 }
@@ -186,7 +178,8 @@ static NSArray<NSString *> *RCToastParts(NSString *command) {
     NSString *(^clean)(UITextField *) = ^NSString *(UITextField *field) {
         return [[self trimmed:field.text] stringByReplacingOccurrencesOfString:@"\"" withString:@"'"];
     };
-    NSString *title = clean(self.titleField), *subtitle = clean(self.subtitleField), *icon = clean(self.iconField);
+    NSString *title = clean(self.titleField), *subtitle = clean(self.subtitleField);
+    NSString *icon = [[self trimmed:self.iconName] stringByReplacingOccurrencesOfString:@"\"" withString:@""];
     if (!title.length) return;
     NSString *command;
     if (icon.length) command = [NSString stringWithFormat:@"toast \"%@\" \"%@\" \"%@\"", title, subtitle, icon];
@@ -210,19 +203,39 @@ static NSArray<NSString *> *RCToastParts(NSString *command) {
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return @"Shows a short message at the top of the screen. Use + to insert a variable's value; the icon is an SF Symbol name.";
+    return @"Shows a short message at the top of the screen. Use + to insert a variable's value.";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     RCConfigManager *cm = [RCConfigManager sharedManager];
+    if (indexPath.row == 2) {
+        // The icon as it will look, and its name; tapping opens the picker
+        UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
+        cell.backgroundColor = [cm tweakColorForKey:@"blockBackground" defaultVal:0.12];
+        cell.textLabel.text = @"Icon";
+        BOOL has = self.iconName.length && [UIImage systemImageNamed:self.iconName];
+        cell.detailTextLabel.text = self.iconName.length ? self.iconName : @"None";
+        UIImageView *preview = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:has ? self.iconName : @"text.bubble"]];
+        preview.tintColor = has ? [UIColor systemBlueColor] : [UIColor tertiaryLabelColor];
+        preview.contentMode = UIViewContentModeScaleAspectFit;
+        preview.frame = CGRectMake(0, 0, 26, 26);
+        UIStackView *accessory = [[UIStackView alloc] initWithArrangedSubviews:@[preview, [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]]]];
+        ((UIImageView *)accessory.arrangedSubviews[1]).tintColor = [UIColor tertiaryLabelColor];
+        ((UIImageView *)accessory.arrangedSubviews[1]).preferredSymbolConfiguration = [UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightSemibold];
+        accessory.spacing = 10;
+        accessory.alignment = UIStackViewAlignmentCenter;
+        accessory.frame = CGRectMake(0, 0, 50, 30);
+        cell.accessoryView = accessory;
+        cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+        return cell;
+    }
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
     cell.backgroundColor = [cm tweakColorForKey:@"blockBackground" defaultVal:0.12];
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
-    NSArray *labels = @[@"Title", @"Subtitle", @"Icon"];
-    UITextField *field = @[self.titleField, self.subtitleField, self.iconField][indexPath.row];
+    UITextField *field = indexPath.row == 0 ? self.titleField : self.subtitleField;
     [field removeFromSuperview];
     UILabel *label = [[UILabel alloc] init];
-    label.text = labels[indexPath.row];
+    label.text = indexPath.row == 0 ? @"Title" : @"Subtitle";
     label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     label.translatesAutoresizingMaskIntoConstraints = NO;
     [label setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
@@ -230,31 +243,30 @@ static NSArray<NSString *> *RCToastParts(NSString *command) {
     [cell.contentView addSubview:label];
     [cell.contentView addSubview:field];
     UILayoutGuide *margins = cell.contentView.layoutMarginsGuide;
-    NSMutableArray *constraints = [@[
+    [NSLayoutConstraint activateConstraints:@[
         [label.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor],
         [label.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
         [label.widthAnchor constraintGreaterThanOrEqualToConstant:90],
         [field.leadingAnchor constraintEqualToAnchor:label.trailingAnchor constant:12],
+        [field.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor],
         [field.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor],
         [field.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor],
         [field.heightAnchor constraintGreaterThanOrEqualToConstant:48],
-    ] mutableCopy];
-    if (field == self.iconField) {
-        // The icon as it will look, after the name
-        [self.iconPreview removeFromSuperview];
-        [cell.contentView addSubview:self.iconPreview];
-        [constraints addObjectsFromArray:@[
-            [field.trailingAnchor constraintEqualToAnchor:self.iconPreview.leadingAnchor constant:-8],
-            [self.iconPreview.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor constant:-6],
-            [self.iconPreview.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
-            [self.iconPreview.widthAnchor constraintEqualToConstant:24],
-            [self.iconPreview.heightAnchor constraintEqualToConstant:24],
-        ]];
-    } else {
-        [constraints addObject:[field.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor]];
-    }
-    [NSLayoutConstraint activateConstraints:constraints];
+    ]];
     return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.row != 2) return;
+    [self.view endEditing:YES];
+    RCSymbolPickerViewController *picker = [[RCSymbolPickerViewController alloc] initWithSelectedSymbol:self.iconName allowsNone:YES];
+    __weak typeof(self) weakSelf = self;
+    picker.onPick = ^(NSString *name) {
+        weakSelf.iconName = name;
+        [weakSelf.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:2 inSection:0]] withRowAnimation:UITableViewRowAnimationNone];
+    };
+    [self.navigationController pushViewController:picker animated:YES];
 }
 
 @end

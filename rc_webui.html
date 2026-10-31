@@ -1438,6 +1438,33 @@
     .toast-var-wrap .dialog-input { padding-left: 38px; padding-right: 38px; }
     .toast-var-insert { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); margin: 0; }
     .toast-var-insert i.f7-icons { font-size: 20px; }
+    #symbol-picker-backdrop { z-index: 960; }
+    .sym-box { width: 92%; max-width: 480px; display: flex; flex-direction: column; max-height: 86vh; max-height: 86dvh; }
+    .sym-top { padding: 0 14px; }
+    .sym-search { margin: 0 0 10px; width: 100%; text-align: left; padding: 8px 12px; font-size: 15px; }
+    .sym-cats { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 10px; scrollbar-width: none; }
+    .sym-cats::-webkit-scrollbar { display: none; }
+    .sym-cat {
+      flex-shrink: 0; border: none; border-radius: 15px; padding: 6px 12px; font-size: 13px; font-weight: 600; font-family: inherit;
+      background: rgba(255,255,255,0.12); color: #fff; cursor: pointer;
+    }
+    .sym-cat.active { background: #fff; color: #000; }
+    .sym-grid {
+      overflow-y: auto; padding: 4px 14px 14px; display: grid; gap: 8px;
+      grid-template-columns: repeat(auto-fill, minmax(70px, 1fr)); -webkit-overflow-scrolling: touch;
+    }
+    .sym-tile {
+      aspect-ratio: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+      background: rgba(255,255,255,0.07); border: 1.5px solid transparent; border-radius: 12px; color: #fff; cursor: pointer;
+      font-family: inherit; padding: 4px; min-width: 0; transition: transform 0.1s, background 0.12s;
+    }
+    .sym-tile i.f7-icons { font-size: 24px; }
+    .sym-tile span { font-size: 9.5px; color: #8e8e93; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sym-tile:hover { background: rgba(255,255,255,0.12); }
+    .sym-tile:active { transform: scale(0.94); }
+    .sym-tile.selected { background: rgba(10,132,255,0.22); border-color: #0a84ff; }
+    .sym-tile.selected i.f7-icons { color: #0a84ff; }
+    .sym-empty { grid-column: 1 / -1; text-align: center; color: #8e8e93; font-size: 13px; padding: 24px 0; }
     #var-editor-save:disabled { color: rgba(235,235,245,0.3); cursor: default; }
     .var-ed-menu {
       position: fixed; z-index: 3000; min-width: 220px; max-width: 300px; max-height: 60vh; overflow-y: auto;
@@ -2272,6 +2299,19 @@
   </div>
 </div>
 
+<!-- ══ ICON PICKER (Toast) ═════════════════════════════════════════════ -->
+<div class="dialog-backdrop" id="symbol-picker-backdrop" onclick="if (event.target === this) closeSymbolPicker()">
+  <div class="dialog-box sym-box">
+    <div class="dialog-title">Icon</div>
+    <div class="sym-top">
+      <input class="dialog-input sym-search" id="symbol-picker-search" type="text" placeholder="Search Icons" autocorrect="off" autocapitalize="none" spellcheck="false" oninput="renderSymbolPicker()">
+      <div class="sym-cats" id="symbol-picker-cats"></div>
+    </div>
+    <div class="sym-grid" id="symbol-picker-grid"></div>
+    <div class="dialog-btns"><button onclick="closeSymbolPicker()">Cancel</button></div>
+  </div>
+</div>
+
 <!-- ══ HOME ASSISTANT ACTION DIALOG ═════════════════════════════════════ -->
 <div class="dialog-backdrop" id="ha-dialog-backdrop">
   <div class="dialog-box app-launch-dialog" style="max-width: 560px; width: 90%;">
@@ -2357,17 +2397,9 @@
         <input class="dialog-input" id="toast-subtitle-input" type="text" placeholder="Subtitle (optional, e.g. ON)" autocorrect="off" autocapitalize="none" spellcheck="false" style="margin:0; width:100%" oninput="updateToastPreview()">
         <button type="button" class="var-ed-insert toast-var-insert" title="Insert Variable" onclick="toastInsertVariable(event, 'toast-subtitle-input')"><i class="f7-icons">plus_circle</i></button>
       </div>
-      <input class="dialog-input" id="toast-icon-input" type="text" placeholder="SF Symbol Icon (optional, e.g. bell.fill)" autocorrect="off" autocapitalize="none" spellcheck="false" style="margin:0; width:100%" oninput="updateToastPreview()">
-      
-      <!-- Preset Icon Selector Chips -->
-      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top: 2px;" id="toast-icon-presets">
-        <span class="toast-preset-chip" onclick="setToastIconPreset('bell.fill')">🔔 bell</span>
-        <span class="toast-preset-chip" onclick="setToastIconPreset('bell.slash.fill')">🔕 bell.slash</span>
-        <span class="toast-preset-chip" onclick="setToastIconPreset('checkmark.circle.fill')">✅ checkmark</span>
-        <span class="toast-preset-chip" onclick="setToastIconPreset('xmark.circle.fill')">❌ xmark</span>
-        <span class="toast-preset-chip" onclick="setToastIconPreset('star.fill')">⭐ star</span>
-        <span class="toast-preset-chip" onclick="setToastIconPreset('speaker.wave.3.fill')">🔊 speaker</span>
-        <span class="toast-preset-chip" onclick="setToastIconPreset('camera.fill')">📷 camera</span>
+      <div class="toast-var-wrap">
+        <input class="dialog-input" id="toast-icon-input" type="text" placeholder="Icon (optional)" autocorrect="off" autocapitalize="none" spellcheck="false" style="margin:0; width:100%" oninput="updateToastPreview()">
+        <button type="button" class="var-ed-insert toast-var-insert" title="Choose Icon" onclick="openSymbolPicker()"><i class="f7-icons">square_grid_2x2</i></button>
       </div>
 
       <!-- Live Toast Preview Box -->
@@ -4859,6 +4891,78 @@ function toastInsertVariable(e, id) {
     input.setSelectionRange(s + token.length, s + token.length);
     updateToastPreview();
   });
+}
+
+// ── Icon picker for the Toast: SF Symbol names the web icon font also has, by category ──
+const SYMBOL_CATEGORIES = [
+  ['Common', 'bell.fill bell.slash.fill checkmark.circle.fill xmark.circle.fill exclamationmark.triangle.fill exclamationmark.circle.fill info.circle.fill star.fill heart.fill flag.fill bolt.fill sparkles hand.thumbsup.fill hand.thumbsdown.fill hand.raised.fill lightbulb.fill flame.fill gift.fill tag.fill bookmark.fill pin.fill eye.fill eye.slash.fill lock.fill lock.open.fill shield.fill person.fill person.2.fill house.fill trash.fill pencil paperplane.fill envelope.fill text.bubble.fill phone.fill link doc.fill folder.fill'],
+  ['Media', 'play.fill pause.fill stop.fill playpause.fill forward.fill backward.fill forward.end.fill backward.end.fill shuffle repeat repeat.1 music.note music.note.list music.mic headphones speaker.fill speaker.slash.fill mic.fill mic.slash.fill camera.fill photo.fill film.fill tv.fill hifispeaker.fill waveform'],
+  ['Devices', 'desktopcomputer keyboard printer.fill gamecontroller.fill battery.100 battery.25 battery.0 bolt.circle.fill lock.rotation rotate.right.fill car.fill'],
+  ['Connectivity', 'wifi wifi.slash wifi.exclamationmark airplane personalhotspot globe location.fill location.slash.fill cloud.fill arrow.down.circle.fill arrow.up.circle.fill'],
+  ['Home', 'house.fill lightbulb.fill lightbulb.slash.fill thermometer bed.double.fill lock.shield.fill'],
+  ['Weather & Time', 'sun.max.fill moon.fill moon.stars.fill cloud.sun.fill cloud.rain.fill cloud.bolt.fill cloud.snow.fill wind tornado umbrella.fill sunrise.fill sunset.fill moon.zzz.fill zzz alarm.fill clock.fill timer hourglass stopwatch.fill calendar'],
+  ['Life', 'waveform.path.ecg drop.fill bandage.fill cart.fill bag.fill creditcard.fill briefcase.fill book.fill gamecontroller.fill'],
+  ['Symbols', 'plus.circle.fill minus.circle.fill multiply.circle.fill number textformat checkmark xmark exclamationmark arrow.right arrow.left arrow.up arrow.down arrow.clockwise arrow.counterclockwise chevron.right circle.fill square.fill triangle.fill hexagon.fill power slider.horizontal.3'],
+].map(([title, names]) => [title, names.split(' ')]);
+let symbolPickerCategory = -1;
+
+function openSymbolPicker() {
+  symbolPickerCategory = -1;
+  document.getElementById('symbol-picker-search').value = '';
+  const cats = document.getElementById('symbol-picker-cats');
+  cats.innerHTML = '';
+  [['All'], ...SYMBOL_CATEGORIES].forEach(([title], i) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'sym-cat' + (i === 0 ? ' active' : '');
+    chip.textContent = title;
+    chip.onclick = () => {
+      symbolPickerCategory = i - 1;
+      cats.querySelectorAll('.sym-cat').forEach((c, j) => c.classList.toggle('active', j === i));
+      renderSymbolPicker();
+      document.getElementById('symbol-picker-grid').scrollTop = 0;
+    };
+    cats.appendChild(chip);
+  });
+  renderSymbolPicker();
+  document.getElementById('symbol-picker-backdrop').classList.add('visible');
+  const sel = document.querySelector('#symbol-picker-grid .sym-tile.selected');
+  if (sel) setTimeout(() => sel.scrollIntoView({ block: 'center' }), 50);
+}
+
+function closeSymbolPicker() {
+  document.getElementById('symbol-picker-backdrop').classList.remove('visible');
+}
+
+function renderSymbolPicker() {
+  const q = document.getElementById('symbol-picker-search').value.trim().toLowerCase();
+  const current = document.getElementById('toast-icon-input').value.trim();
+  const terms = q.split(/[ .]+/).filter(Boolean);
+  const names = [];
+  SYMBOL_CATEGORIES.forEach(([, list], i) => {
+    if (symbolPickerCategory >= 0 && i !== symbolPickerCategory) return;
+    list.forEach(n => {
+      if (names.includes(n)) return;
+      if (!terms.length || terms.some(t => n.replaceAll('.', ' ').includes(t))) names.push(n);
+    });
+  });
+  const shown = (!q && symbolPickerCategory < 0) ? ['', ...names] : names;
+  const grid = document.getElementById('symbol-picker-grid');
+  grid.innerHTML = '';
+  shown.forEach(n => {
+    const tile = document.createElement('button');
+    tile.type = 'button';
+    tile.className = 'sym-tile' + (n === current ? ' selected' : '');
+    tile.title = n || 'None';
+    tile.innerHTML = `<i class="f7-icons">${n ? n.replaceAll('.', '_') : 'nosign'}</i><span>${escHtml(n || 'None')}</span>`;
+    tile.onclick = () => {
+      document.getElementById('toast-icon-input').value = n;
+      updateToastPreview();
+      closeSymbolPicker();
+    };
+    grid.appendChild(tile);
+  });
+  if (!shown.length) grid.innerHTML = '<div class="sym-empty">No matching icons. Type any SF Symbol name in the Icon field.</div>';
 }
 
 function closeToastDialog() {
