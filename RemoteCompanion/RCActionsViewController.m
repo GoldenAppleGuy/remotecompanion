@@ -8,6 +8,7 @@
 #import "RCSetVariableViewController.h"
 #import "RCVariableConditionViewController.h"
 #import "RCNumberSettingViewController.h"
+#import "RCToastEditorViewController.h"
 #import "RCServerClient.h"
 #import "RCRunningViewController.h"
 #import "RCRunHistoryViewController.h"
@@ -1298,48 +1299,8 @@ static void RCSetRunWatching(BOOL watching) {
                 [self presentViewController:nav animated:YES completion:nil];
             });
         } else if ([action isEqualToString:@"__TOAST__"]) {
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Toast" 
-                message:@"Enter toast title, subtitle and SFSymbol name" 
-                preferredStyle:UIAlertControllerStyleAlert];
-                
-            [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-                textField.placeholder = @"Title (required)";
-            }];
-            [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-                textField.placeholder = @"Subtitle (optional)";
-            }];
-            [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-                textField.placeholder = @"SFSymbol name (optional, e.g. info.circle)";
-            }];
-            
-            [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-            [alert addAction:[UIAlertAction actionWithTitle:@"Add" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull alertAction) {
-                NSString *title = alert.textFields[0].text;
-                NSString *subtitle = alert.textFields[1].text;
-                NSString *icon = alert.textFields[2].text;
-                
-                if (title.length > 0) {
-                    NSString *escTitle = [title stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
-                    NSString *escSub = [subtitle stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
-                    NSString *escIcon = [icon stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
-                    
-                    NSString *cmd;
-                    if (escIcon.length > 0) {
-                        cmd = [NSString stringWithFormat:@"toast \"%@\" \"%@\" \"%@\"", escTitle, escSub ?: @"", escIcon];
-                    } else if (escSub.length > 0) {
-                        cmd = [NSString stringWithFormat:@"toast \"%@\" \"%@\"", escTitle, escSub];
-                    } else {
-                        cmd = [NSString stringWithFormat:@"toast \"%@\"", escTitle];
-                    }
-                    
-                    [self.actions addObject:cmd];
-                    [self saveActions];
-                    [self.tableView reloadData];
-                }
-            }]];
-            
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [self presentViewController:alert animated:YES completion:nil];
+                [self presentToastEditorForIndex:NSNotFound];
             });
         } else {
             [self.actions addObject:action];
@@ -2157,6 +2118,35 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     });
 }
 
+// Toast: its own screen. Edits the toast at index, or adds one at the end.
+- (void)presentToastEditorForIndex:(NSInteger)index {
+    BOOL editing = index != NSNotFound && index >= 0 && index < (NSInteger)self.actions.count;
+    // An action with settings keeps them, its command in "command"
+    id original = editing ? self.actions[index] : nil;
+    NSString *current = [original isKindOfClass:[NSDictionary class]] ? [original[@"command"] description] : ([original isKindOfClass:[NSString class]] ? original : nil);
+    RCToastEditorViewController *editor = [[RCToastEditorViewController alloc] initWithCommand:current otherActions:self.actions];
+    __weak typeof(self) weakSelf = self;
+    editor.onSave = ^(NSString *command) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (editing && index < (NSInteger)strongSelf.actions.count) {
+            if ([original isKindOfClass:[NSDictionary class]]) {
+                NSMutableDictionary *d = [original mutableCopy];
+                d[@"command"] = command;
+                strongSelf.actions[index] = d;
+            } else {
+                strongSelf.actions[index] = command;
+            }
+        } else {
+            [strongSelf.actions addObject:command];
+        }
+        [strongSelf saveActions];
+        [strongSelf.tableView reloadData];
+    };
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:editor];
+    [self presentViewController:nav animated:YES completion:nil];
+}
+
 // Delay: seconds, or a variable. Edits the delay at index, or adds one at the end.
 - (void)presentDelayForIndex:(NSInteger)index current:(NSString *)current after:(NSTimeInterval)delay {
     BOOL editing = index != NSNotFound && index >= 0 && index < (NSInteger)self.actions.count;
@@ -2629,6 +2619,11 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         return;
     }
     
+    if ([currentAction.lowercaseString hasPrefix:@"toast "]) {
+        [self presentToastEditorForIndex:indexPath.row];
+        return;
+    }
+
     if ([currentAction hasPrefix:@"exec "] || [currentAction hasPrefix:@"root "]) {
         // Edit Terminal Command
         BOOL isRoot = [currentAction hasPrefix:@"root "];

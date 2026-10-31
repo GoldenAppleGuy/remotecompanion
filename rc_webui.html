@@ -1434,6 +1434,10 @@
       padding: 7px 0; border-radius: 7px; cursor: pointer; transition: background 0.15s;
     }
     .var-ed-seg button.selected { background: #636366; box-shadow: 0 2px 6px rgba(0,0,0,0.25); }
+    .toast-var-wrap { position: relative; }
+    .toast-var-wrap .dialog-input { padding-left: 38px; padding-right: 38px; }
+    .toast-var-insert { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); margin: 0; }
+    .toast-var-insert i.f7-icons { font-size: 20px; }
     #var-editor-save:disabled { color: rgba(235,235,245,0.3); cursor: default; }
     .var-ed-menu {
       position: fixed; z-index: 3000; min-width: 220px; max-width: 300px; max-height: 60vh; overflow-y: auto;
@@ -2345,8 +2349,14 @@
     <div class="dialog-title" id="toast-dialog-title">Toast Notification</div>
     <div class="dialog-msg" style="padding-bottom: 8px;">Configure HUD toast alert displayed on device:</div>
     <div style="padding:0 14px 12px; display:flex; flex-direction:column; gap:10px;">
-      <input class="dialog-input" id="toast-title-input" type="text" placeholder="Title (e.g. Silent Vibrate)" autocorrect="off" autocapitalize="words" spellcheck="false" style="margin:0; width:100%" oninput="updateToastPreview()">
-      <input class="dialog-input" id="toast-subtitle-input" type="text" placeholder="Subtitle (optional, e.g. ON)" autocorrect="off" autocapitalize="none" spellcheck="false" style="margin:0; width:100%" oninput="updateToastPreview()">
+      <div class="toast-var-wrap">
+        <input class="dialog-input" id="toast-title-input" type="text" placeholder="Title (e.g. Silent Vibrate)" autocorrect="off" autocapitalize="words" spellcheck="false" style="margin:0; width:100%" oninput="updateToastPreview()">
+        <button type="button" class="var-ed-insert toast-var-insert" title="Insert Variable" onclick="toastInsertVariable(event, 'toast-title-input')"><i class="f7-icons">plus_circle</i></button>
+      </div>
+      <div class="toast-var-wrap">
+        <input class="dialog-input" id="toast-subtitle-input" type="text" placeholder="Subtitle (optional, e.g. ON)" autocorrect="off" autocapitalize="none" spellcheck="false" style="margin:0; width:100%" oninput="updateToastPreview()">
+        <button type="button" class="var-ed-insert toast-var-insert" title="Insert Variable" onclick="toastInsertVariable(event, 'toast-subtitle-input')"><i class="f7-icons">plus_circle</i></button>
+      </div>
       <input class="dialog-input" id="toast-icon-input" type="text" placeholder="SF Symbol Icon (optional, e.g. bell.fill)" autocorrect="off" autocapitalize="none" spellcheck="false" style="margin:0; width:100%" oninput="updateToastPreview()">
       
       <!-- Preset Icon Selector Chips -->
@@ -4785,6 +4795,7 @@ function terminalDialogOk() {
 // ── Toast Action Modal ──
 function promptToastModal(initialCmd = '', editIdx = null) {
   g_editingToastIdx = editIdx;
+  varEdStart({ mode: 'toast', typed: {}, nameText: '', picked: null, typingNew: false }, null); // names for the + menus
   const title = (editIdx !== null) ? 'Edit Toast Notification' : 'Toast Notification';
   document.getElementById('toast-dialog-title').textContent = title;
   
@@ -4794,7 +4805,7 @@ function promptToastModal(initialCmd = '', editIdx = null) {
   
   if (initialCmd && initialCmd.toLowerCase().startsWith('toast ')) {
     const argStr = initialCmd.slice(6).trim();
-    const match = argStr.match(/^"([^"]+)"(?:\s+"([^"]+)")?(?:\s+"([^"]+)")?/);
+    const match = argStr.match(/^"([^"]*)"(?:\s+"([^"]*)")?(?:\s+"([^"]*)")?/);
     if (match) {
       tTitle = match[1] || '';
       tSub = match[2] || '';
@@ -4836,7 +4847,23 @@ function updateToastPreview() {
   document.getElementById('toast-preview-icon').textContent = f7Icon || 'text_bubble';
 }
 
+// The + on a Toast field: the variable goes in at the cursor
+function toastInsertVariable(e, id) {
+  e.stopPropagation();
+  const input = document.getElementById(id);
+  varEdOpenMenu(e.currentTarget, name => {
+    const token = `{${name}}`;
+    const s = input.selectionStart ?? input.value.length, en = input.selectionEnd ?? input.value.length;
+    input.value = input.value.slice(0, s) + token + input.value.slice(en);
+    input.focus();
+    input.setSelectionRange(s + token.length, s + token.length);
+    updateToastPreview();
+  });
+}
+
 function closeToastDialog() {
+  varEdCloseMenu();
+  if (varEd && varEd.mode === 'toast') varEd = null;
   document.getElementById('toast-dialog-backdrop').classList.remove('visible');
   g_editingToastIdx = null;
 }
@@ -4847,12 +4874,12 @@ function toastDialogOk() {
     closeToastDialog();
     return;
   }
-  const tSub = document.getElementById('toast-subtitle-input').value.trim();
-  const tIcon = document.getElementById('toast-icon-input').value.trim();
+  const tSub = document.getElementById('toast-subtitle-input').value.trim().replaceAll('"', "'");
+  const tIcon = document.getElementById('toast-icon-input').value.trim().replaceAll('"', "'");
   
   let formattedCmd = '';
   if (tSub || tIcon) {
-    formattedCmd = `toast "${tTitle}" "${tSub}" "${tIcon}"`;
+    formattedCmd = `toast "${tTitle.replaceAll('"', "'")}" "${tSub}" "${tIcon}"`;
   } else {
     formattedCmd = `toast ${tTitle}`;
   }
@@ -5621,9 +5648,7 @@ function selectPickerAction(act) {
   if (c === '__DELAY__') {
     promptDelay('', 'Add', n => addActionToCurrent(`delay ${n}`));
   } else if (c === '__TOAST__') {
-    showDialog('Add HUD Toast', 'Message text:', '', 'Add', val => {
-      if (val) addActionToCurrent(`toast ${val}`);
-    });
+    promptToastModal('', null);
   } else if (c === '__CUSTOM__') {
     showDialog('Terminal Command', 'Shell command to execute:', '', 'Add', val => {
       if (val) addActionToCurrent(`exec ${val}`);
@@ -6381,6 +6406,7 @@ function varEdTileTapped(op) {
 function varEdUpdate() {
   if (!varEd) return;
   if (varEd.mode === 'number') { numSettingUpdate(); return; }
+  if (varEd.mode === 'toast') return;
   const kind = varEdKind();
   const typed = varEd.nameText.trim();
   let note = '', bad = false;
