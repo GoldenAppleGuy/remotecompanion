@@ -25,6 +25,7 @@ static NSString *RCChoiceNote(NSString *key, NSArray<NSString *> *suffixes) {
 @property (nonatomic, copy) NSString *selectedSuffix;  // the checked choice
 @property (nonatomic, copy) NSString *timedMinutes;    // "30" or "{name}": the checked choice is a timed pause
 @property (nonatomic, copy) NSArray *otherActions;
+@property (nonatomic, strong) UISelectionFeedbackGenerator *feedback;
 @end
 
 @implementation RCChoiceViewController
@@ -73,6 +74,9 @@ static NSString *RCChoiceNote(NSString *key, NSArray<NSString *> *suffixes) {
     // Nothing changes until Save (Add while adding): the checkmark only marks the choice
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:self.saveTitle ?: @"Save" style:UIBarButtonItemStyleDone target:self action:@selector(save)];
     self.tableView.tableHeaderView = [self headerView];
+    self.tableView.delaysContentTouches = NO; // a row lights up as soon as it's touched
+    self.feedback = [[UISelectionFeedbackGenerator alloc] init];
+    [self.feedback prepare];
     [self updateSave];
 }
 
@@ -137,19 +141,35 @@ static NSString *RCChoiceNote(NSString *key, NSArray<NSString *> *suffixes) {
     cell.selectedBackgroundView = selection;
     cell.textLabel.textColor = [UIColor labelColor];
     NSArray *suffixes = [self suffixes];
-    BOOL checked;
+    BOOL checked = [self isCheckedRow:indexPath.row];
     if (indexPath.row < (NSInteger)suffixes.count) {
         cell.textLabel.text = self.info[@"displaySuffixes"][indexPath.row];
-        checked = !self.timedMinutes && [suffixes[indexPath.row] isEqualToString:self.selectedSuffix ?: @""];
     } else {
         // Pause Button Triggers: for a time of the user's own
         cell.textLabel.text = @"For a Time…";
         cell.detailTextLabel.text = self.timedMinutes ? [self minutesText:self.timedMinutes] : nil;
-        checked = self.timedMinutes != nil;
     }
     cell.accessoryType = checked ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
     cell.accessibilityTraits = checked ? UIAccessibilityTraitButton | UIAccessibilityTraitSelected : UIAccessibilityTraitButton;
     return cell;
+}
+
+// Whether a row holds the checked choice
+- (BOOL)isCheckedRow:(NSInteger)row {
+    NSArray *suffixes = [self suffixes];
+    if (row < (NSInteger)suffixes.count) return !self.timedMinutes && [suffixes[row] isEqualToString:self.selectedSuffix ?: @""];
+    return self.timedMinutes != nil;
+}
+
+// The checkmarks (and the timed pause's minutes) on the rows on screen
+- (void)refreshChecks {
+    for (NSIndexPath *path in self.tableView.indexPathsForVisibleRows) {
+        UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:path];
+        BOOL checked = [self isCheckedRow:path.row];
+        cell.accessoryType = checked ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+        cell.accessibilityTraits = checked ? UIAccessibilityTraitButton | UIAccessibilityTraitSelected : UIAccessibilityTraitButton;
+        if (path.row >= (NSInteger)[self suffixes].count) cell.detailTextLabel.text = self.timedMinutes ? [self minutesText:self.timedMinutes] : nil;
+    }
 }
 
 - (NSString *)minutesText:(NSString *)minutes {
@@ -164,12 +184,13 @@ static NSString *RCChoiceNote(NSString *key, NSArray<NSString *> *suffixes) {
         [self askMinutes];
         return;
     }
-    // One choice: the checkmark moves here
+    // One choice: the checkmark moves here (the rows change in place, without a reload)
     self.selectedSuffix = suffixes[indexPath.row];
     self.timedMinutes = nil;
-    [tableView reloadSections:[NSIndexSet indexSetWithIndex:0] withRowAnimation:UITableViewRowAnimationNone];
+    [self refreshChecks];
     [self updateSave];
-    [[[UISelectionFeedbackGenerator alloc] init] selectionChanged];
+    [self.feedback selectionChanged];
+    [self.feedback prepare];
 }
 
 // Pause Button Triggers for a number of minutes, or a variable
@@ -188,7 +209,7 @@ static NSString *RCChoiceNote(NSString *key, NSArray<NSString *> *suffixes) {
         if (!strongSelf) return;
         strongSelf.timedMinutes = [minutes isKindOfClass:[NSNumber class]] ? [NSString stringWithFormat:@"%ld", (long)[minutes integerValue]] : [minutes description];
         strongSelf.selectedSuffix = nil;
-        [strongSelf.tableView reloadData];
+        [strongSelf refreshChecks];
         [strongSelf updateSave];
     };
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:editor];
