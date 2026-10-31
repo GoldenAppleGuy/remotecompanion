@@ -560,11 +560,6 @@
         return;
     }
 
-    if ([command isEqualToString:@"__SET_VOLUME__"] || [command isEqualToString:@"__SET_RINGER_VOLUME__"] || [command isEqualToString:@"__SET_BRIGHTNESS__"] || [command isEqualToString:@"__SET_FLASHLIGHT__"]) {
-        [self handleValueInputForCommand:command];
-        return;
-    }
-    
     // Touch gesture handlers
     if ([command isEqualToString:@"__TAP__"]) {
         [self handleTouchCoordInputWithTitle:@"Tap" placeholder:@"x y  (e.g. 195 422)" build:^NSString *(NSString *v) {
@@ -790,56 +785,6 @@
             }
         }];
     }
-}
-
-- (void)handleValueInputForCommand:(NSString *)commandPlaceholder {
-    NSDictionary *inputs = @{
-        @"__SET_VOLUME__": @[@"Set Volume", @"set-vol"],
-        @"__SET_RINGER_VOLUME__": @[@"Set Ringer Volume", @"ringer volume"],
-        @"__SET_BRIGHTNESS__": @[@"Set Brightness", @"brightness"],
-        @"__SET_FLASHLIGHT__": @[@"Set Flashlight", @"flashlight"],
-    };
-    NSString *title = inputs[commandPlaceholder][0] ?: @"Set Flashlight";
-    NSString *prefix = inputs[commandPlaceholder][1] ?: @"flashlight";
-
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title                                                                   message:@"Enter a value (0-100)" 
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    
-    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
-        textField.keyboardType = UIKeyboardTypeNumberPad;
-        textField.textAlignment = NSTextAlignmentCenter;
-    }];
-    
-    UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"Set" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        UITextField *textField = alert.textFields.firstObject;
-        NSString *value = textField.text;
-        // Basic validation
-        int val = [value intValue];
-        if (val < 0) val = 0;
-        if (val > 100) val = 100;
-        
-        NSString *finalCommand = [NSString stringWithFormat:@"%@ %d", prefix, val];
-        
-        if (self.onActionSelected) {
-            self.onActionSelected(finalCommand);
-        }
-        if (self.searchController.isActive) {
-            [self.searchController dismissViewControllerAnimated:NO completion:^{
-                [self dismissViewControllerAnimated:YES completion:nil];
-            }];
-        } else {
-            [self dismissViewControllerAnimated:YES completion:nil];
-        }
-    }];
-    
-    UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction * _Nonnull action) {
-        [self.tableView deselectRowAtIndexPath:[self.tableView indexPathForSelectedRow] animated:YES];
-    }];
-    
-    [alert addAction:cancelAction];
-    [alert addAction:okAction];
-    
-    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)handleUnlockDevice {
