@@ -2817,9 +2817,38 @@ static BOOL rc_variable_delete(NSString *name) {
     return found;
 }
 
+// How a value goes into text: as it is, single-quoted for a shell, or only {round} filled
+typedef NS_ENUM(NSInteger, RCFillMode) { RCFillPlain, RCFillShell, RCFillRoundOnly };
+
+// One shell word whatever the value holds: 'it'\''s' for it's
+static NSString *rc_shell_quoted(NSString *value) {
+    return [NSString stringWithFormat:@"'%@'", [value stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"]];
+}
+
+static NSString *rc_fill_placeholders_mode(NSString *text, RCFillMode mode);
+
 // {round} (the innermost loop's round) and {name} (a variable) in text. Braces that aren't one of
 // these, like a JSON body in a curl command or a variable that isn't set, are left as they are.
 static NSString *rc_fill_placeholders(NSString *text) {
+    return rc_fill_placeholders_mode(text, RCFillPlain);
+}
+
+// An action's command with its placeholders filled. In a Terminal command (exec, root, sudo) each
+// value is single-quoted, so text in it can't run as a command of its own. In Lua, whose tables
+// use braces too, only {round} is filled, as before variables.
+static NSString *rc_fill_action(NSString *text) {
+    if (![text isKindOfClass:[NSString class]]) return text;
+    NSString *lower = [[text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+    for (NSString *prefix in @[@"lua ", @"lua_eval ", @"lua:"]) {
+        if ([lower hasPrefix:prefix]) return rc_fill_placeholders_mode(text, RCFillRoundOnly);
+    }
+    for (NSString *prefix in @[@"exec ", @"root ", @"sudo "]) {
+        if ([lower hasPrefix:prefix]) return rc_fill_placeholders_mode(text, RCFillShell);
+    }
+    return rc_fill_placeholders_mode(text, RCFillPlain);
+}
+
+static NSString *rc_fill_placeholders_mode(NSString *text, RCFillMode mode) {
     if (![text isKindOfClass:[NSString class]] || [text rangeOfString:@"{"].location == NSNotFound) return text;
     static NSRegularExpression *pattern;
     static dispatch_once_t once;
@@ -2834,10 +2863,11 @@ static NSString *rc_fill_placeholders(NSString *text) {
         NSString *value = nil;
         if ([name isEqualToString:@"round"]) {
             if (loops.count) value = [NSString stringWithFormat:@"%ld", (long)[loops.lastObject[@"rounds"] integerValue]];
-        } else {
+        } else if (mode != RCFillRoundOnly) {
             value = rc_variable_get(name);
         }
         if (!value) return;
+        if (mode == RCFillShell) value = rc_shell_quoted(value);
         [filled appendString:[text substringWithRange:NSMakeRange(last, match.range.location - last)]];
         [filled appendString:value];
         last = NSMaxRange(match.range);
@@ -3636,7 +3666,7 @@ static void rc_execute_action_sequence_body(NSArray *actions, NSString *triggerK
         }
         
         if ([actionItem isKindOfClass:[NSString class]]) {
-            NSString *action = rc_fill_placeholders((NSString *)actionItem);
+            NSString *action = rc_fill_action((NSString *)actionItem);
             SRLogMin(@"[%@] -> %@", triggerKey, action);
             RCTKEvent(@"action", @{ @"trigger": triggerKey ?: @"", @"command": action });
             handle_command(action);
@@ -3788,9 +3818,12 @@ static void rc_execute_action_sequence_body(NSArray *actions, NSString *triggerK
                 SRLog(@"[%@] Set Variable with an unusable name '%@' - skipped", triggerKey, name);
                 continue;
             }
-            NSString *value = rc_fill_placeholders([dictAction[@"value"] description] ?: @"");
             BOOL runOnly = [[dictAction[@"scope"] description] isEqualToString:@"run"];
             NSString *op = [[dictAction[@"op"] description] lowercaseString] ?: @"set";
+            // An RC command is filled the way an action is (quoted in a Terminal command)
+            BOOL runsCommand = [op isEqualToString:@"command"] || [op isEqualToString:@"command_number"];
+            NSString *raw = [dictAction[@"value"] description] ?: @"";
+            NSString *value = runsCommand ? rc_fill_action(raw) : rc_fill_placeholders(raw);
             NSString *problem = nil;
             value = rc_variable_operation(op, name, value, dictAction, &problem);
             if (!value) {
@@ -10833,7 +10866,13 @@ static NSString *handle_command(NSString *cmd) {
             return value ? [value stringByAppendingString:@"\n"] : @"";
         } else if ([verb isEqualToString:@"set"]) {
             if (!rc_variable_name_valid(name)) return @"Usage: var set <name> <text> (name: letters, digits and _)\n";
+            // The value as sent, spaces at either end kept (cleanCmd is trimmed); only a line end is dropped
             NSString *value = argSpace.location == NSNotFound ? @"" : [args substringFromIndex:argSpace.location + 1];
+            static NSRegularExpression *rawSet;
+            static dispatch_once_t rawOnce;
+            dispatch_once(&rawOnce, ^{ rawSet = [NSRegularExpression regularExpressionWithPattern:@"^\\s*var\\s+set\\s+\\S+ (.*?)[\\r\\n]*$" options:NSRegularExpressionDotMatchesLineSeparators error:nil]; });
+            NSTextCheckingResult *raw = [rawSet firstMatchInString:cmd options:0 range:NSMakeRange(0, cmd.length)];
+            if (raw) value = [cmd substringWithRange:[raw rangeAtIndex:1]];
             rc_variable_set(name, value, NO);
             return [NSString stringWithFormat:@"%@ = %@\n", name, value];
         } else if ([verb isEqualToString:@"add"]) {

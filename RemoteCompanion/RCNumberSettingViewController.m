@@ -24,6 +24,7 @@
         _initialValue = [value copy];
         _minimum = 0;
         _maximum = 1000000;
+        _allowsRound = YES;
         NSMutableOrderedSet *run = [NSMutableOrderedSet orderedSet], *saved = [NSMutableOrderedSet orderedSet];
         for (id item in otherActions) {
             if (![item isKindOfClass:[NSDictionary class]] || ![[item[@"type"] description] isEqualToString:@"set_variable"]) continue;
@@ -118,7 +119,7 @@
 // The + menu: a picked variable takes the field's place, since it holds one number or one variable
 - (void)rebuildMenu {
     __weak typeof(self) weakSelf = self;
-    ((UIButton *)self.field.rightView).menu = RCVariableInsertMenu(self.runNames, self.savedNames, ^(NSString *name) {
+    ((UIButton *)self.field.rightView).menu = RCVariableInsertMenuWithRound(self.runNames, self.savedNames, self.allowsRound, ^(NSString *name) {
         weakSelf.field.text = [NSString stringWithFormat:@"{%@}", name];
         [weakSelf updateState];
     });
@@ -137,7 +138,12 @@
     if (!text.length) return nil;
     if ([text hasPrefix:@"{"] && [text hasSuffix:@"}"] && text.length > 2) {
         NSString *name = [text substringWithRange:NSMakeRange(1, text.length - 2)];
-        if (RCSetVariableNameValid(name) || [name isEqualToString:@"round"]) return text;
+        if (RCSetVariableNameValid(name)) return text;
+        if ([name isEqualToString:@"round"]) {
+            if (self.allowsRound) return text;
+            if (problem) *problem = @"Repeat Round only has a value inside a Repeat.";
+            return nil;
+        }
         if (problem) *problem = @"Variable names use letters, digits and _ only.";
         return nil;
     }

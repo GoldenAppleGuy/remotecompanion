@@ -57,6 +57,10 @@ BOOL RCSetVariableNameValid(NSString *name) {
 }
 
 UIMenu *RCVariableInsertMenu(NSArray<NSString *> *runNames, NSArray<NSString *> *savedNames, void (^insert)(NSString *name)) {
+    return RCVariableInsertMenuWithRound(runNames, savedNames, YES, insert);
+}
+
+UIMenu *RCVariableInsertMenuWithRound(NSArray<NSString *> *runNames, NSArray<NSString *> *savedNames, BOOL includesRound, void (^insert)(NSString *name)) {
     UIAction *(^item)(NSString *) = ^UIAction *(NSString *name) {
         return [UIAction actionWithTitle:name image:nil identifier:nil handler:^(__unused UIAction *a) { insert(name); }];
     };
@@ -67,9 +71,16 @@ UIMenu *RCVariableInsertMenu(NSArray<NSString *> *runNames, NSArray<NSString *> 
     if (runItems.count) [children addObject:[UIMenu menuWithTitle:@"This Run" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:runItems]];
     if (savedItems.count) [children addObject:[UIMenu menuWithTitle:@"Saved" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:savedItems]];
     // {round} isn't a variable that's set: it's the pass a Repeat is on
-    UIAction *round = [UIAction actionWithTitle:@"Repeat Round" image:[UIImage systemImageNamed:@"repeat"] identifier:nil handler:^(__unused UIAction *a) { insert(@"round"); }];
-    if (@available(iOS 15.0, *)) round.subtitle = @"The current pass of a Repeat: 1, 2, 3…";
-    [children addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[round]]];
+    if (includesRound) {
+        UIAction *round = [UIAction actionWithTitle:@"Repeat Round" image:[UIImage systemImageNamed:@"repeat"] identifier:nil handler:^(__unused UIAction *a) { insert(@"round"); }];
+        if (@available(iOS 15.0, *)) round.subtitle = @"The current pass of a Repeat: 1, 2, 3…";
+        [children addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[round]]];
+    }
+    if (!children.count) {
+        UIAction *none = [UIAction actionWithTitle:@"No Variables Yet" image:nil identifier:nil handler:^(__unused UIAction *a) {}];
+        none.attributes = UIMenuElementAttributesDisabled;
+        [children addObject:none];
+    }
     return [UIMenu menuWithTitle:@"" children:children];
 }
 

@@ -29,6 +29,7 @@ static NSInteger RCTimeRangeMinutes(NSString *text) {
 @property (nonatomic, strong) RCSetVariableFooter *footer;
 @property (nonatomic, assign) NSInteger startMinutes;
 @property (nonatomic, assign) NSInteger endMinutes;
+@property (nonatomic, copy) NSString *variableRange; // the range being edited, when it holds variables
 @end
 
 @implementation RCTimeRangeViewController
@@ -40,6 +41,8 @@ static NSInteger RCTimeRangeMinutes(NSString *text) {
         _startMinutes = 9 * 60;
         _endMinutes = 17 * 60;
         NSString *s = [range description] ?: @"";
+        // Variables ("{wake} - 09:00") can't show on time pickers: the footer says Save replaces them
+        if ([s rangeOfString:@"{"].location != NSNotFound) _variableRange = [s copy];
         for (NSString *dash in @[@"–", @"—", @" to "]) s = [s stringByReplacingOccurrencesOfString:dash withString:@"-" options:NSCaseInsensitiveSearch range:NSMakeRange(0, s.length)];
         NSArray *parts = [s componentsSeparatedByString:@"-"];
         if (parts.count >= 2) {
@@ -108,6 +111,7 @@ static NSInteger RCTimeRangeMinutes(NSString *text) {
 }
 
 - (NSString *)footerText {
+    if (self.variableRange) return [NSString stringWithFormat:@"Now “%@”, which uses variables. Save replaces it with these times; Cancel keeps it.", self.variableRange];
     if (self.startMinutes == self.endMinutes) return @"True for that one minute.";
     if (self.endMinutes < self.startMinutes) return @"True from the start time, past midnight, until the end time.";
     return @"True from the start time until the end time.";

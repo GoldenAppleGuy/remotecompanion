@@ -1929,6 +1929,7 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         editor.placeholder = @"50";
         editor.maximum = 100;
         editor.note = @"True when the level is above or below this percentage.";
+        editor.allowsRound = [self roundAvailableAtIndex:existingIndex != NSNotFound ? existingIndex : insertIndex];
         __weak typeof(self) weakSelf = self;
         editor.onSave = ^(id typed, NSInteger picked) {
             // A variable stays as typed ("ABOVE {limit}"); the tweak fills it in when it checks
@@ -2046,6 +2047,7 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     editor.minimum = 1;
     editor.maximum = 86400;
     editor.note = @"The longest to wait, up to a day. Then the actions go on anyway.";
+    editor.allowsRound = [self roundAvailableAtIndex:existingIndex != NSNotFound ? existingIndex : insertIndex];
     editor.saveTitle = existingIndex == NSNotFound ? @"Add" : @"Save";
     __weak typeof(self) weakSelf = self;
     editor.onSave = ^(id seconds, __unused NSInteger choice) {
@@ -2079,6 +2081,18 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [weakSelf presentViewController:nav animated:YES completion:nil];
     });
+}
+
+// Whether an action at index (NSNotFound: the end) sits inside a Repeat or Repeat While, where {round} has a value
+- (BOOL)roundAvailableAtIndex:(NSInteger)index {
+    NSInteger end = index == NSNotFound ? (NSInteger)self.actions.count : MAX(0, MIN(index, (NSInteger)self.actions.count));
+    NSInteger depth = 0;
+    for (NSInteger i = 0; i < end; i++) {
+        id item = self.actions[i];
+        if ([self isRepeatActionItem:item]) depth++;
+        else if ([[self actionTypeForItem:item] isEqualToString:@"end_repeat"]) depth = MAX(0, depth - 1);
+    }
+    return depth > 0;
 }
 
 // Puts a command at index (keeping any settings around it), or adds it at the end
@@ -2130,6 +2144,7 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     editor.placeholder = @"50";
     editor.maximum = 100;
     editor.note = note;
+    editor.allowsRound = [self roundAvailableAtIndex:editing ? index : NSNotFound];
     editor.saveTitle = editing ? @"Save" : @"Add";
     __weak typeof(self) weakSelf = self;
     editor.onSave = ^(id value, __unused NSInteger choice) {
@@ -2142,27 +2157,12 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
 // Toast: its own screen. Edits the toast at index, or adds one at the end.
 - (void)presentToastEditorForIndex:(NSInteger)index {
     BOOL editing = index != NSNotFound && index >= 0 && index < (NSInteger)self.actions.count;
-    // An action with settings keeps them, its command in "command"
     id original = editing ? self.actions[index] : nil;
     NSString *current = [original isKindOfClass:[NSDictionary class]] ? [original[@"command"] description] : ([original isKindOfClass:[NSString class]] ? original : nil);
     RCToastEditorViewController *editor = [[RCToastEditorViewController alloc] initWithCommand:current otherActions:self.actions];
     __weak typeof(self) weakSelf = self;
     editor.onSave = ^(NSString *command) {
-        __strong typeof(weakSelf) strongSelf = weakSelf;
-        if (!strongSelf) return;
-        if (editing && index < (NSInteger)strongSelf.actions.count) {
-            if ([original isKindOfClass:[NSDictionary class]]) {
-                NSMutableDictionary *d = [original mutableCopy];
-                d[@"command"] = command;
-                strongSelf.actions[index] = d;
-            } else {
-                strongSelf.actions[index] = command;
-            }
-        } else {
-            [strongSelf.actions addObject:command];
-        }
-        [strongSelf saveActions];
-        [strongSelf.tableView reloadData];
+        [weakSelf storeCommand:command atIndex:editing ? index : NSNotFound]; // keeps any settings around it
     };
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:editor];
     [self presentViewController:nav animated:YES completion:nil];
@@ -2176,17 +2176,14 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     editor.allowsDecimals = YES;
     editor.maximum = 86400;
     editor.note = @"How long to wait before the next action, up to a day.";
+    editor.allowsRound = [self roundAvailableAtIndex:editing ? index : NSNotFound];
     editor.saveTitle = editing ? @"Save" : @"Add";
     __weak typeof(self) weakSelf = self;
     editor.onSave = ^(id seconds, __unused NSInteger choice) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
         NSString *text = [seconds isKindOfClass:[NSNumber class]] ? [NSString stringWithFormat:@"%g", [seconds doubleValue]] : seconds;
-        NSString *item = [@"delay " stringByAppendingString:text];
-        if (editing && index < (NSInteger)strongSelf.actions.count) strongSelf.actions[index] = item;
-        else [strongSelf.actions addObject:item];
-        [strongSelf saveActions];
-        [strongSelf.tableView reloadData];
+        [strongSelf storeCommand:[@"delay " stringByAppendingString:text] atIndex:editing ? index : NSNotFound];
     };
     [self presentNumberSetting:editor after:delay];
 }
@@ -2245,12 +2242,16 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     editor.minimum = 1;
     editor.maximum = 1000;
     editor.note = @"Runs the actions inside this many times, up to 1,000. In their text, {round} becomes the current round.";
+    editor.allowsRound = [self roundAvailableAtIndex:editing ? existingIndex : NSNotFound];
     editor.saveTitle = editing ? @"Save" : @"Add";
     __weak typeof(self) weakSelf = self;
     editor.onSave = ^(id count, __unused NSInteger choice) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
-        NSDictionary *repeat = @{ @"type": @"repeat", @"count": count };
+        // An edited Repeat keeps its other keys, such as disabled
+        id old = editing && existingIndex < (NSInteger)strongSelf.actions.count ? strongSelf.actions[existingIndex] : nil;
+        NSMutableDictionary *repeat = [old isKindOfClass:[NSDictionary class]] ? [old mutableCopy] : [@{ @"type": @"repeat" } mutableCopy];
+        repeat[@"count"] = count;
         if (editing) {
             strongSelf.actions[existingIndex] = repeat;
         } else {

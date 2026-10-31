@@ -4901,7 +4901,7 @@ function promptLevelAction(prefix, idx) {
   const cmd = act && typeof act === 'object' ? String(act.command || '') : String(act || '');
   const current = cmd.toLowerCase().startsWith(prefix) ? cmd.slice(prefix.length).trim() : '';
   promptNumberSetting({ title, label: 'Percent', value: current, placeholder: prefix === 'flashlight ' ? '100' : '50', min, max: 100, note,
-    saveLabel: idx === null ? 'Add' : 'Save' }, n => {
+    saveLabel: idx === null ? 'Add' : 'Save', allowsRound: roundAvailableAt(idx) }, n => {
     if (idx === null) { addActionToCurrent(`${prefix}${n}`); return; }
     storeCommandAt(actions, idx, `${prefix}${n}`);
     saveConfig(); renderActionList();
@@ -5526,7 +5526,7 @@ function editAction(idx) {
       promptTimeLimit(String(act.timeout || 60), 'Save', n => {
         act.timeout = n;
         saveConfig(); renderActionList();
-      });
+      }, idx);
     }
     else if (type === 'set_variable') {
       promptSetVariable(idx);
@@ -5535,7 +5535,7 @@ function editAction(idx) {
       promptRepeatCount(String(act.count || 1), 'Save', n => {
         act.count = n;
         saveConfig(); renderActionList();
-      });
+      }, idx);
     }
   } else if (typeof act === 'string') {
     const low = act.toLowerCase();
@@ -5543,7 +5543,7 @@ function editAction(idx) {
       promptDelay(act.slice(6).trim(), 'Save', n => {
         actions[idx] = `delay ${n}`;
         saveConfig(); renderActionList();
-      });
+      }, idx);
     } else if (low.startsWith('toast ')) {
       promptToastModal(act, idx);
     } else if (low.startsWith('exec ') || low.startsWith('root ')) {
@@ -5975,11 +5975,15 @@ function updateTimeCondPreview() {
   } else {
     hintEl.textContent = `Actions will only run between ${s12} and ${e12}.`;
   }
+  // Variables ("{wake} - 09:00") can't show in the time fields: Save replaces them
+  if (timeCondVariableRange) hintEl.textContent = `Now “${timeCondVariableRange}”, which uses variables. Save replaces it with these times; Cancel keeps it.`;
 }
 
+let timeCondVariableRange = null;
 function showTimeConditionDialog(def, editIdx = null) {
   timeCondDef = def;
   timeCondEditIdx = editIdx;
+  timeCondVariableRange = null;
   
   let startVal = '09:00';
   let endVal = '17:00';
@@ -5989,6 +5993,7 @@ function showTimeConditionDialog(def, editIdx = null) {
     const act = actions[editIdx];
     if (act) {
       const raw = act.expectedValue || act.expected || act.expectedLabel || '';
+      if (String(raw).includes('{')) timeCondVariableRange = String(raw);
       const parts = raw.split(/[-–—]| to | and /i);
       if (parts.length >= 2) {
         const p0 = parts[0].trim();
@@ -6669,7 +6674,8 @@ function numSettingValue() {
   const o = varEd.opts, text = varEd.value.trim();
   if (!text) return { value: null };
   const m = text.match(/^\{([A-Za-z_][A-Za-z0-9_]*)\}$/);
-  if (m) return (variableNameValid(m[1]) || m[1] === 'round') ? { value: text } : { value: null, problem: 'Variable names use letters, digits and _ only.' };
+  if (m && m[1] === 'round') return o.allowsRound === false ? { value: null, problem: 'Repeat Round only has a value inside a Repeat.' } : { value: text };
+  if (m) return variableNameValid(m[1]) ? { value: text } : { value: null, problem: 'Variable names use letters, digits and _ only.' };
   const n = Number(text.replace(',', '.'));
   const min = o.min ?? 0, max = o.max ?? 1000000;
   if (!/^-?\d*[.,]?\d+$/.test(text) || isNaN(n) || (!o.decimals && !Number.isInteger(n)) || n < min || n > max) {
@@ -6735,26 +6741,39 @@ function promptThresholdSetting(def, editIdx) {
   }
   promptNumberSetting({ title: def.title, label: 'Percent', value, placeholder: '50', min: 0, max: 100,
     choices: ['Above', 'Below'], choice, note: 'True when the level is above or below this percentage.',
-    saveLabel: editIdx === null ? 'Add' : 'Save' }, (n, c) => {
+    saveLabel: editIdx === null ? 'Add' : 'Save', allowsRound: roundAvailableAt(editIdx) }, (n, c) => {
     const word = c === 1 ? 'Below' : 'Above';
     finishIfCondition(def, `${word.toUpperCase()} ${n}`, `${word.toLowerCase()} ${n}%`, editIdx);
   });
 }
 
-// Wait Until's time limit; Repeat's count; Delay's seconds
-function promptTimeLimit(current, saveLabel, onSave) {
+// Whether an action at idx (null: the end) sits inside a Repeat or Repeat While, where {round} has a value
+function roundAvailableAt(idx) {
+  const actions = triggerData(currentKey).actions || [];
+  const end = idx === null || idx === undefined ? actions.length : Math.max(0, Math.min(idx, actions.length));
+  let depth = 0;
+  for (let i = 0; i < end; i++) {
+    const t = actions[i] && typeof actions[i] === 'object' ? String(actions[i].type || '').toLowerCase() : '';
+    if (t === 'repeat' || t === 'repeat_while') depth++;
+    else if (t === 'end_repeat') depth = Math.max(0, depth - 1);
+  }
+  return depth > 0;
+}
+
+// Wait Until's time limit; Repeat's count; Delay's seconds. idx: the action's place (null: the end)
+function promptTimeLimit(current, saveLabel, onSave, idx = null) {
   promptNumberSetting({ title: 'Time Limit', label: 'Seconds', value: current, placeholder: '60', min: 1, max: 86400,
-    note: 'The longest to wait, up to a day. Then the actions go on anyway.', saveLabel }, n => onSave(n));
+    note: 'The longest to wait, up to a day. Then the actions go on anyway.', saveLabel, allowsRound: roundAvailableAt(idx) }, n => onSave(n));
 }
 
-function promptRepeatCount(current, saveLabel, onSave) {
+function promptRepeatCount(current, saveLabel, onSave, idx = null) {
   promptNumberSetting({ title: 'Repeat', label: 'Times', value: current, placeholder: '3', min: 1, max: 1000,
-    note: 'Runs the actions inside this many times, up to 1,000. In their text, {round} becomes the current round.', saveLabel }, n => onSave(n));
+    note: 'Runs the actions inside this many times, up to 1,000. In their text, {round} becomes the current round.', saveLabel, allowsRound: roundAvailableAt(idx) }, n => onSave(n));
 }
 
-function promptDelay(current, saveLabel, onSave) {
+function promptDelay(current, saveLabel, onSave, idx = null) {
   promptNumberSetting({ title: 'Delay', label: 'Seconds', value: current, placeholder: '1', min: 0, max: 86400, decimals: true,
-    note: 'How long to wait before the next action, up to a day.', saveLabel }, n => onSave(n));
+    note: 'How long to wait before the next action, up to a day.', saveLabel, allowsRound: roundAvailableAt(idx) }, n => onSave(n));
 }
 
 // ── Set Variable's RC Command: commands that answer with a value, with their answer now ──
@@ -6838,12 +6857,16 @@ function varEdOpenMenu(anchor, onPick) {
   };
   section('This Run', varEd.runNames);
   section('Saved', varEd.savedNames);
-  if (menu.childElementCount) menu.insertAdjacentHTML('beforeend', '<div class="var-ed-menu-gap"></div>');
-  const round = document.createElement('div');
-  round.className = 'var-ed-menu-item';
-  round.innerHTML = '<div><span>Repeat Round</span><div class="var-ed-menu-sub">The current pass of a Repeat: 1, 2, 3…</div></div><i class="f7-icons">repeat</i>';
-  round.onclick = () => { varEdCloseMenu(); onPick('round'); };
-  menu.appendChild(round);
+  const withRound = !(varEd.mode === 'number' && varEd.opts.allowsRound === false); // {round} has a value only inside a Repeat
+  if (withRound) {
+    if (menu.childElementCount) menu.insertAdjacentHTML('beforeend', '<div class="var-ed-menu-gap"></div>');
+    const round = document.createElement('div');
+    round.className = 'var-ed-menu-item';
+    round.innerHTML = '<div><span>Repeat Round</span><div class="var-ed-menu-sub">The current pass of a Repeat: 1, 2, 3…</div></div><i class="f7-icons">repeat</i>';
+    round.onclick = () => { varEdCloseMenu(); onPick('round'); };
+    menu.appendChild(round);
+  }
+  if (!menu.childElementCount) menu.insertAdjacentHTML('beforeend', '<div class="var-ed-menu-header">No Variables Yet</div>');
   document.body.appendChild(menu);
   const r = anchor.getBoundingClientRect();
   const w = menu.offsetWidth, h = menu.offsetHeight;
