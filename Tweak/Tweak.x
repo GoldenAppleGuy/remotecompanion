@@ -10616,6 +10616,15 @@ static NSString *handle_command(NSString *cmd) {
         });
         NSLog(@"[RemoteCommand] Haptic triggered");
         return @"Haptic triggered\n";
+    } else if ([cleanCmd isEqualToString:@"battery"] || [cleanCmd isEqualToString:@"battery status"]) {
+        // "Battery: 85% (Charging)": the level, and whether it's charging
+        UIDevice *device = [UIDevice currentDevice];
+        device.batteryMonitoringEnabled = YES;
+        float level = device.batteryLevel;
+        if (level < 0) return @"Battery: unknown\n";
+        UIDeviceBatteryState state = device.batteryState;
+        NSString *charge = state == UIDeviceBatteryStateFull ? @" (Full)" : state == UIDeviceBatteryStateCharging ? @" (Charging)" : @"";
+        return [NSString stringWithFormat:@"Battery: %.0f%%%@\n", level * 100.0f, charge];
     } else if ([cleanCmd isEqualToString:@"ping"]) {
         AudioServicesPlaySystemSound(1005);
         NSLog(@"[RemoteCommand] Ping (Alert Sound) played");
@@ -11731,6 +11740,22 @@ static void start_web_server() {
                                     write(new_socket, [assetData bytes], [assetData length]);
                                     responseString = nil; // Skip default write
                                 }
+                            } else if ([path isEqualToString:@"/api/answers"] && [method isEqualToString:@"GET"]) {
+                                // The answers of the status commands Set Variable's command list offers, for
+                                // the Web UI to show next to them. Only these: they report, they change nothing.
+                                NSArray *commands = @[@"battery", @"volume", @"wifi status", @"bt status", @"cell status", @"airplane status",
+                                                      @"location status", @"carplay status", @"ringer status", @"vibration silent-status",
+                                                      @"haptics status", @"is-playing", @"lock status", @"low power status", @"flashlight status",
+                                                      @"dnd status", @"focus status", @"screenrecord status", @"proximity status",
+                                                      @"orientation status", @"appearance status", @"autolock status"];
+                                NSMutableDictionary *answers = [NSMutableDictionary dictionary];
+                                for (NSString *command in commands) {
+                                    NSString *output = [handle_command(command) stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                                    answers[command] = [output componentsSeparatedByString:@"\n"].firstObject ?: @"";
+                                }
+                                NSData *jsonData = [NSJSONSerialization dataWithJSONObject:answers options:0 error:nil];
+                                NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+                                responseString = [NSString stringWithFormat:@"HTTP/1.1 200 OK\r\n%@Content-Type: application/json\r\nContent-Length: %lu\r\n\r\n%@", cors, (unsigned long)jsonData.length, jsonString];
                             } else if ([path isEqualToString:@"/api/variables"] && [method isEqualToString:@"GET"]) {
                                 // The saved variables, for the editors' variable menus
                                 NSDictionary *all;

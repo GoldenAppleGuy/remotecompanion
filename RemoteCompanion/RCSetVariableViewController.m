@@ -2,6 +2,7 @@
 #import "RCConfigManager.h"
 #import "RCServerClient.h"
 #import "RCVariableEditorParts.h"
+#import "RCCommandPickerViewController.h"
 
 typedef NS_ENUM(NSInteger, RCSetVariableSection) {
     RCSetVariableSectionNewValue = 0,
@@ -165,6 +166,8 @@ UIMenu *RCVariableInsertMenu(NSArray<NSString *> *runNames, NSArray<NSString *> 
 @property (nonatomic, strong) NSArray<UITextField *> *valueFields; // up to two, reused by every kind
 @property (nonatomic, strong) UISwitch *runOnlySwitch;
 @property (nonatomic, strong) UISwitch *numberOnlySwitch;
+@property (nonatomic, strong) NSArray<UIButton *> *insertButtons; // the + in each value field
+@property (nonatomic, strong) UIView *commandAccessory;           // RC Command: the command list and +
 @property (nonatomic, strong) UIButton *variableButton;
 @property (nonatomic, strong) NSArray<RCSetVariableTile *> *tiles;
 @property (nonatomic, strong) UIView *valueGrid;
@@ -314,6 +317,7 @@ UIMenu *RCVariableInsertMenu(NSArray<NSString *> *runNames, NSArray<NSString *> 
     self.nameField.font = [UIFont monospacedSystemFontOfSize:[UIFont preferredFontForTextStyle:UIFontTextStyleBody].pointSize weight:UIFontWeightRegular];
     self.nameField.returnKeyType = UIReturnKeyNext;
     self.valueFields = @[[self makeField], [self makeField]];
+    NSMutableArray *inserts = [NSMutableArray array];
     for (UITextField *field in self.valueFields) {
         UIButton *insert = [UIButton buttonWithType:UIButtonTypeSystem];
         [insert setImage:[UIImage systemImageNamed:@"plus.circle"] forState:UIControlStateNormal];
@@ -322,7 +326,16 @@ UIMenu *RCVariableInsertMenu(NSArray<NSString *> *runNames, NSArray<NSString *> 
         insert.accessibilityLabel = @"Insert Variable";
         field.rightView = insert;
         field.rightViewMode = UITextFieldViewModeAlways;
+        [inserts addObject:insert];
     }
+    self.insertButtons = inserts;
+    UIButton *list = [UIButton buttonWithType:UIButtonTypeSystem];
+    [list setImage:[UIImage systemImageNamed:@"list.bullet.circle"] forState:UIControlStateNormal];
+    list.frame = CGRectMake(0, 0, 36, 36);
+    list.accessibilityLabel = @"Choose Command";
+    [list addTarget:self action:@selector(chooseCommand) forControlEvents:UIControlEventTouchUpInside];
+    self.commandAccessory = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 72, 36)];
+    [self.commandAccessory addSubview:list];
 
     self.runOnlySwitch = [[UISwitch alloc] init];
     self.runOnlySwitch.on = [[self.original[@"scope"] description] isEqualToString:@"run"];
@@ -425,7 +438,7 @@ UIMenu *RCVariableInsertMenu(NSArray<NSString *> *runNames, NSArray<NSString *> 
     __weak typeof(self) weakSelf = self;
     for (UITextField *field in self.valueFields) {
         __weak UITextField *weakField = field;
-        ((UIButton *)field.rightView).menu = RCVariableInsertMenu(self.runNames, self.savedNames, ^(NSString *name) {
+        self.insertButtons[[self.valueFields indexOfObject:field]].menu = RCVariableInsertMenu(self.runNames, self.savedNames, ^(NSString *name) {
             [weakSelf insertVariable:name intoField:weakField];
         });
     }
@@ -484,6 +497,17 @@ UIMenu *RCVariableInsertMenu(NSArray<NSString *> *runNames, NSArray<NSString *> 
     NSArray *fields = kind[@"fields"];
     NSDictionary *mine = self.typed[self.op];
     BOOL numeric = ![self.op isEqualToString:@"set"] && ![self.op isEqualToString:@"command"];
+    // RC Command's field also has the command list, before the +
+    UIButton *firstInsert = self.insertButtons.firstObject;
+    if ([self.op isEqualToString:@"command"]) {
+        firstInsert.frame = CGRectMake(36, 0, 36, 36);
+        [self.commandAccessory addSubview:firstInsert];
+        self.valueFields.firstObject.rightView = self.commandAccessory;
+    } else if (self.valueFields.firstObject.rightView != firstInsert) {
+        [firstInsert removeFromSuperview];
+        firstInsert.frame = CGRectMake(0, 0, 36, 36);
+        self.valueFields.firstObject.rightView = firstInsert;
+    }
     [self.valueFields enumerateObjectsUsingBlock:^(UITextField *field, NSUInteger i, __unused BOOL *stop) {
         if (i >= fields.count) { field.text = nil; return; }
         NSArray *spec = fields[i];
@@ -588,6 +612,22 @@ UIMenu *RCVariableInsertMenu(NSArray<NSString *> *runNames, NSArray<NSString *> 
     }];
     [self updateState];
     [[[UISelectionFeedbackGenerator alloc] init] selectionChanged];
+}
+
+// RC Command: picks a command that answers with a value; levels turn Number Only on
+- (void)chooseCommand {
+    [self.view endEditing:YES];
+    RCCommandPickerViewController *picker = [[RCCommandPickerViewController alloc] initWithSelectedCommand:self.valueFields.firstObject.text];
+    __weak typeof(self) weakSelf = self;
+    picker.onPick = ^(NSString *command, BOOL number) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.valueFields.firstObject.text = command;
+        strongSelf.numberOnlySwitch.on = number;
+        [strongSelf numberOnlyChanged]; // keeps the text and updates the note
+        [strongSelf updateState];
+    };
+    [self.navigationController pushViewController:picker animated:YES];
 }
 
 - (void)numberOnlyChanged {

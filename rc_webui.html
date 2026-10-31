@@ -1465,6 +1465,21 @@
     .sym-tile.selected { background: rgba(10,132,255,0.22); border-color: #0a84ff; }
     .sym-tile.selected i.f7-icons { color: #0a84ff; }
     .sym-empty { grid-column: 1 / -1; text-align: center; color: #8e8e93; font-size: 13px; padding: 24px 0; }
+    #cmd-picker-backdrop { z-index: 960; }
+    .cmd-list { display: block; padding-top: 0; }
+    .cmd-head { font-size: 13px; font-weight: 500; letter-spacing: 0.05em; color: #8e8e93; text-transform: uppercase; margin: 12px 4px 6px; }
+    .cmd-card { background: rgba(255,255,255,0.07); border-radius: 12px; overflow: hidden; }
+    .cmd-row { display: flex; align-items: center; gap: 12px; padding: 9px 12px; cursor: pointer; position: relative; }
+    .cmd-row + .cmd-row::before { content: ''; position: absolute; top: 0; left: 46px; right: 0; height: 0.5px; background: rgba(255,255,255,0.12); }
+    .cmd-row:hover { background: rgba(255,255,255,0.05); }
+    .cmd-row > i.f7-icons { font-size: 20px; color: #0a84ff; width: 22px; text-align: center; }
+    .cmd-text { flex: 1; min-width: 0; text-align: left; }
+    .cmd-title { font-size: 15px; color: #fff; }
+    .cmd-sub { font-size: 12px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .cmd-sub code { font-family: ui-monospace, Menlo, monospace; color: #8e8e93; }
+    .cmd-sub span { color: #0a84ff; font-weight: 500; margin-left: 8px; }
+    .cmd-check { color: #0a84ff; font-size: 17px; }
+    .cmd-note { font-size: 12px; color: #8e8e93; margin: 6px 4px 0; line-height: 1.35; }
     #var-editor-save:disabled { color: rgba(235,235,245,0.3); cursor: default; }
     .var-ed-menu {
       position: fixed; z-index: 3000; min-width: 220px; max-width: 300px; max-height: 60vh; overflow-y: auto;
@@ -2309,6 +2324,15 @@
     </div>
     <div class="sym-grid" id="symbol-picker-grid"></div>
     <div class="dialog-btns"><button onclick="closeSymbolPicker()">Cancel</button></div>
+  </div>
+</div>
+
+<!-- ══ COMMAND LIST (Set Variable's RC Command) ═══════════════════════ -->
+<div class="dialog-backdrop" id="cmd-picker-backdrop" onclick="if (event.target === this) closeCommandPicker()">
+  <div class="dialog-box sym-box">
+    <div class="dialog-title">Command</div>
+    <div class="sym-grid cmd-list" id="cmd-picker-list"></div>
+    <div class="dialog-btns"><button onclick="closeCommandPicker()">Cancel</button></div>
   </div>
 </div>
 
@@ -6458,6 +6482,15 @@ function varEdRenderFields() {
       else if (varEd.mode === 'number') { if (!document.getElementById('var-editor-save').disabled) varEditorSave(); }
       else input.blur();
     };
+    if (varEd.mode === 'set' && varEd.op === 'command' && i === 0) {
+      const list = document.createElement('button');
+      list.type = 'button';
+      list.className = 'var-ed-insert';
+      list.title = 'Choose Command';
+      list.innerHTML = '<i class="f7-icons">list_bullet</i>';
+      list.onclick = e => { e.stopPropagation(); openCommandPicker(input.value.trim()); };
+      row.insertBefore(list, row.querySelector('.var-ed-insert'));
+    }
     row.querySelector('.var-ed-insert').onclick = e => {
       e.stopPropagation();
       varEdOpenMenu(e.currentTarget, name => {
@@ -6686,6 +6719,67 @@ function promptRepeatCount(current, saveLabel, onSave) {
 function promptDelay(current, saveLabel, onSave) {
   promptNumberSetting({ title: 'Delay', label: 'Seconds', value: current, placeholder: '1', min: 0, max: 86400, decimals: true,
     note: 'How long to wait before the next action, up to a day.', saveLabel }, n => onSave(n));
+}
+
+// ── Set Variable's RC Command: commands that answer with a value, with their answer now ──
+const VALUE_COMMANDS = [
+  ['Levels', [['Battery Level', 'battery', 'battery_100', true], ['Volume', 'volume', 'speaker_2_fill', true]]],
+  ['Connectivity', [['Wi-Fi', 'wifi status', 'wifi'], ['Bluetooth', 'bt status', 'antenna_radiowaves_left_right'],
+    ['Cellular Data', 'cell status', 'antenna_radiowaves_left_right'], ['Airplane Mode', 'airplane status', 'airplane'],
+    ['Location Services', 'location status', 'location_fill'], ['CarPlay', 'carplay status', 'car_fill']]],
+  ['Sound', [['Ringer', 'ringer status', 'bell_fill'], ['Silent Vibrate', 'vibration silent-status', 'iphone'],
+    ['Haptics', 'haptics status', 'hand_draw'], ['Media Playing', 'is-playing', 'play_fill']]],
+  ['Device', [['Lock State', 'lock status', 'lock_fill'], ['Low Power Mode', 'low power status', 'battery_25'],
+    ['Flashlight', 'flashlight status', 'lightbulb_fill'], ['Do Not Disturb', 'dnd status', 'moon_fill'],
+    ['Focus', 'focus status', 'moon_circle_fill'], ['Screen Recording', 'screenrecord status', 'record_circle_fill'],
+    ['Proximity', 'proximity status', 'hand_raised_fill']]],
+  ['Display', [['Orientation', 'orientation status', 'rotate_right_fill'], ['Appearance', 'appearance status', 'circle_lefthalf_fill'],
+    ['Auto-Lock', 'autolock status', 'timer']]],
+];
+let commandPickerAnswers = {};
+
+function openCommandPicker(current) {
+  renderCommandPicker(current);
+  document.getElementById('cmd-picker-backdrop').classList.add('visible');
+  fetch('/api/answers', { cache: 'no-store' }).then(r => r.ok ? r.json() : {}).then(a => {
+    commandPickerAnswers = a || {};
+    if (document.getElementById('cmd-picker-backdrop').classList.contains('visible')) renderCommandPicker(current);
+  }).catch(() => {});
+}
+
+function closeCommandPicker() {
+  document.getElementById('cmd-picker-backdrop').classList.remove('visible');
+}
+
+function renderCommandPicker(current) {
+  const list = document.getElementById('cmd-picker-list');
+  list.innerHTML = '';
+  VALUE_COMMANDS.forEach(([title, rows], si) => {
+    list.insertAdjacentHTML('beforeend', `<div class="cmd-head">${title}</div>`);
+    const card = document.createElement('div');
+    card.className = 'cmd-card';
+    rows.forEach(([name, cmd, icon, number]) => {
+      const row = document.createElement('div');
+      row.className = 'cmd-row';
+      const answer = commandPickerAnswers[cmd];
+      row.innerHTML = `<i class="f7-icons">${icon}</i>
+        <div class="cmd-text"><div class="cmd-title">${escHtml(name)}</div>
+        <div class="cmd-sub"><code>${escHtml(cmd)}</code><span>${answer === undefined ? '…' : escHtml(answer || '—')}</span></div></div>
+        ${cmd === (current || '').toLowerCase() ? '<i class="f7-icons cmd-check">checkmark_alt</i>' : ''}`;
+      row.onclick = () => {
+        closeCommandPicker();
+        if (!varEd || varEd.op !== 'command') return;
+        (varEd.typed.command = varEd.typed.command || {}).value = cmd;
+        varEd.numberOnly = !!number;
+        varEdRenderFields();
+        varEdUpdate();
+      };
+      card.appendChild(row);
+    });
+    list.appendChild(card);
+    if (si === 0) list.insertAdjacentHTML('beforeend', '<div class="cmd-note">Levels are stored as a number, such as 85.</div>');
+  });
+  list.insertAdjacentHTML('beforeend', '<div class="cmd-note">Each row shows the answer this phone gives now; the variable stores the answer at run time.</div>');
 }
 
 // ── The + menu: This Run and saved variables, then the Repeat round ──
