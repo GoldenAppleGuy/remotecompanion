@@ -5,6 +5,7 @@
 #import "RCAppPickerViewController.h"
 #import "RCConditionPickerViewController.h"
 #import "RCTextInputViewController.h"
+#import "RCTimeRangeViewController.h"
 #import "RCSetVariableViewController.h"
 #import "RCVariableConditionViewController.h"
 #import "RCNumberSettingViewController.h"
@@ -1138,6 +1139,7 @@ static void RCSetRunWatching(BOOL watching) {
             inputVC.promptTitle = @"Terminal Command";
             inputVC.promptMessage = @"Enter terminal command";
             inputVC.showRootToggle = YES;
+            inputVC.variableActions = self.actions;
             inputVC.initialText = @"";
             
             __weak typeof(inputVC) weakInputVC = inputVC;
@@ -1302,6 +1304,8 @@ static void RCSetRunWatching(BOOL watching) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 [self presentToastEditorForIndex:NSNotFound];
             });
+        } else if ([self levelPrefixForCommand:action]) {
+            [self presentLevelActionForCommand:action index:NSNotFound after:0.5];
         } else {
             [self.actions addObject:action];
             [self saveActions];
@@ -1940,60 +1944,19 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     }
     
     if ([condition[@"key"] isEqualToString:@"time_between"]) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Time of Day Condition"
-                                                                       message:@"Enter start and end time (e.g. 09:00 - 17:00 or 9:00 AM - 5:00 PM):"
-                                                                preferredStyle:UIAlertControllerStyleAlert];
-        [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-            textField.placeholder = @"Start Time (e.g. 09:00)";
-            textField.keyboardType = UIKeyboardTypeDefault;
-            if (existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)self.actions.count) {
-                NSDictionary *act = self.actions[existingIndex];
-                if ([act isKindOfClass:[NSDictionary class]]) {
-                    NSString *val = act[@"expectedValue"] ?: @"";
-                    NSArray *p = [val componentsSeparatedByString:@"-"];
-                    if (p.count > 0) textField.text = [p[0] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-                }
-            } else {
-                textField.text = @"09:00";
-            }
-        }];
-        [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-            textField.placeholder = @"End Time (e.g. 17:00)";
-            textField.keyboardType = UIKeyboardTypeDefault;
-            if (existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)self.actions.count) {
-                NSDictionary *act = self.actions[existingIndex];
-                if ([act isKindOfClass:[NSDictionary class]]) {
-                    NSString *val = act[@"expectedValue"] ?: @"";
-                    NSArray *p = [val componentsSeparatedByString:@"-"];
-                    if (p.count > 1) textField.text = [p[1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-                }
-            } else {
-                textField.text = @"17:00";
-            }
-        }];
+        NSString *current = nil;
+        if (existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)self.actions.count) {
+            id item = self.actions[existingIndex];
+            if ([item isKindOfClass:[NSDictionary class]] && [[item[@"conditionKey"] description] isEqualToString:@"time_between"]) current = [item[@"expectedValue"] description];
+        }
+        RCTimeRangeViewController *editor = [[RCTimeRangeViewController alloc] initWithRange:current];
         __weak typeof(self) weakSelf = self;
-        [alert addAction:[UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            __strong typeof(weakSelf) strongSelf = weakSelf;
-            if (!strongSelf) return;
-            NSString *start = [alert.textFields[0].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-            NSString *end = [alert.textFields[1].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-            if (start.length == 0) start = @"09:00";
-            if (end.length == 0) end = @"17:00";
-            NSString *rangeVal = [NSString stringWithFormat:@"%@ - %@", start, end];
-            
-            NSDictionary *ifAction = @{
-                @"type": actionType,
-                @"conditionKey": @"time_between",
-                @"conditionTitle": @"Time of Day",
-                @"expectedValue": rangeVal,
-                @"expectedTitle": rangeVal
-            };
-            
-            [strongSelf applyIfAction:ifAction existingIndex:existingIndex insertIndex:insertIndex];
-        }]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-        [self configurePopoverSourceForAlert:alert];
-        [self presentViewController:alert animated:YES completion:nil];
+        editor.onSave = ^(NSString *value, NSString *title) {
+            [weakSelf applyIfAction:@{ @"type": actionType, @"conditionKey": @"time_between", @"conditionTitle": @"Time of Day",
+                                       @"expectedValue": value, @"expectedTitle": title }
+                      existingIndex:existingIndex insertIndex:insertIndex];
+        };
+        [self presentNumberSetting:editor after:0.35];
         return;
     }
     
@@ -2105,7 +2068,7 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
 }
 
 // A number setting's screen, as a half-height sheet where it can be
-- (void)presentNumberSetting:(RCNumberSettingViewController *)editor after:(NSTimeInterval)delay {
+- (void)presentNumberSetting:(UIViewController *)editor after:(NSTimeInterval)delay {
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:editor];
     if (@available(iOS 15.0, *)) {
         UISheetPresentationController *sheet = nav.sheetPresentationController;
@@ -2116,6 +2079,64 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [weakSelf presentViewController:nav animated:YES completion:nil];
     });
+}
+
+// Puts a command at index (keeping any settings around it), or adds it at the end
+- (void)storeCommand:(NSString *)command atIndex:(NSInteger)index {
+    if (index != NSNotFound && index >= 0 && index < (NSInteger)self.actions.count) {
+        id original = self.actions[index];
+        if ([original isKindOfClass:[NSDictionary class]] && [original[@"command"] isKindOfClass:[NSString class]]) {
+            NSMutableDictionary *d = [original mutableCopy];
+            d[@"command"] = command;
+            self.actions[index] = d;
+        } else {
+            self.actions[index] = command;
+        }
+    } else {
+        [self.actions addObject:command];
+    }
+    [self saveActions];
+    [self.tableView reloadData];
+}
+
+// Volume, Ringer Volume and Brightness: their command's prefix, for the picker's item or a stored command
+- (NSString *)levelPrefixForCommand:(NSString *)command {
+    if (![command isKindOfClass:[NSString class]]) return nil;
+    NSDictionary *placeholders = @{ @"__SET_VOLUME__": @"set-vol ", @"__SET_RINGER_VOLUME__": @"ringer volume ", @"__SET_BRIGHTNESS__": @"brightness " };
+    if (placeholders[command]) return placeholders[command];
+    // A stored command: the prefix, then a number or a variable
+    static NSRegularExpression *value;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ value = [NSRegularExpression regularExpressionWithPattern:@"^(\\d+(\\.\\d+)?|\\{[A-Za-z_][A-Za-z0-9_]*\\})$" options:0 error:nil]; });
+    for (NSString *prefix in placeholders.allValues) {
+        if (![command hasPrefix:prefix]) continue;
+        NSString *rest = [[command substringFromIndex:prefix.length] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        if ([value firstMatchInString:rest options:0 range:NSMakeRange(0, rest.length)]) return prefix;
+    }
+    return nil;
+}
+
+// A level action on the number panel: 0 to 100, or a variable. Edits the action at index, or adds one at the end.
+- (void)presentLevelActionForCommand:(NSString *)command index:(NSInteger)index after:(NSTimeInterval)delay {
+    NSString *prefix = [self levelPrefixForCommand:command];
+    if (!prefix) return;
+    BOOL editing = index != NSNotFound && index >= 0 && index < (NSInteger)self.actions.count;
+    NSString *current = [command hasPrefix:prefix] ? [[command substringFromIndex:prefix.length] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] : nil;
+    NSString *title = [prefix isEqualToString:@"set-vol "] ? @"Volume" : [prefix isEqualToString:@"ringer volume "] ? @"Ringer Volume" : @"Brightness";
+    NSString *note = [prefix isEqualToString:@"set-vol "] ? @"The media volume to set, from 0 to 100."
+                   : [prefix isEqualToString:@"ringer volume "] ? @"The ringer and alerts volume to set, from 0 to 100."
+                   : @"The screen brightness to set, from 0 to 100.";
+    RCNumberSettingViewController *editor = [[RCNumberSettingViewController alloc] initWithTitle:title label:@"Percent" value:current otherActions:self.actions];
+    editor.placeholder = @"50";
+    editor.maximum = 100;
+    editor.note = note;
+    editor.saveTitle = editing ? @"Save" : @"Add";
+    __weak typeof(self) weakSelf = self;
+    editor.onSave = ^(id value, __unused NSInteger choice) {
+        NSString *text = [value isKindOfClass:[NSNumber class]] ? [NSString stringWithFormat:@"%ld", (long)[value integerValue]] : [value description];
+        [weakSelf storeCommand:[prefix stringByAppendingString:text] atIndex:editing ? index : NSNotFound];
+    };
+    [self presentNumberSetting:editor after:delay];
 }
 
 // Toast: its own screen. Edits the toast at index, or adds one at the end.
@@ -2635,49 +2656,20 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         inputVC.initialText = currentCommand;
         inputVC.showRootToggle = YES;
         inputVC.isRootToggled = isRoot;
+        inputVC.variableActions = self.actions;
         
         __weak typeof(inputVC) weakInputVC = inputVC;
         inputVC.onComplete = ^(NSString *text) {
             if (text.length > 0) {
                 NSString *prefix = weakInputVC.isRootToggled ? @"root" : @"exec";
-                self.actions[indexPath.row] = [NSString stringWithFormat:@"%@ %@", prefix, text];
-                [self saveActions];
-                [self.tableView reloadData];
+                [self storeCommand:[NSString stringWithFormat:@"%@ %@", prefix, text] atIndex:indexPath.row];
             }
         };
         
         UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:inputVC];
         [self presentViewController:nav animated:YES completion:nil];
-    } else if ([currentAction hasPrefix:@"set-vol "] || [currentAction hasPrefix:@"ringer volume "] || [currentAction hasPrefix:@"brightness "]) {
-        // Edit Volume/Ringer Volume/Brightness
-        BOOL isVolume = [currentAction hasPrefix:@"set-vol "], isRinger = [currentAction hasPrefix:@"ringer volume "];
-        NSString *title = isVolume ? @"Edit Volume" : isRinger ? @"Edit Ringer Volume" : @"Edit Brightness";
-        NSString *prefix = isVolume ? @"set-vol " : isRinger ? @"ringer volume " : @"brightness ";
-        NSString *currentValue = [currentAction substringFromIndex:prefix.length];
-        
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:title 
-                                                                       message:@"Enter a value (0-100)" 
-                                                                preferredStyle:UIAlertControllerStyleAlert];
-        
-        [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
-            textField.keyboardType = UIKeyboardTypeNumberPad;
-            textField.text = currentValue;
-            textField.textAlignment = NSTextAlignmentCenter;
-        }];
-        
-        [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Update" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            UITextField *textField = alert.textFields.firstObject;
-            int val = [textField.text intValue];
-            if (val < 0) val = 0;
-            if (val > 100) val = 100;
-            
-            self.actions[indexPath.row] = [NSString stringWithFormat:@"%@%d", prefix, val];
-            [self saveActions];
-            [self.tableView reloadData];
-        }]];
-        
-        [self presentViewController:alert animated:YES completion:nil];
+    } else if ([self levelPrefixForCommand:currentAction]) {
+        [self presentLevelActionForCommand:currentAction index:indexPath.row after:0];
     } else if ([currentAction hasPrefix:@"Lua "] || [currentAction hasPrefix:@"lua_eval "] || [currentAction hasPrefix:@"lua "]) {
         // Edit Lua Script
         int prefixLength = [currentAction hasPrefix:@"lua_eval "] ? 9 : 4;
@@ -2843,28 +2835,16 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         [self promptEditLockToggleActionAtIndex:indexPath.row];
         return;
     } else {
-        // Generic edit for other commands - show alert with current command
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Edit Action"
-            message:@"Modify the command"
-            preferredStyle:UIAlertControllerStyleAlert];
-
-        [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-            textField.text = currentAction;
-            textField.autocorrectionType = UITextAutocorrectionTypeNo;
-            textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        }];
-
-        [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            NSString *input = alert.textFields.firstObject.text;
-            if (input.length > 0) {
-                self.actions[indexPath.row] = input;
-                [self saveActions];
-                [self.tableView reloadData];
-            }
-        }]];
-
-        [self presentViewController:alert animated:YES completion:nil];
+        // Any other command: the command editor, with the variable menu
+        RCTextInputViewController *inputVC = [[RCTextInputViewController alloc] init];
+        inputVC.promptTitle = @"Edit Action";
+        inputVC.initialText = currentAction;
+        inputVC.variableActions = self.actions;
+        inputVC.onComplete = ^(NSString *text) {
+            if (text.length > 0) [self storeCommand:text atIndex:indexPath.row];
+        };
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:inputVC];
+        [self presentViewController:nav animated:YES completion:nil];
     }
 }
 

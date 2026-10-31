@@ -1438,6 +1438,8 @@
     .toast-var-wrap .dialog-input { padding-left: 38px; padding-right: 38px; }
     .toast-var-insert { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); margin: 0; }
     .toast-var-insert i.f7-icons { font-size: 20px; }
+    .terminal-var-insert { position: absolute; right: 4px; top: 4px; margin: 0; }
+    .terminal-var-insert i.f7-icons { font-size: 20px; }
     #symbol-picker-backdrop { z-index: 960; }
     .sym-box { width: 92%; max-width: 480px; display: flex; flex-direction: column; max-height: 86vh; max-height: 86dvh; }
     .sym-top { padding: 0 14px; }
@@ -2386,11 +2388,12 @@
 <div class="dialog-backdrop" id="terminal-dialog-backdrop">
   <div class="dialog-box" style="max-width: 480px; width: 90%;">
     <div class="dialog-title" id="terminal-dialog-title">Terminal Action</div>
-    <div class="dialog-msg" style="padding-bottom: 8px;">Enter shell command to execute on device:</div>
+    <div class="dialog-msg" id="terminal-dialog-msg" style="padding-bottom: 8px;">Enter shell command to execute on device:</div>
     <div style="position: relative; margin: 0 16px 12px; width: calc(100% - 32px); box-sizing: border-box;">
-      <textarea class="dialog-input" id="terminal-dialog-textarea" rows="4" placeholder="killall SpringBoard" style="height:100px; text-align:left; resize:vertical; font-family:monospace; font-size:13px; margin:0; width:100%; box-sizing:border-box; padding: 10px;"></textarea>
+      <textarea class="dialog-input" id="terminal-dialog-textarea" rows="4" placeholder="killall SpringBoard" style="height:100px; text-align:left; resize:vertical; font-family:monospace; font-size:13px; margin:0; width:100%; box-sizing:border-box; padding: 10px 40px 10px 10px;"></textarea>
+      <button type="button" class="var-ed-insert terminal-var-insert" title="Insert Variable" onclick="terminalInsertVariable(event)"><i class="f7-icons">plus_circle</i></button>
     </div>
-    <div style="margin: 0 16px 16px; display: flex; align-items: center; justify-content: space-between; background: rgba(255,255,255,0.06); padding: 10px 14px; border-radius: 10px;">
+    <div id="terminal-dialog-root-row" style="margin: 0 16px 16px; display: flex; align-items: center; justify-content: space-between; background: rgba(255,255,255,0.06); padding: 10px 14px; border-radius: 10px;">
       <div style="display:flex; flex-direction:column; text-align:left;">
         <span style="font-size:14px; font-weight:600; color:#fff;">Root Privileges</span>
         <span style="font-size:12px; color:#8e8e93;">Run command as root user (`root`)</span>
@@ -4799,10 +4802,22 @@ function pasteAction(insertIdx) {
 }
 
 // ── Terminal Action Modal ──
-function promptTerminalModal(initialCmd = '', editIdx = null) {
+// plain: any other command, as it is stored (no root switch)
+let g_terminalPlain = false;
+function promptTerminalModal(initialCmd = '', editIdx = null, plain = false) {
   g_editingTerminalIdx = editIdx;
-  const title = (editIdx !== null) ? 'Edit Terminal Command' : 'Terminal Action';
+  g_terminalPlain = plain;
+  varEdStart({ mode: 'toast', typed: {}, nameText: '', picked: null, typingNew: false }, null); // names for the + menu
+  const title = plain ? 'Edit Action' : (editIdx !== null) ? 'Edit Terminal Command' : 'Terminal Action';
   document.getElementById('terminal-dialog-title').textContent = title;
+  document.getElementById('terminal-dialog-msg').textContent = plain ? 'The command to run. Use + to insert a variable.' : 'Shell command to run on the phone. Use + to insert a variable.';
+  document.getElementById('terminal-dialog-root-row').style.display = plain ? 'none' : 'flex';
+  if (plain) {
+    document.getElementById('terminal-dialog-textarea').value = initialCmd || '';
+    document.getElementById('terminal-dialog-backdrop').classList.add('visible');
+    setTimeout(() => document.getElementById('terminal-dialog-textarea').focus(), 100);
+    return;
+  }
   
   let rawCmd = initialCmd || '';
   let isRoot = false;
@@ -4834,11 +4849,11 @@ function terminalDialogOk() {
     return;
   }
   const isRoot = document.getElementById('terminal-dialog-root-toggle').checked;
-  const formattedCmd = `${isRoot ? 'root' : 'exec'} ${cmdText}`;
+  const formattedCmd = g_terminalPlain ? cmdText : `${isRoot ? 'root' : 'exec'} ${cmdText}`;
   
   const actions = triggerData(currentKey).actions || [];
   if (g_editingTerminalIdx !== null && g_editingTerminalIdx < actions.length) {
-    actions[g_editingTerminalIdx] = formattedCmd;
+    storeCommandAt(actions, g_editingTerminalIdx, formattedCmd);
   } else {
     addActionToCurrent(formattedCmd);
   }
@@ -4846,6 +4861,51 @@ function terminalDialogOk() {
   closeTerminalDialog();
   saveConfig();
   renderActionList();
+}
+
+// The + on the command: the variable goes in at the cursor
+function terminalInsertVariable(e) {
+  e.stopPropagation();
+  const input = document.getElementById('terminal-dialog-textarea');
+  varEdOpenMenu(e.currentTarget, name => {
+    const token = `{${name}}`;
+    const s = input.selectionStart ?? input.value.length, en = input.selectionEnd ?? input.value.length;
+    input.value = input.value.slice(0, s) + token + input.value.slice(en);
+    input.focus();
+    input.setSelectionRange(s + token.length, s + token.length);
+  });
+}
+
+// Puts a command at idx, keeping any settings around it
+function storeCommandAt(actions, idx, command) {
+  if (actions[idx] && typeof actions[idx] === 'object' && typeof actions[idx].command === 'string') actions[idx].command = command;
+  else actions[idx] = command;
+}
+
+// ── Volume, Ringer Volume, Brightness, Flashlight: a level on the number panel ──
+const LEVEL_ACTIONS = {
+  'set-vol ': ['Volume', 'The media volume to set, from 0 to 100.', 0],
+  'ringer volume ': ['Ringer Volume', 'The ringer and alerts volume to set, from 0 to 100.', 0],
+  'brightness ': ['Brightness', 'The screen brightness to set, from 0 to 100.', 0],
+  'flashlight ': ['Flashlight Intensity', 'The flashlight brightness to set, from 1 to 100.', 1],
+};
+// A level command: the prefix, then a number or a variable
+function isLevelCommand(low, prefix) {
+  return low.startsWith(prefix) && /^(\d+(\.\d+)?|\{[a-z_][a-z0-9_]*\})$/i.test(low.slice(prefix.length).trim());
+}
+// Adds the level action (idx null) or edits the one at idx
+function promptLevelAction(prefix, idx) {
+  const [title, note, min] = LEVEL_ACTIONS[prefix];
+  const actions = triggerData(currentKey).actions || [];
+  const act = idx === null ? '' : actions[idx];
+  const cmd = act && typeof act === 'object' ? String(act.command || '') : String(act || '');
+  const current = cmd.toLowerCase().startsWith(prefix) ? cmd.slice(prefix.length).trim() : '';
+  promptNumberSetting({ title, label: 'Percent', value: current, placeholder: prefix === 'flashlight ' ? '100' : '50', min, max: 100, note,
+    saveLabel: idx === null ? 'Add' : 'Save' }, n => {
+    if (idx === null) { addActionToCurrent(`${prefix}${n}`); return; }
+    storeCommandAt(actions, idx, `${prefix}${n}`);
+    saveConfig(); renderActionList();
+  });
 }
 
 // ── Toast Action Modal ──
@@ -5510,30 +5570,14 @@ function editAction(idx) {
         actions[idx] = `kill ${val}`;
         saveConfig(); renderActionList();
       });
-    } else if (low.startsWith('flashlight ')) {
-      showDialog('Edit Flashlight Level', 'Intensity % (1-100):', act.slice(11), 'Save', val => {
-        if (!val) return;
-        actions[idx] = `flashlight ${val}`;
-        saveConfig(); renderActionList();
-      }, true);
-    } else if (low.startsWith('set-vol ')) {
-      showDialog('Edit Volume Level', 'Volume % (0-100):', act.slice(8), 'Save', val => {
-        if (!val) return;
-        actions[idx] = `set-vol ${val}`;
-        saveConfig(); renderActionList();
-      }, true);
-    } else if (low.startsWith('ringer volume ')) {
-      showDialog('Edit Ringer Volume', 'Ringer volume % (0-100):', act.slice(14), 'Save', val => {
-        if (!val) return;
-        actions[idx] = `ringer volume ${val}`;
-        saveConfig(); renderActionList();
-      }, true);
-    } else if (low.startsWith('brightness ')) {
-      showDialog('Edit Brightness Level', 'Brightness % (0-100):', act.slice(11), 'Save', val => {
-        if (!val) return;
-        actions[idx] = `brightness ${val}`;
-        saveConfig(); renderActionList();
-      }, true);
+    } else if (isLevelCommand(low, 'flashlight ')) {
+      promptLevelAction('flashlight ', idx);
+    } else if (isLevelCommand(low, 'set-vol ')) {
+      promptLevelAction('set-vol ', idx);
+    } else if (isLevelCommand(low, 'ringer volume ')) {
+      promptLevelAction('ringer volume ', idx);
+    } else if (isLevelCommand(low, 'brightness ')) {
+      promptLevelAction('brightness ', idx);
     } else if (low === 'unlock' || low.startsWith('unlock ')) {
       const currentPin = low.startsWith('unlock ') ? act.slice(7).trim() : '';
       promptUnlockDialog(currentPin, val => {
@@ -5550,6 +5594,8 @@ function editAction(idx) {
       });
     } else if (low.startsWith('km ') || low === 'km') {
       editKMAction(idx);
+    } else {
+      promptTerminalModal(act, idx, true); // any other command, as text with the + menu
     }
   }
 }
@@ -5778,9 +5824,7 @@ function selectPickerAction(act) {
   } else if (c === '__TOAST__') {
     promptToastModal('', null);
   } else if (c === '__CUSTOM__') {
-    showDialog('Terminal Command', 'Shell command to execute:', '', 'Add', val => {
-      if (val) addActionToCurrent(`exec ${val}`);
-    });
+    promptTerminalModal('', null);
   } else if (c === '__LUA_SCRIPT__') {
     showDialog('Lua Script', 'Lua expression or script:', '', 'Add', val => {
       if (val) addActionToCurrent(`lua:${val}`);
@@ -5846,21 +5890,13 @@ function selectPickerAction(act) {
       renderActionList();
     });
   } else if (c === '__SET_FLASHLIGHT__') {
-    showDialog('Flashlight Intensity', 'Brightness percentage (1-100):', '100', 'Add', val => {
-      if (val) addActionToCurrent(`flashlight ${val}`);
-    }, true);
+    promptLevelAction('flashlight ', null);
   } else if (c === '__SET_VOLUME__') {
-    showDialog('Set Volume', 'Volume percentage (0-100):', '50', 'Add', val => {
-      if (val) addActionToCurrent(`set-vol ${val}`);
-    }, true);
+    promptLevelAction('set-vol ', null);
   } else if (c === '__SET_RINGER_VOLUME__') {
-    showDialog('Set Ringer Volume', 'Ringer volume percentage (0-100):', '50', 'Add', val => {
-      if (val) addActionToCurrent(`ringer volume ${val}`);
-    }, true);
+    promptLevelAction('ringer volume ', null);
   } else if (c === '__SET_BRIGHTNESS__') {
-    showDialog('Set Brightness', 'Brightness percentage (0-100):', '50', 'Add', val => {
-      if (val) addActionToCurrent(`brightness ${val}`);
-    }, true);
+    promptLevelAction('brightness ', null);
   } else if (c === '__HA_PICKER__') {
     promptHAActionPicker();
   } else if (c === '__HA_TOGGLE__') {
