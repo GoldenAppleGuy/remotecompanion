@@ -2818,7 +2818,7 @@ static BOOL rc_variable_delete(NSString *name) {
 }
 
 // How a value goes into text: as it is, single-quoted for a shell, or only {round} filled
-typedef NS_ENUM(NSInteger, RCFillMode) { RCFillPlain, RCFillShell, RCFillRoundOnly };
+typedef NS_ENUM(NSInteger, RCFillMode) { RCFillPlain, RCFillShell, RCFillRoundOnly, RCFillQuoted };
 
 // One shell word whatever the value holds: 'it'\''s' for it's
 static NSString *rc_shell_quoted(NSString *value) {
@@ -2845,6 +2845,8 @@ static NSString *rc_fill_action(NSString *text) {
     for (NSString *prefix in @[@"exec ", @"root ", @"sudo "]) {
         if ([lower hasPrefix:prefix]) return rc_fill_placeholders_mode(text, RCFillShell);
     }
+    // A Toast's parts are in double quotes: a " in a value would end one early
+    if ([lower hasPrefix:@"toast "]) return rc_fill_placeholders_mode(text, RCFillQuoted);
     return rc_fill_placeholders_mode(text, RCFillPlain);
 }
 
@@ -2868,6 +2870,7 @@ static NSString *rc_fill_placeholders_mode(NSString *text, RCFillMode mode) {
         }
         if (!value) return;
         if (mode == RCFillShell) value = rc_shell_quoted(value);
+        else if (mode == RCFillQuoted) value = [value stringByReplacingOccurrencesOfString:@"\"" withString:@"'"];
         [filled appendString:[text substringWithRange:NSMakeRange(last, match.range.location - last)]];
         [filled appendString:value];
         last = NSMaxRange(match.range);
@@ -3825,13 +3828,23 @@ static void rc_execute_action_sequence_body(NSArray *actions, NSString *triggerK
             NSString *raw = [dictAction[@"value"] description] ?: @"";
             NSString *value = runsCommand ? rc_fill_action(raw) : rc_fill_placeholders(raw);
             NSString *problem = nil;
-            value = rc_variable_operation(op, name, value, dictAction, &problem);
+            // Math on a saved variable reads and writes it in one step, so two runs changing it at
+            // once (Add 1 each) don't lose a change. The lock is reentrant; commands run outside it.
+            BOOL readsValue = !runsCommand && ![op isEqualToString:@"set"] && op.length && ![op isEqualToString:@"random"];
+            if (readsValue && !runOnly) {
+                @synchronized (rc_variables_lock()) {
+                    value = rc_variable_operation(op, name, value, dictAction, &problem);
+                    if (value) rc_variable_set(name, value, runOnly);
+                }
+            } else {
+                value = rc_variable_operation(op, name, value, dictAction, &problem);
+                if (value) rc_variable_set(name, value, runOnly);
+            }
             if (!value) {
                 SRLogMin(@"[%@] Set Variable %@ (%@): %@ - unchanged", triggerKey, name, op, problem);
                 rc_run_trace(idx, @"problem", problem);
                 continue;
             }
-            rc_variable_set(name, value, runOnly);
             rc_run_trace(idx, @"sets", nil);
             rc_run_trace(idx, @"value", value.length > 200 ? [[value substringToIndex:200] stringByAppendingString:@"…"] : value);
             SRLogMin(@"[%@] Set %@%@ = %@", triggerKey, name, runOnly ? @" (this run)" : @"", value);
@@ -10879,9 +10892,12 @@ static NSString *handle_command(NSString *cmd) {
             // "var add count 1" (or -1): a number added to the variable's (0 when not set)
             if (!rc_variable_name_valid(name)) return @"Usage: var add <name> <number>\n";
             NSString *problem = nil;
-            NSString *value = rc_variable_operation(@"add", name, argSpace.location == NSNotFound ? @"" : [args substringFromIndex:argSpace.location + 1], nil, &problem);
+            NSString *value;
+            @synchronized (rc_variables_lock()) { // read and write in one step
+                value = rc_variable_operation(@"add", name, argSpace.location == NSNotFound ? @"" : [args substringFromIndex:argSpace.location + 1], nil, &problem);
+                if (value) rc_variable_set(name, value, NO);
+            }
             if (!value) return [NSString stringWithFormat:@"Not changed: %@\n", problem];
-            rc_variable_set(name, value, NO);
             return [NSString stringWithFormat:@"%@ = %@\n", name, value];
         } else if ([verb isEqualToString:@"delete"]) {
             return rc_variable_delete(name) ? @"Variable deleted\n" : @"No such variable\n";

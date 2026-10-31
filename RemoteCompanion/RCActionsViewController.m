@@ -1830,6 +1830,15 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
 // at insertIndex or the end. Only a new top-level If owns an End If marker; an
 // Else If belongs to the existing block and must not create another terminator.
 - (void)applyIfAction:(NSDictionary *)ifAction existingIndex:(NSInteger)existingIndex insertIndex:(NSInteger)insertIndex {
+    // An edited condition stays disabled if it was
+    if (existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)self.actions.count) {
+        id old = self.actions[existingIndex];
+        if ([old isKindOfClass:[NSDictionary class]] && old[@"disabled"]) {
+            NSMutableDictionary *kept = [ifAction mutableCopy];
+            kept[@"disabled"] = old[@"disabled"];
+            ifAction = kept;
+        }
+    }
     // Wait Until: one row, no End; a new one asks for its time limit, an edited one keeps it
     if ([[ifAction[@"type"] description].lowercaseString isEqualToString:@"wait_until"]) {
         BOOL editing = existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)self.actions.count;

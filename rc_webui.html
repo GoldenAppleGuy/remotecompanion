@@ -7050,6 +7050,7 @@ function finishIfCondition(def, value, valueTitle, editIdx, extra) {
     expectedTitle: valueTitle
   };
   if (extra) Object.assign(item, extra);
+  if (editIdx !== null && actions[editIdx] && actions[editIdx].disabled) item.disabled = actions[editIdx].disabled; // stays disabled
 
   if (existingType === 'wait_until') {
     // Wait Until: one row, no End; a new one asks for its time limit, an edited one keeps it
