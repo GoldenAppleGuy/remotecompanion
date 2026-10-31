@@ -8,7 +8,7 @@ static NSString *const RCTimedPausePrefix = @"button triggers pause ";
 static NSString *RCChoiceNote(NSString *key, NSArray<NSString *> *suffixes) {
     NSDictionary *notes = @{
         @"autolock": @"Toggle switches between Never and the time it was set to before.",
-        @"buttontriggers": @"Pause stops button triggers until a Resume; a time resumes them by itself.",
+        @"buttontriggers": @"Stops RemoteCompanion's button and gesture triggers; the buttons and gestures work as usual, and other triggers keep running. Resume with Resume Button Triggers, from the Triggers screen, or by restarting the iPhone.",
         @"haptics": @"When the system plays haptics.",
         @"anc": @"For AirPods and Beats with Noise Control.",
         @"camera_photo": @"Opens the Camera in this mode.",
@@ -22,8 +22,8 @@ static NSString *RCChoiceNote(NSString *key, NSArray<NSString *> *suffixes) {
 
 @interface RCChoiceViewController ()
 @property (nonatomic, copy) NSDictionary *info;
-@property (nonatomic, copy) NSString *currentSuffix;
-@property (nonatomic, copy) NSString *timedMinutes; // "30" or "{name}" when the current one is a timed pause
+@property (nonatomic, copy) NSString *selectedSuffix;  // the checked choice
+@property (nonatomic, copy) NSString *timedMinutes;    // "30" or "{name}": the checked choice is a timed pause
 @property (nonatomic, copy) NSArray *otherActions;
 @end
 
@@ -45,7 +45,7 @@ static NSString *RCChoiceNote(NSString *key, NSArray<NSString *> *suffixes) {
             _timedMinutes = [[current substringFromIndex:RCTimedPausePrefix.length] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         } else if (current) {
             NSDictionary *matched = [[RCConfigManager sharedManager] toggleInfoForCommand:current];
-            if ([matched[@"key"] isEqualToString:info[@"key"]]) _currentSuffix = matched[@"currentSuffix"];
+            if ([matched[@"key"] isEqualToString:info[@"key"]]) _selectedSuffix = matched[@"currentSuffix"];
         }
     }
     return self;
@@ -53,6 +53,10 @@ static NSString *RCChoiceNote(NSString *key, NSArray<NSString *> *suffixes) {
 
 - (BOOL)isButtonTriggers {
     return [self.info[@"key"] isEqualToString:@"buttontriggers"];
+}
+
+- (BOOL)isRootOfPresented {
+    return self.navigationController.viewControllers.firstObject == self && self.presentingViewController;
 }
 
 - (void)viewDidLoad {
@@ -66,12 +70,15 @@ static NSString *RCChoiceNote(NSString *key, NSArray<NSString *> *suffixes) {
     if (self.navigationController.viewControllers.firstObject == self) {
         self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel target:self action:@selector(cancel)];
     }
+    // Nothing changes until Save (Add while adding): the checkmark only marks the choice
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:self.saveTitle ?: @"Save" style:UIBarButtonItemStyleDone target:self action:@selector(save)];
     self.tableView.tableHeaderView = [self headerView];
+    [self updateSave];
 }
 
 // The action's icon over its name
 - (UIView *)headerView {
-    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, 104)];
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, 96)];
     UIView *tile = [[UIView alloc] init];
     tile.backgroundColor = [[RCConfigManager sharedManager] tweakColorForKey:@"blockBackground" defaultVal:0.12];
     tile.layer.cornerRadius = 16;
@@ -92,8 +99,11 @@ static NSString *RCChoiceNote(NSString *key, NSArray<NSString *> *suffixes) {
         [icon.centerXAnchor constraintEqualToAnchor:tile.centerXAnchor],
         [icon.centerYAnchor constraintEqualToAnchor:tile.centerYAnchor],
     ]];
-    header.isAccessibilityElement = NO;
     return header;
+}
+
+- (void)updateSave {
+    self.navigationItem.rightBarButtonItem.enabled = self.selectedSuffix != nil || self.timedMinutes != nil;
 }
 
 - (void)cancel {
@@ -110,6 +120,10 @@ static NSString *RCChoiceNote(NSString *key, NSArray<NSString *> *suffixes) {
     return (NSInteger)[self suffixes].count + ([self isButtonTriggers] ? 1 : 0);
 }
 
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    return @"Choose One";
+}
+
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     return RCChoiceNote(self.info[@"key"], [self suffixes]);
 }
@@ -123,16 +137,18 @@ static NSString *RCChoiceNote(NSString *key, NSArray<NSString *> *suffixes) {
     cell.selectedBackgroundView = selection;
     cell.textLabel.textColor = [UIColor labelColor];
     NSArray *suffixes = [self suffixes];
+    BOOL checked;
     if (indexPath.row < (NSInteger)suffixes.count) {
         cell.textLabel.text = self.info[@"displaySuffixes"][indexPath.row];
-        BOOL chosen = [suffixes[indexPath.row] isEqualToString:self.currentSuffix ?: @""];
-        cell.accessoryType = chosen ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+        checked = !self.timedMinutes && [suffixes[indexPath.row] isEqualToString:self.selectedSuffix ?: @""];
     } else {
-        // Button Triggers: paused for a time of your own
-        cell.textLabel.text = @"Pause for a Time";
+        // Pause Button Triggers: for a time of the user's own
+        cell.textLabel.text = @"For a Time…";
         cell.detailTextLabel.text = self.timedMinutes ? [self minutesText:self.timedMinutes] : nil;
-        cell.accessoryType = self.timedMinutes ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryDisclosureIndicator;
+        checked = self.timedMinutes != nil;
     }
+    cell.accessoryType = checked ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+    cell.accessibilityTraits = checked ? UIAccessibilityTraitButton | UIAccessibilityTraitSelected : UIAccessibilityTraitButton;
     return cell;
 }
 
@@ -148,20 +164,17 @@ static NSString *RCChoiceNote(NSString *key, NSArray<NSString *> *suffixes) {
         [self askMinutes];
         return;
     }
-    NSString *suffix = suffixes[indexPath.row];
-    NSString *prefix = [self.info[@"matchedPrefix"] length] ? self.info[@"matchedPrefix"] : [self.info[@"prefixes"] firstObject] ?: @"";
-    NSString *command = [prefix stringByAppendingString:suffix];
-    // AudioMix's toggle is the bare command
-    if (![self.info[@"matchedPrefix"] length] && [self.info[@"key"] isEqualToString:@"audiomix"] && [suffix isEqualToString:@"toggle"]) command = @"audiomix";
-    self.currentSuffix = suffix;
+    // One choice: the checkmark moves here
+    self.selectedSuffix = suffixes[indexPath.row];
     self.timedMinutes = nil;
-    [tableView reloadData];
-    [self finishWithCommand:command];
+    [tableView reloadSections:[NSIndexSet indexSetWithIndex:0] withRowAnimation:UITableViewRowAnimationNone];
+    [self updateSave];
+    [[[UISelectionFeedbackGenerator alloc] init] selectionChanged];
 }
 
-// Button Triggers paused for a number of minutes, or a variable
+// Pause Button Triggers for a number of minutes, or a variable
 - (void)askMinutes {
-    RCNumberSettingViewController *editor = [[RCNumberSettingViewController alloc] initWithTitle:@"Pause for a Time" label:@"Minutes"
+    RCNumberSettingViewController *editor = [[RCNumberSettingViewController alloc] initWithTitle:@"For a Time" label:@"Minutes"
                                                                                              value:self.timedMinutes otherActions:self.otherActions];
     editor.placeholder = @"30";
     editor.minimum = 1;
@@ -171,8 +184,12 @@ static NSString *RCChoiceNote(NSString *key, NSArray<NSString *> *suffixes) {
     editor.saveTitle = @"Done";
     __weak typeof(self) weakSelf = self;
     editor.onSave = ^(id minutes, __unused NSInteger choice) {
-        NSString *text = [minutes isKindOfClass:[NSNumber class]] ? [NSString stringWithFormat:@"%ld", (long)[minutes integerValue]] : [minutes description];
-        [weakSelf finishWithCommand:[RCTimedPausePrefix stringByAppendingString:text]];
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.timedMinutes = [minutes isKindOfClass:[NSNumber class]] ? [NSString stringWithFormat:@"%ld", (long)[minutes integerValue]] : [minutes description];
+        strongSelf.selectedSuffix = nil;
+        [strongSelf.tableView reloadData];
+        [strongSelf updateSave];
     };
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:editor];
     if (@available(iOS 15.0, *)) {
@@ -182,9 +199,22 @@ static NSString *RCChoiceNote(NSString *key, NSArray<NSString *> *suffixes) {
     [self presentViewController:nav animated:YES completion:nil];
 }
 
-- (void)finishWithCommand:(NSString *)command {
+// The checked choice as a command
+- (NSString *)chosenCommand {
+    if (self.timedMinutes) return [RCTimedPausePrefix stringByAppendingString:self.timedMinutes];
+    NSString *suffix = self.selectedSuffix;
+    if (!suffix) return nil;
+    NSString *prefix = [self.info[@"matchedPrefix"] length] ? self.info[@"matchedPrefix"] : [self.info[@"prefixes"] firstObject] ?: @"";
+    // AudioMix's toggle is the bare command
+    if (![self.info[@"matchedPrefix"] length] && [self.info[@"key"] isEqualToString:@"audiomix"] && [suffix isEqualToString:@"toggle"]) return @"audiomix";
+    return [prefix stringByAppendingString:suffix];
+}
+
+- (void)save {
+    NSString *command = [self chosenCommand];
+    if (!command) return;
     void (^onPick)(NSString *) = self.onPick;
-    if (self.navigationController.viewControllers.firstObject == self && self.presentingViewController) {
+    if ([self isRootOfPresented]) {
         // Editing: this screen closes, then the action changes
         [self dismissViewControllerAnimated:YES completion:^{ if (onPick) onPick(command); }];
     } else if (onPick) {

@@ -2615,6 +2615,7 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
 // screen when editing the action at index
 - (void)presentChoicesFor:(NSDictionary *)info current:(NSString *)current index:(NSInteger)index {
     RCChoiceViewController *choices = [[RCChoiceViewController alloc] initWithToggleInfo:info current:current otherActions:self.actions];
+    choices.saveTitle = index == NSNotFound ? @"Add" : @"Save";
     __weak typeof(self) weakSelf = self;
     choices.onPick = ^(NSString *command) {
         [weakSelf storeCommand:command atIndex:index];
