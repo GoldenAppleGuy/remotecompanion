@@ -1591,6 +1591,7 @@ static NSString *RCVariableConditionText(NSDictionary *dict) {
 
     NSString *cmd = [[(NSString *)cmdId stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
     if ([cmd hasPrefix:@"audiohandoff enabled "] || [cmd hasPrefix:@"audiohandoff auto "]) return @"headphones";
+    if ([cmd hasPrefix:@"button triggers pause "]) return @"pause.circle"; // paused for a time of the user's own
     if ([cmd isEqualToString:@"camera record"]) return @"video.circle.fill";
     if ([cmd isEqualToString:@"camera shutter"]) return @"camera.circle.fill";
     if ([cmd hasPrefix:@"camera"] || [cmd hasPrefix:@"open camera"]) {
