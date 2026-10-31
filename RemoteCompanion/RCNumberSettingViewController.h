@@ -19,6 +19,8 @@
 @property (nonatomic, copy) NSString *saveTitle;       // default Save
 
 // value: an NSNumber in range, or an NSString "{name}"; choice: the selected choice's index
+// Whether {round} can be chosen: only inside a Repeat does it have a value (default YES)
+@property (nonatomic, assign) BOOL allowsRound;
 @property (nonatomic, copy) void (^onSave)(id value, NSInteger choice);
 
 @end
