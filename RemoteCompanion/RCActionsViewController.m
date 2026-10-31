@@ -7,6 +7,7 @@
 #import "RCTextInputViewController.h"
 #import "RCSetVariableViewController.h"
 #import "RCVariableConditionViewController.h"
+#import "RCNumberSettingViewController.h"
 #import "RCServerClient.h"
 #import "RCRunningViewController.h"
 #import "RCRunHistoryViewController.h"
@@ -163,7 +164,6 @@ static UIImage *RCGrabberImage(void) {
     return [UIImage systemImageNamed:@"line.3.horizontal"] ?: [UIImage systemImageNamed:@"line.horizontal.3"];
 }
 
-static id RCNumberOrVariable(NSString *text, BOOL decimals);
 
 @implementation RCActionsViewController
 
@@ -1228,29 +1228,7 @@ static void RCSetRunWatching(BOOL watching) {
                 }];
             });
         } else if ([action isEqualToString:@"__DELAY__"]) {
-            // Show alert for delay
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Add Delay" 
-                message:@"Enter delay in seconds, or a variable like {wait}" 
-                preferredStyle:UIAlertControllerStyleAlert];
-                
-            [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-                textField.placeholder = @"1.0";
-                textField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
-            }];
-            
-            [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-            [alert addAction:[UIAlertAction actionWithTitle:@"Add" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull alertAction) {
-                NSString *input = alert.textFields.firstObject.text;
-                if (input.length > 0) {
-                    [self.actions addObject:[NSString stringWithFormat:@"delay %@", input]];
-                    [self saveActions];
-                    [self.tableView reloadData];
-                }
-            }]];
-            
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [self presentViewController:alert animated:YES completion:nil];
-            });
+            [self presentDelayForIndex:NSNotFound current:nil after:0.5];
         } else if ([action isEqualToString:@"__OPEN_APP__"]) {
             RCAppPickerViewController *appPicker = [[RCAppPickerViewController alloc] init];
             appPicker.onAppSelected = ^(NSString *name, NSString *bundleId) {
@@ -1968,37 +1946,35 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
 
     // Threshold: above / below a percentage (battery, volume)
     if ([condition[@"input"] isEqualToString:@"threshold"]) {
-        UIAlertController *direction = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"%@ is...", condition[@"title"]]
-                                                                           message:nil
-                                                                    preferredStyle:UIAlertControllerStyleActionSheet];
-        __weak typeof(self) weakSelf = self;
-        for (NSString *word in @[@"Above", @"Below"]) {
-            [direction addAction:[UIAlertAction actionWithTitle:word style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-                UIAlertController *amount = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"%@ %@", condition[@"title"], word.lowercaseString]
-                                                                                message:@"Percentage (0-100), or a variable like {limit}"
-                                                                         preferredStyle:UIAlertControllerStyleAlert];
-                [amount addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-                    textField.placeholder = @"50";
-                    textField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
-                }];
-                [amount addAction:[UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
-                    id typed = RCNumberOrVariable(amount.textFields[0].text, NO);
-                    if (!typed) return;
-                    // A variable stays as typed ("ABOVE {limit}"); the tweak fills it in when it checks
-                    NSString *value = [typed isKindOfClass:[NSNumber class]] ? [NSString stringWithFormat:@"%ld", (long)MAX(0, MIN(100, [typed integerValue]))] : typed;
-                    [weakSelf applyIfAction:@{ @"type": actionType, @"conditionKey": condition[@"key"], @"conditionTitle": condition[@"title"],
-                                               @"expectedValue": [NSString stringWithFormat:@"%@ %@", word.uppercaseString, value],
-                                               @"expectedTitle": [NSString stringWithFormat:@"%@ %@%%", word.lowercaseString, value] }
-                              existingIndex:existingIndex insertIndex:insertIndex];
-                }]];
-                [amount addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-                [weakSelf configurePopoverSourceForAlert:amount];
-                [weakSelf presentViewController:amount animated:YES completion:nil];
-            }]];
+        // The one being edited, when it's the same condition: its direction and number
+        NSString *current = nil;
+        NSInteger choice = 0;
+        if (existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)self.actions.count) {
+            id item = self.actions[existingIndex];
+            if ([item isKindOfClass:[NSDictionary class]] && [[item[@"conditionKey"] description] isEqualToString:condition[@"key"]]) {
+                NSString *raw = [[item[@"expectedValue"] description] uppercaseString];
+                if ([raw hasPrefix:@"BELOW "]) choice = 1;
+                NSRange space = [raw rangeOfString:@" "];
+                if (space.location != NSNotFound) current = [[item[@"expectedValue"] description] substringFromIndex:space.location + 1];
+            }
         }
-        [direction addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-        [self configurePopoverSourceForAlert:direction];
-        [self presentViewController:direction animated:YES completion:nil];
+        RCNumberSettingViewController *editor = [[RCNumberSettingViewController alloc] initWithTitle:condition[@"title"] label:@"Percent" value:current otherActions:self.actions];
+        editor.choices = @[@"Above", @"Below"];
+        editor.selectedChoice = choice;
+        editor.placeholder = @"50";
+        editor.maximum = 100;
+        editor.note = @"True when the level is above or below this percentage.";
+        __weak typeof(self) weakSelf = self;
+        editor.onSave = ^(id typed, NSInteger picked) {
+            // A variable stays as typed ("ABOVE {limit}"); the tweak fills it in when it checks
+            NSString *word = picked == 1 ? @"Below" : @"Above";
+            NSString *value = [typed description];
+            [weakSelf applyIfAction:@{ @"type": actionType, @"conditionKey": condition[@"key"], @"conditionTitle": condition[@"title"],
+                                       @"expectedValue": [NSString stringWithFormat:@"%@ %@", word.uppercaseString, value],
+                                       @"expectedTitle": [NSString stringWithFormat:@"%@ %@%%", word.lowercaseString, value] }
+                      existingIndex:existingIndex insertIndex:insertIndex];
+        };
+        [self presentNumberSetting:editor after:0.35];
         return;
     }
     
@@ -2140,21 +2116,17 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
 
 // Wait Until's time limit, in seconds: for a new Wait Until (then added) or the one at existingIndex
 - (void)presentWaitLimitForAction:(NSDictionary *)waitAction existingIndex:(NSInteger)existingIndex insertIndex:(NSInteger)insertIndex {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Time Limit"
-                                                                   message:@"Seconds to wait at most before the actions go on anyway (up to a day), or a variable like {limit}."
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    NSString *current = [waitAction[@"timeout"] description] ?: @"60";
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-        textField.placeholder = @"60";
-        textField.text = current;
-        textField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
-    }];
+    RCNumberSettingViewController *editor = [[RCNumberSettingViewController alloc] initWithTitle:@"Time Limit" label:@"Seconds"
+                                                                                             value:[waitAction[@"timeout"] description] ?: @"60" otherActions:self.actions];
+    editor.placeholder = @"60";
+    editor.minimum = 1;
+    editor.maximum = 86400;
+    editor.note = @"The longest to wait, up to a day. Then the actions go on anyway.";
+    editor.saveTitle = existingIndex == NSNotFound ? @"Add" : @"Save";
     __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+    editor.onSave = ^(id seconds, __unused NSInteger choice) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
-        id seconds = RCNumberOrVariable(alert.textFields[0].text, NO) ?: @60;
-        if ([seconds isKindOfClass:[NSNumber class]]) seconds = @(MAX(1, MIN(86400, [seconds integerValue] ?: 60)));
         NSMutableDictionary *item = [waitAction mutableCopy];
         item[@"timeout"] = seconds;
         if (existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)strongSelf.actions.count) {
@@ -2166,21 +2138,46 @@ static NSArray<NSDictionary *> *RCAdaptVibrationConditions(NSArray<NSDictionary 
         }
         [strongSelf saveActions];
         [strongSelf.tableView reloadData];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [self configurePopoverSourceForAlert:alert];
+    };
     // After the condition picker has closed (it may still be going back)
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [weakSelf presentViewController:alert animated:YES completion:nil];
+    [self presentNumberSetting:editor after:0.35];
+}
+
+// A number setting's screen, as a half-height sheet where it can be
+- (void)presentNumberSetting:(RCNumberSettingViewController *)editor after:(NSTimeInterval)delay {
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:editor];
+    if (@available(iOS 15.0, *)) {
+        UISheetPresentationController *sheet = nav.sheetPresentationController;
+        sheet.detents = @[[UISheetPresentationControllerDetent mediumDetent], [UISheetPresentationControllerDetent largeDetent]];
+        sheet.prefersGrabberVisible = YES;
+    }
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [weakSelf presentViewController:nav animated:YES completion:nil];
     });
 }
 
-// Names a variable can have: letters, digits and _, not starting with a digit, and not "round"
-static BOOL RCVariableNameIsValid(NSString *name) {
-    if (name.length == 0 || name.length > 40 || [name isEqualToString:@"round"]) return NO;
-    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"];
-    if ([name rangeOfCharacterFromSet:allowed.invertedSet].location != NSNotFound) return NO;
-    return ![[NSCharacterSet decimalDigitCharacterSet] characterIsMember:[name characterAtIndex:0]];
+// Delay: seconds, or a variable. Edits the delay at index, or adds one at the end.
+- (void)presentDelayForIndex:(NSInteger)index current:(NSString *)current after:(NSTimeInterval)delay {
+    BOOL editing = index != NSNotFound && index >= 0 && index < (NSInteger)self.actions.count;
+    RCNumberSettingViewController *editor = [[RCNumberSettingViewController alloc] initWithTitle:@"Delay" label:@"Seconds" value:current otherActions:self.actions];
+    editor.placeholder = @"1";
+    editor.allowsDecimals = YES;
+    editor.maximum = 86400;
+    editor.note = @"How long to wait before the next action, up to a day.";
+    editor.saveTitle = editing ? @"Save" : @"Add";
+    __weak typeof(self) weakSelf = self;
+    editor.onSave = ^(id seconds, __unused NSInteger choice) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSString *text = [seconds isKindOfClass:[NSNumber class]] ? [NSString stringWithFormat:@"%g", [seconds doubleValue]] : seconds;
+        NSString *item = [@"delay " stringByAppendingString:text];
+        if (editing && index < (NSInteger)strongSelf.actions.count) strongSelf.actions[index] = item;
+        else [strongSelf.actions addObject:item];
+        [strongSelf saveActions];
+        [strongSelf.tableView reloadData];
+    };
+    [self presentNumberSetting:editor after:delay];
 }
 
 // The Variable condition for an If, Else If, Repeat While or Wait Until: its own screen
@@ -2228,42 +2225,21 @@ static BOOL RCVariableNameIsValid(NSString *name) {
     [self presentViewController:nav animated:YES completion:nil];
 }
 
-// A number typed for a setting, or one variable in braces ("{times}"): what to store, or nil.
-// Whole numbers are stored as numbers, as before.
-static id RCNumberOrVariable(NSString *text, BOOL decimals) {
-    text = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if ([text hasPrefix:@"{"] && [text hasSuffix:@"}"] && text.length > 2) {
-        return RCVariableNameIsValid([text substringWithRange:NSMakeRange(1, text.length - 2)]) ? text : nil;
-    }
-    NSScanner *scanner = [NSScanner scannerWithString:text];
-    double number = 0;
-    if (![scanner scanDouble:&number] || !scanner.isAtEnd) return nil;
-    return decimals ? @(number) : @((NSInteger)number);
-}
-
 // Repeat: how many times. Edits the Repeat at existingIndex, or adds a Repeat block at the end.
 - (void)presentRepeatCountForIndex:(NSInteger)existingIndex {
     BOOL editing = existingIndex != NSNotFound && existingIndex >= 0 && existingIndex < (NSInteger)self.actions.count;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Repeat"
-                                                                   message:@"Runs the actions inside this many times (up to 1,000), or as many as a variable says, like {times}. In their text, {round} becomes the round number."
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    NSString *current = editing ? [self.actions[existingIndex][@"count"] description] : @"";
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-        textField.placeholder = @"Times";
-        textField.text = current;
-        textField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
-    }];
+    RCNumberSettingViewController *editor = [[RCNumberSettingViewController alloc] initWithTitle:@"Repeat" label:@"Times"
+                                                                                             value:editing ? [self.actions[existingIndex][@"count"] description] : nil otherActions:self.actions];
+    editor.placeholder = @"3";
+    editor.minimum = 1;
+    editor.maximum = 1000;
+    editor.note = @"Runs the actions inside this many times, up to 1,000. In their text, {round} becomes the current round.";
+    editor.saveTitle = editing ? @"Save" : @"Add";
     __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        id count = RCNumberOrVariable(alert.textFields[0].text, NO);
-        if (!count) return; // left empty or not a number: nothing added or changed
-        if ([count isKindOfClass:[NSNumber class]]) {
-            if ([count integerValue] <= 0) return;
-            count = @(MIN(1000, [count integerValue]));
-        }
-        NSDictionary *repeat = @{ @"type": @"repeat", @"count": count };
+    editor.onSave = ^(id count, __unused NSInteger choice) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
+        NSDictionary *repeat = @{ @"type": @"repeat", @"count": count };
         if (editing) {
             strongSelf.actions[existingIndex] = repeat;
         } else {
@@ -2273,10 +2249,8 @@ static id RCNumberOrVariable(NSString *text, BOOL decimals) {
         [strongSelf saveActions];
         if (!editing) [strongSelf defaultToRestartForLoop];
         [strongSelf.tableView reloadData];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [self configurePopoverSourceForAlert:alert];
-    [self presentViewController:alert animated:YES completion:nil];
+    };
+    [self presentNumberSetting:editor after:0];
 }
 
 - (void)presentIfConditionPickerForIndex:(NSInteger)index {
@@ -2737,29 +2711,7 @@ static id RCNumberOrVariable(NSString *text, BOOL decimals) {
             [self.tableView reloadData];
         }];
     } else if ([currentAction hasPrefix:@"delay "]) {
-        // Edit Delay
-        NSString *currentDelay = [currentAction substringFromIndex:6];
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Edit Delay"
-            message:@"Update delay in seconds, or a variable like {wait}"
-            preferredStyle:UIAlertControllerStyleAlert];
-
-        [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-            textField.text = currentDelay;
-            textField.placeholder = @"1.0";
-            textField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
-        }];
-
-        [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Update" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            NSString *input = alert.textFields.firstObject.text;
-            if (input.length > 0) {
-                self.actions[indexPath.row] = [NSString stringWithFormat:@"delay %@", input];
-                [self saveActions];
-                [self.tableView reloadData];
-            }
-        }]];
-
-        [self presentViewController:alert animated:YES completion:nil];
+        [self presentDelayForIndex:indexPath.row current:[currentAction substringFromIndex:6] after:0];
     } else if ([currentAction hasPrefix:@"shortcut:"]) {
         // Change the shortcut, or whether it runs silently (keeping its input)
         BOOL silent = NO;
