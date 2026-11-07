@@ -614,7 +614,7 @@ static NSString *rc_build_toast_command(NSString *title, NSString *subtitle, NSS
 
 // The drag handle: line.3.horizontal is iOS 15 and later; iOS 14 has the older name
 static UIImage *RCGrabberImage(void) {
-    return [UIImage systemImageNamed:@"line.3.horizontal"] ?: [UIImage systemImageNamed:@"line.horizontal.3"];
+    return [UIImage systemImageNamed:@"line.3.horizontal"];
 }
 
 // Kept in this translation unit so both app build paths include the picker.

@@ -345,7 +345,7 @@ typedef NS_ENUM(NSInteger, RCSettingsSection) {
             cell.imageView.tintColor = [UIColor systemGreenColor];
         } else {
             cell.textLabel.text = @"Test Kit";
-            cell.imageView.image = [UIImage systemImageNamed:@"checklist"] ?: [UIImage systemImageNamed:@"list.bullet.rectangle"];
+            cell.imageView.image = [UIImage systemImageNamed:@"checklist"];
             cell.imageView.tintColor = [UIColor systemTealColor];
         }
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;

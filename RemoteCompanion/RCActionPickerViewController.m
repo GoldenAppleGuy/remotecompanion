@@ -191,7 +191,7 @@
             @{ @"name": @"Activate Siri", @"command": @"siri", @"icon": @"mic.circle.fill" },
             @{ @"name": @"Play Gesture...", @"command": @"__PLAY_GESTURE__", @"icon": @"hand.draw.fill" },
             @{ @"name": @"Record Gesture", @"command": @"__RECORD_GESTURE__", @"icon": @"record.circle" },
-            @{ @"name": @"Accessibility Shortcut", @"command": @"accessibility shortcut", @"icon": ([UIImage systemImageNamed:@"accessibility"] ? @"accessibility" : @"figure.stand") }
+            @{ @"name": @"Accessibility Shortcut", @"command": @"accessibility shortcut", @"icon": @"accessibility" }
         ],
         // Device Controls
         @[

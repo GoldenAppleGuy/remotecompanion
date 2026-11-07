@@ -747,7 +747,7 @@
         @{ @"title": @"Scheduled Trigger", @"icon": @"calendar.badge.clock", @"section": @"Time", @"handler": ^{ push([[RCScheduledTriggerViewController alloc] init]); } },
     ] mutableCopy];
     [items addObjectsFromArray:systemEvents];
-    [items addObject:@{ @"title": @"Battery Level", @"icon": [UIImage systemImageNamed:@"battery.50"] ? @"battery.50" : @"battery.25", @"section": @"Device", @"handler": ^{ push([[RCBatteryTriggerViewController alloc] init]); } }];
+    [items addObject:@{ @"title": @"Battery Level", @"icon": @"battery.50", @"section": @"Device", @"handler": ^{ push([[RCBatteryTriggerViewController alloc] init]); } }];
     [items addObject:@{ @"title": @"MQTT Topic", @"icon": @"antenna.radiowaves.left.and.right", @"section": @"Integrations", @"handler": ^{ push([[RCMQTTTriggerViewController alloc] init]); } }];
     [items addObject:@{ @"title": @"Focus", @"icon": @"moon.fill", @"section": @"Device", @"handler": ^{ push([[RCFocusTriggerViewController alloc] init]); } }];
     [self.navigationController pushViewController:[[RCNewTriggerViewController alloc] initWithItems:items] animated:YES];

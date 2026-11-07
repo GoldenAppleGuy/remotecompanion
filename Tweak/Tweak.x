@@ -29,6 +29,7 @@
 #import "native_curl.h"
 #import "RCTestKit.h"
 #import "RCToastPill.h"
+#import "RCSymbols.h"
 #import "RCTriggerAppExclusions.h"
 #import <CoreFoundation/CoreFoundation.h>
 #import <CoreLocation/CoreLocation.h>
@@ -10389,7 +10390,7 @@ static NSString *handle_command(NSString *cmd) {
         } else if (arguments.count == 2) {
             title = arguments[0];
             // Check if second argument is a valid symbol image
-            if ([UIImage systemImageNamed:arguments[1]]) {
+            if (RCSystemImage(arguments[1], nil)) {
                 icon = arguments[1];
             } else {
                 subtitle = arguments[1];

@@ -1,9 +1,11 @@
 #import <UIKit/UIKit.h>
 #import "RCAppDelegate.h"
+#import "RCSymbols.h"
 
 int main(int argc, char *argv[]) {
     @try {
         @autoreleasepool {
+            RCInstallSymbolFallbacks();
             return UIApplicationMain(argc, argv, nil, NSStringFromClass([RCAppDelegate class]));
         }
     } @catch (NSException *exception) {

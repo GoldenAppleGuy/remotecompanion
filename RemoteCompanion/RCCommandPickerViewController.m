@@ -33,11 +33,11 @@ static NSArray<NSArray *> *RCValueCommandSections(void) {
                 @{ @"title": @"Do Not Disturb", @"command": @"dnd status", @"icon": @"moon.fill" },
                 @{ @"title": @"Focus", @"command": @"focus status", @"icon": @"moon.circle.fill" },
                 @{ @"title": @"Screen Recording", @"command": @"screenrecord status", @"icon": @"record.circle" },
-                @{ @"title": @"Proximity", @"command": @"proximity status", @"icon": @"sensor.tag.radiowaves.forward.fill", @"fallbackIcon": @"hand.raised.fill" },
+                @{ @"title": @"Proximity", @"command": @"proximity status", @"icon": @"sensor.tag.radiowaves.forward.fill" },
             ]],
             @[@"Display", @[
-                @{ @"title": @"Orientation", @"command": @"orientation status", @"icon": @"rectangle.portrait.rotate", @"fallbackIcon": @"rotate.right.fill" },
-                @{ @"title": @"Appearance", @"command": @"appearance status", @"icon": @"circle.lefthalf.filled", @"fallbackIcon": @"circle.lefthalf.fill" },
+                @{ @"title": @"Orientation", @"command": @"orientation status", @"icon": @"rectangle.portrait.rotate" },
+                @{ @"title": @"Appearance", @"command": @"appearance status", @"icon": @"circle.lefthalf.filled" },
                 @{ @"title": @"Auto-Lock", @"command": @"autolock status", @"icon": @"timer" },
             ]],
         ];

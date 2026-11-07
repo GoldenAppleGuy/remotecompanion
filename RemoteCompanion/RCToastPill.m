@@ -1,4 +1,5 @@
 #import "RCToastPill.h"
+#import "RCSymbols.h"
 
 // Shared pill metrics. The two-line stack is defined once, top to bottom:
 // 8pt padding, 18pt title, 16pt message, 8pt padding. The double-line pill
@@ -47,13 +48,13 @@ static inline CGFloat RCToastPillDoubleHeight(void) {
     if (!iconName || iconName.length == 0) return nil;
     UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:16.0
                                                                                          weight:UIImageSymbolWeightMedium];
-    return [UIImage systemImageNamed:iconName withConfiguration:config];
+    return RCSystemImage(iconName, config);
 }
 
 + (BOOL)hasIconForName:(NSString *)iconName {
     if (!iconName || iconName.length == 0) return NO;
     if ([iconName isEqualToString:@"none"]) return NO;
-    return [UIImage systemImageNamed:iconName] != nil;
+    return RCSystemImage(iconName, nil) != nil;
 }
 
 + (CGFloat)leftMarginForIconName:(NSString *)iconName {

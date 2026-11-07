@@ -2039,7 +2039,7 @@ static NSString *RCVariableConditionText(NSDictionary *dict) {
         @"mute status": @"speaker.slash.fill",
         @"mute": @"speaker.slash.fill",
         @"siri": @"mic.circle.fill",
-        @"accessibility shortcut": ([UIImage systemImageNamed:@"accessibility"] ? @"accessibility" : @"figure.stand"), // "accessibility" is iOS 15+
+        @"accessibility shortcut": @"accessibility",
         @"open control center": @"switch.2",
         @"control center": @"switch.2",
         @"ldrestart": @"arrow.clockwise",

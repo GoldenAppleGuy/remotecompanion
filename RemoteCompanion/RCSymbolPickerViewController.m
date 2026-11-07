@@ -1,6 +1,7 @@
 #import "RCSymbolPickerViewController.h"
 #import "RCConfigManager.h"
 #import "RCCategoryBar.h"
+#import "RCSymbols.h"
 
 // Categories of symbols: title, names. Names a system doesn't have are left out when shown.
 static NSArray<NSArray *> *RCSymbolCategories(void) {
@@ -20,7 +21,11 @@ static NSArray<NSArray *> *RCSymbolCategories(void) {
         NSMutableArray *available = [NSMutableArray array];
         for (NSArray *category in raw) {
             NSMutableOrderedSet *names = [NSMutableOrderedSet orderedSet];
-            for (NSString *name in category[1]) if ([UIImage systemImageNamed:name]) [names addObject:name];
+            NSMutableSet *drawn = [NSMutableSet set];
+            for (NSString *name in category[1]) {
+                NSString *drawnName = RCSystemImageDrawnName(name);
+                if (drawnName && ![drawn containsObject:drawnName]) { [drawn addObject:drawnName]; [names addObject:name]; }
+            }
             if (names.count) [available addObject:@[category[0], names.array]];
         }
         list = available;
