@@ -2486,7 +2486,8 @@ static NSString *rc_backup_json(void) {
 
     for (NSString *folder in rc_backup_addon_folders()) {
         for (NSString *name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:folder error:NULL]) {
-            if (![name.pathExtension.lowercaseString isEqualToString:@"json"]) continue;
+            // The definitions and the icon images beside them
+            if (![@[@"json", @"png", @"jpg", @"jpeg"] containsObject:name.pathExtension.lowercaseString]) continue;
             NSDictionary *entry = rc_backup_file_entry([folder stringByAppendingPathComponent:name]);
             if (entry) files[[@"addons/" stringByAppendingString:name]] = entry;
         }
